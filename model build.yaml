@@ -1,0 +1,290 @@
+name: Build Model
+description: Instantiates a VAE model, updates config with weights, saves the model, and outputs a combined config and model info JSON.
+
+inputs:
+  - {name: weight_in, type: String, description: "Weight info as JSON string (e.g., beta, num_classes)"}
+  - {name: config_str, type: String, description: "Model config as JSON string"}
+  - {name: model_name, type: String, description: "Name of the VAE model to instantiate (e.g., standard_vae, beta_vae, conditional_vae, vqvae)"}
+
+outputs:
+  - {name: model_out, type: Model, description: "Model weights (torch saved state_dict)"}
+  - {name: config_updated, type: String, description: "Updated config as JSON string"}
+  - {name: model_info_out, type: String, description: "Combined model info and config as a JSON string"}
+implementation:
+  container:
+    image: nikhilv215/nesy-factory:v22
+    command:
+      - sh
+      - -c
+      - |
+
+        exec "$0" "$@"
+      - python3
+      - -u
+      - -c
+      - |
+        import torch
+        import torch.nn as nn
+        import torch.nn.functional as F
+        import argparse
+        import json
+        import os
+
+        # Define VAE Model Architectures
+        class StandardVAE(nn.Module):
+            def __init__(self, input_dim, hidden_dim, latent_dim):
+                super(StandardVAE, self).__init__()
+                self.input_dim = input_dim
+                self.hidden_dim = hidden_dim
+                self.latent_dim = latent_dim
+                self.model_type = "standard_vae"
+                
+                # Encoder
+                self.encoder = nn.Sequential(
+                    nn.Linear(input_dim, hidden_dim),
+                    nn.ReLU(),
+                    nn.Linear(hidden_dim, hidden_dim // 2),
+                    nn.ReLU()
+                )
+                self.mu_layer = nn.Linear(hidden_dim // 2, latent_dim)
+                self.logvar_layer = nn.Linear(hidden_dim // 2, latent_dim)
+                
+                # Decoder
+                self.decoder = nn.Sequential(
+                    nn.Linear(latent_dim, hidden_dim // 2),
+                    nn.ReLU(),
+                    nn.Linear(hidden_dim // 2, hidden_dim),
+                    nn.ReLU(),
+                    nn.Linear(hidden_dim, input_dim),
+                    nn.Sigmoid()
+                )
+            
+            def encode(self, x):
+                h = self.encoder(x)
+                mu = self.mu_layer(h)
+                logvar = self.logvar_layer(h)
+                return mu, logvar
+            
+            def reparameterize(self, mu, logvar):
+                std = torch.exp(0.5 * logvar)
+                eps = torch.randn_like(std)
+                return mu + eps * std
+            
+            def decode(self, z):
+                return self.decoder(z)
+            
+            def forward(self, x):
+                mu, logvar = self.encode(x)
+                z = self.reparameterize(mu, logvar)
+                return self.decode(z), mu, logvar
+            
+            def get_model_info(self):
+                return {
+                    'model_type': self.model_type,
+                    'input_dim': self.input_dim,
+                    'hidden_dim': self.hidden_dim,
+                    'latent_dim': self.latent_dim,
+                    'total_parameters': sum(p.numel() for p in self.parameters()),
+                    'trainable_parameters': sum(p.numel() for p in self.parameters() if p.requires_grad)
+                }
+
+        class BetaVAE(StandardVAE):
+            def __init__(self, input_dim, hidden_dim, latent_dim):
+                super(BetaVAE, self).__init__(input_dim, hidden_dim, latent_dim)
+                self.model_type = "beta_vae"
+
+        class ConditionalVAE(nn.Module):
+            def __init__(self, input_dim, hidden_dim, latent_dim, num_classes):
+                super(ConditionalVAE, self).__init__()
+                self.input_dim = input_dim
+                self.hidden_dim = hidden_dim
+                self.latent_dim = latent_dim
+                self.num_classes = num_classes
+                self.model_type = "conditional_vae"
+                
+                # Encoder (input + class conditioning)
+                self.encoder = nn.Sequential(
+                    nn.Linear(input_dim + num_classes, hidden_dim),
+                    nn.ReLU(),
+                    nn.Linear(hidden_dim, hidden_dim // 2),
+                    nn.ReLU()
+                )
+                self.mu_layer = nn.Linear(hidden_dim // 2, latent_dim)
+                self.logvar_layer = nn.Linear(hidden_dim // 2, latent_dim)
+                
+                # Decoder (latent + class conditioning)
+                self.decoder = nn.Sequential(
+                    nn.Linear(latent_dim + num_classes, hidden_dim // 2),
+                    nn.ReLU(),
+                    nn.Linear(hidden_dim // 2, hidden_dim),
+                    nn.ReLU(),
+                    nn.Linear(hidden_dim, input_dim),
+                    nn.Sigmoid()
+                )
+            
+            def encode(self, x, c):
+                inputs = torch.cat([x, c], dim=1)
+                h = self.encoder(inputs)
+                mu = self.mu_layer(h)
+                logvar = self.logvar_layer(h)
+                return mu, logvar
+            
+            def reparameterize(self, mu, logvar):
+                std = torch.exp(0.5 * logvar)
+                eps = torch.randn_like(std)
+                return mu + eps * std
+            
+            def decode(self, z, c):
+                inputs = torch.cat([z, c], dim=1)
+                return self.decoder(inputs)
+            
+            def forward(self, x, c):
+                mu, logvar = self.encode(x, c)
+                z = self.reparameterize(mu, logvar)
+                return self.decode(z, c), mu, logvar
+            
+            def get_model_info(self):
+                return {
+                    'model_type': self.model_type,
+                    'input_dim': self.input_dim,
+                    'hidden_dim': self.hidden_dim,
+                    'latent_dim': self.latent_dim,
+                    'num_classes': self.num_classes,
+                    'total_parameters': sum(p.numel() for p in self.parameters()),
+                    'trainable_parameters': sum(p.numel() for p in self.parameters() if p.requires_grad)
+                }
+
+        class VQVAE(nn.Module):
+            def __init__(self, input_dim, hidden_dim, latent_dim, num_embeddings=512):
+                super(VQVAE, self).__init__()
+                self.input_dim = input_dim
+                self.hidden_dim = hidden_dim
+                self.latent_dim = latent_dim
+                self.num_embeddings = num_embeddings
+                self.model_type = "vqvae"
+                
+                # Encoder
+                self.encoder = nn.Sequential(
+                    nn.Linear(input_dim, hidden_dim),
+                    nn.ReLU(),
+                    nn.Linear(hidden_dim, hidden_dim // 2),
+                    nn.ReLU(),
+                    nn.Linear(hidden_dim // 2, latent_dim)
+                )
+                
+                # Vector Quantization
+                self.embedding = nn.Embedding(num_embeddings, latent_dim)
+                self.embedding.weight.data.uniform_(-1/num_embeddings, 1/num_embeddings)
+                
+                # Decoder
+                self.decoder = nn.Sequential(
+                    nn.Linear(latent_dim, hidden_dim // 2),
+                    nn.ReLU(),
+                    nn.Linear(hidden_dim // 2, hidden_dim),
+                    nn.ReLU(),
+                    nn.Linear(hidden_dim, input_dim),
+                    nn.Sigmoid()
+                )
+            
+            def encode(self, x):
+                return self.encoder(x)
+            
+            def quantize(self, z_e):
+                distances = torch.sum(z_e**2, dim=1, keepdim=True) + \
+                           torch.sum(self.embedding.weight**2, dim=1) - \
+                           2 * torch.matmul(z_e, self.embedding.weight.t())
+                encoding_indices = torch.argmin(distances, dim=1)
+                z_q = self.embedding(encoding_indices)
+                return z_q, encoding_indices
+            
+            def decode(self, z):
+                return self.decoder(z)
+            
+            def forward(self, x):
+                z_e = self.encode(x)
+                z_q, indices = self.quantize(z_e)
+                x_recon = self.decode(z_q)
+                return x_recon, z_e, z_q, indices
+            
+            def get_model_info(self):
+                return {
+                    'model_type': self.model_type,
+                    'input_dim': self.input_dim,
+                    'hidden_dim': self.hidden_dim,
+                    'latent_dim': self.latent_dim,
+                    'num_embeddings': self.num_embeddings,
+                    'total_parameters': sum(p.numel() for p in self.parameters()),
+                    'trainable_parameters': sum(p.numel() for p in self.parameters() if p.requires_grad)
+                }
+
+        def create_vae_model(model_name, config):
+            input_dim = config['input_dim']
+            hidden_dim = config.get('hidden_dim', 512)
+            latent_dim = config.get('latent_dim', 128)
+            
+            if model_name == 'standard_vae':
+                return StandardVAE(input_dim, hidden_dim, latent_dim)
+            elif model_name == 'beta_vae':
+                return BetaVAE(input_dim, hidden_dim, latent_dim)
+            elif model_name == 'conditional_vae':
+                num_classes = config.get('num_classes', 10)
+                return ConditionalVAE(input_dim, hidden_dim, latent_dim, num_classes)
+            elif model_name == 'vqvae':
+                num_embeddings = config.get('num_embeddings', 512)
+                return VQVAE(input_dim, hidden_dim, latent_dim, num_embeddings)
+            else:
+                raise ValueError(f"Unknown VAE model: {model_name}")
+
+        parser = argparse.ArgumentParser()
+        parser.add_argument('--weight_in', type=str, required=True)
+        parser.add_argument('--config_str', type=str, required=True)
+        parser.add_argument('--model_name', type=str, required=True)
+        parser.add_argument('--model_out', type=str, required=True)
+        parser.add_argument('--config_updated', type=str, required=True)
+        parser.add_argument('--model_info_out', type=str, required=True)
+        args = parser.parse_args()
+
+        config = json.loads(args.config_str)
+        weight = json.loads(args.weight_in)
+        for key, value in weight.items():
+            config[key] = value
+        config['model_name'] = args.model_name
+        
+        model = create_vae_model(args.model_name, config)
+        print("VAE Model created successfully.")
+
+        model_info = model.get_model_info()
+        print(f"Model Info: {model_info}")
+
+        # Combine config and model_info
+        combined_info = {**model_info, **config}
+
+        os.makedirs(os.path.dirname(args.model_out), exist_ok=True)
+        os.makedirs(os.path.dirname(args.config_updated), exist_ok=True)
+        os.makedirs(os.path.dirname(args.model_info_out), exist_ok=True)
+
+        torch.save(model.state_dict(), args.model_out)
+
+        with open(args.config_updated, 'w') as f:
+            json.dump(config, f, indent=2)
+            
+        with open(args.model_info_out, 'w') as f:
+            json.dump(combined_info, f, indent=2)
+
+        print(f"Model saved to {args.model_out}")
+        print(f"Updated config saved to {args.config_updated}")
+        print(f"Combined model info saved to {args.model_info_out}")
+
+    args:
+      - --model_name
+      - {inputValue: model_name}
+      - --weight_in
+      - {inputValue: weight_in}
+      - --config_str
+      - {inputValue: config_str}
+      - --model_out
+      - {outputPath: model_out}
+      - --config_updated
+      - {outputPath: config_updated}
+      - --model_info_out
+      - {outputPath: model_info_out}
