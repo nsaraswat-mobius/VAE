@@ -8,8 +8,8 @@ inputs:
 outputs:
   - {name: train_data, type: Dataset}
   - {name: val_data, type: Dataset}
-  - {name: data_shape, type: String}
-  - {name: num_samples, type: String}
+  - {name: data_shape, type: string}
+  - {name: num_samples, type: string}
 implementation:
   container:
     image: nikhilv215/nesy-factory:v22
