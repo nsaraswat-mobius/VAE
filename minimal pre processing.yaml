@@ -1,0 +1,29 @@
+name: Minimal VAE Preprocessing
+description: Ultra simple VAE preprocessing
+inputs:
+  - {name: train_data, type: Dataset}
+  - {name: val_data, type: Dataset}
+  - {name: data_shape, type: String}
+outputs:
+  - {name: processed_train_data, type: Dataset}
+  - {name: processed_val_data, type: Dataset}
+  - {name: processed_data_shape, type: String}
+implementation:
+  container:
+    image: nikhilv215/nesy-factory:v22
+    command:
+      - sh
+      - -c
+      - |
+        echo "Starting preprocessing..."
+        cp "$1" "$4"
+        cp "$2" "$5" 
+        echo "784" > "$6"
+        echo "Preprocessing complete"
+    args:
+      - {inputPath: train_data}
+      - {inputPath: val_data}
+      - {inputValue: data_shape}
+      - {outputPath: processed_train_data}
+      - {outputPath: processed_val_data}
+      - {outputPath: processed_data_shape}
