@@ -244,36 +244,88 @@ implementation:
         parser.add_argument('--model_info_out', type=str, required=True)
         args = parser.parse_args()
 
-        config = json.loads(args.config_str)
-        weight = json.loads(args.weight_in)
+        print(f"Raw arguments received:")
+        print(f"  weight_in: '{args.weight_in}'")
+        print(f"  config_str: '{args.config_str}'")
+        print(f"  model_name: '{args.model_name}'")
+
+        try:
+            # Parse config_str with error handling
+            if not args.config_str or args.config_str.strip() == '':
+                print("Warning: config_str is empty, using default config")
+                config = {'input_dim': 784, 'hidden_dim': 512, 'latent_dim': 128}
+            else:
+                config = json.loads(args.config_str)
+                print(f"Parsed config: {config}")
+        except json.JSONDecodeError as e:
+            print(f"Error parsing config_str: {e}")
+            print(f"config_str content: '{args.config_str}'")
+            print("Using default config instead")
+            config = {'input_dim': 784, 'hidden_dim': 512, 'latent_dim': 128}
+
+        try:
+            # Parse weight_in with error handling
+            if not args.weight_in or args.weight_in.strip() == '':
+                print("Warning: weight_in is empty, using default weights")
+                weight = {}
+            else:
+                weight = json.loads(args.weight_in)
+                print(f"Parsed weight: {weight}")
+        except json.JSONDecodeError as e:
+            print(f"Error parsing weight_in: {e}")
+            print(f"weight_in content: '{args.weight_in}'")
+            print("Using empty weights instead")
+            weight = {}
+
+        # Merge weight into config
         for key, value in weight.items():
             config[key] = value
         config['model_name'] = args.model_name
         
-        model = create_vae_model(args.model_name, config)
-        print("VAE Model created successfully.")
+        try:
+            model = create_vae_model(args.model_name, config)
+            print("VAE Model created successfully.")
 
-        model_info = model.get_model_info()
-        print(f"Model Info: {model_info}")
+            model_info = model.get_model_info()
+            print(f"Model Info: {model_info}")
 
-        # Combine config and model_info
-        combined_info = {**model_info, **config}
+            # Combine config and model_info
+            combined_info = {**model_info, **config}
 
-        os.makedirs(os.path.dirname(args.model_out), exist_ok=True)
-        os.makedirs(os.path.dirname(args.config_updated), exist_ok=True)
-        os.makedirs(os.path.dirname(args.model_info_out), exist_ok=True)
+            os.makedirs(os.path.dirname(args.model_out), exist_ok=True)
+            os.makedirs(os.path.dirname(args.config_updated), exist_ok=True)
+            os.makedirs(os.path.dirname(args.model_info_out), exist_ok=True)
 
-        torch.save(model.state_dict(), args.model_out)
+            torch.save(model.state_dict(), args.model_out)
 
-        with open(args.config_updated, 'w') as f:
-            json.dump(config, f, indent=2)
+            with open(args.config_updated, 'w') as f:
+                json.dump(config, f, indent=2)
+                
+            with open(args.model_info_out, 'w') as f:
+                json.dump(combined_info, f, indent=2)
+
+            print(f"Model saved to {args.model_out}")
+            print(f"Updated config saved to {args.config_updated}")
+            print(f"Combined model info saved to {args.model_info_out}")
+
+        except Exception as e:
+            print(f"Error during model creation/saving: {e}")
+            import traceback
+            traceback.print_exc()
             
-        with open(args.model_info_out, 'w') as f:
-            json.dump(combined_info, f, indent=2)
-
-        print(f"Model saved to {args.model_out}")
-        print(f"Updated config saved to {args.config_updated}")
-        print(f"Combined model info saved to {args.model_info_out}")
+            # Create minimal outputs to prevent Kubeflow errors
+            os.makedirs(os.path.dirname(args.model_out), exist_ok=True)
+            os.makedirs(os.path.dirname(args.config_updated), exist_ok=True)
+            os.makedirs(os.path.dirname(args.model_info_out), exist_ok=True)
+            
+            # Save error info
+            error_info = {"error": str(e), "config": config}
+            with open(args.config_updated, 'w') as f:
+                json.dump(error_info, f, indent=2)
+            with open(args.model_info_out, 'w') as f:
+                json.dump(error_info, f, indent=2)
+                
+            raise
 
     args:
       - --model_name
