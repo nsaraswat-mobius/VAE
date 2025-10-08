@@ -16,18 +16,71 @@ implementation:
   container:
     image: nikhilv215/nesy-factory:v22
     command:
-      - python3
-      - -u
+      - sh
       - -c
       - |
+        pip install torch torchvision
+        python3 -c "
         import argparse
         import os
         import pickle
         import torch
         import json
-        import numpy as np
         from torch.utils.data import DataLoader, Dataset
         import logging
+
+        logging.basicConfig(level=logging.INFO)
+        logger = logging.getLogger(__name__)
+
+        class ProcessedVAEDataset(Dataset):
+            def __init__(self, original_loader, vae_type):
+                self.data = []
+                self.labels = []
+                self.vae_type = vae_type
+                
+                for batch_data, batch_labels in original_loader:
+                    flattened_data = batch_data.view(batch_data.size(0), -1)
+                    self.data.append(flattened_data)
+                    self.labels.append(batch_labels)
+                
+                self.data = torch.cat(self.data, dim=0)
+                self.labels = torch.cat(self.labels, dim=0)
+                
+                self._apply_vae_preprocessing()
+            
+            def _apply_vae_preprocessing(self):
+                global class_mapping
+                class_mapping = {}
+                
+                if self.vae_type == 'standard':
+                    if self.data.min() < 0:
+                        self.data = (self.data + 1) / 2
+                
+                elif self.vae_type == 'beta':
+                    if self.data.min() < 0:
+                        self.data = (self.data + 1) / 2
+                
+                elif self.vae_type == 'conditional':
+                    if self.data.min() < 0:
+                        self.data = (self.data + 1) / 2
+                    
+                    unique_labels = torch.unique(self.labels)
+                    class_mapping = {int(label): idx for idx, label in enumerate(unique_labels)}
+                    
+                    remapped_labels = torch.zeros_like(self.labels)
+                    for original_label, new_label in class_mapping.items():
+                        remapped_labels[self.labels == original_label] = new_label
+                    self.labels = remapped_labels
+                
+                elif self.vae_type == 'vqvae':
+                    if self.data.max() <= 1 and self.data.min() >= 0:
+                        self.data = self.data * 2 - 1
+            
+            def __len__(self):
+                return len(self.data)
+            
+            def __getitem__(self, idx):
+                return self.data[idx], self.labels[idx]
 
         parser = argparse.ArgumentParser()
         parser.add_argument('--train_data', type=str, required=True)
@@ -42,196 +95,49 @@ implementation:
         parser.add_argument('--class_mapping', type=str, required=True)
         args = parser.parse_args()
 
-        logging.basicConfig(level=logging.INFO)
-        logger = logging.getLogger(__name__)
-
-        class ProcessedVAEDataset(Dataset):
-            def __init__(self, original_loader, vae_type, preprocessing_metadata):
-                self.data = []
-                self.labels = []
-                self.vae_type = vae_type
-                
-                logger.info(f"Processing dataset for {vae_type} VAE...")
-                logger.info(f"Original loader has {len(original_loader)} batches")
-                
-                # Extract all data from DataLoader and flatten for VAE
-                for batch_idx, (batch_data, batch_labels) in enumerate(original_loader):
-                    # Flatten images for VAE processing (batch_size, height*width*channels)
-                    flattened_data = batch_data.view(batch_data.size(0), -1)
-                    self.data.append(flattened_data)
-                    self.labels.append(batch_labels)
-                    
-                    if batch_idx % 50 == 0:
-                        logger.info(f"Processed batch {batch_idx}/{len(original_loader)}")
-                
-                # Concatenate all batches
-                self.data = torch.cat(self.data, dim=0)
-                self.labels = torch.cat(self.labels, dim=0)
-                
-                logger.info(f"Final dataset shape: {self.data.shape}, Labels shape: {self.labels.shape}")
-                
-                # Apply VAE-specific preprocessing
-                self._apply_vae_preprocessing(preprocessing_metadata)
-                
-                # Update metadata with data statistics
-                preprocessing_metadata['data_statistics'] = {
-                    'mean': float(self.data.mean()),
-                    'std': float(self.data.std()),
-                    'min': float(self.data.min()),
-                    'max': float(self.data.max()),
-                    'num_samples': len(self.data)
-                }
-            
-            def _apply_vae_preprocessing(self, preprocessing_metadata):
-                """Apply preprocessing specific to VAE type"""
-                global class_mapping
-                class_mapping = {}
-                
-                logger.info(f"Applying {self.vae_type} VAE preprocessing...")
-                logger.info(f"Data range before preprocessing: [{self.data.min():.3f}, {self.data.max():.3f}]")
-                
-                if self.vae_type == 'standard':
-                    # Standard VAE: ensure data is in [0, 1] range
-                    if self.data.min() < 0:
-                        self.data = (self.data + 1) / 2  # Convert from [-1, 1] to [0, 1]
-                        logger.info("Normalized data from [-1, 1] to [0, 1] range for Standard VAE")
-                    preprocessing_metadata['preprocessing_applied'].append('standard_vae_normalization')
-                
-                elif self.vae_type == 'beta':
-                    # Beta VAE: same normalization as standard but optimized for disentanglement
-                    if self.data.min() < 0:
-                        self.data = (self.data + 1) / 2
-                        logger.info("Normalized data from [-1, 1] to [0, 1] range for Beta VAE")
-                    preprocessing_metadata['preprocessing_applied'].append('beta_vae_normalization')
-                
-                elif self.vae_type == 'conditional':
-                    # Conditional VAE: normalize data and remap labels
-                    if self.data.min() < 0:
-                        self.data = (self.data + 1) / 2
-                        logger.info("Normalized data from [-1, 1] to [0, 1] range for Conditional VAE")
-                    
-                    # Create class mapping starting from 0
-                    unique_labels = torch.unique(self.labels)
-                    class_mapping = {int(label): idx for idx, label in enumerate(unique_labels)}
-                    
-                    # Remap labels to start from 0
-                    remapped_labels = torch.zeros_like(self.labels)
-                    for original_label, new_label in class_mapping.items():
-                        remapped_labels[self.labels == original_label] = new_label
-                    self.labels = remapped_labels
-                    
-                    logger.info(f"Remapped labels for Conditional VAE: {class_mapping}")
-                    preprocessing_metadata['preprocessing_applied'].extend([
-                        'conditional_vae_normalization',
-                        'label_remapping'
-                    ])
-                
-                elif self.vae_type == 'vqvae':
-                    # VQ-VAE: works better with data in [-1, 1] range
-                    if self.data.max() <= 1 and self.data.min() >= 0:
-                        self.data = self.data * 2 - 1  # Convert from [0, 1] to [-1, 1]
-                        logger.info("Normalized data from [0, 1] to [-1, 1] range for VQ-VAE")
-                    preprocessing_metadata['preprocessing_applied'].append('vqvae_normalization')
-                
-                else:
-                    logger.warning(f"Unknown VAE type: {self.vae_type}, applying standard preprocessing")
-                    if self.data.min() < 0:
-                        self.data = (self.data + 1) / 2
-                    preprocessing_metadata['preprocessing_applied'].append('default_normalization')
-                
-                logger.info(f"Data range after preprocessing: [{self.data.min():.3f}, {self.data.max():.3f}]")
-            
-            def __len__(self):
-                return len(self.data)
-            
-            def __getitem__(self, idx):
-                return self.data[idx], self.labels[idx]
-
-        def create_vae_metadata(original_shape, vae_type, preprocessing_config):
-            """Create comprehensive metadata for VAE preprocessing"""
-            h, w, c = map(int, original_shape.split(','))
-            input_dim = h * w * c
-            
-            metadata = {
-                'original_shape': [h, w, c],
-                'flattened_input_dim': input_dim,
-                'vae_type': vae_type,
-                'preprocessing_applied': [],
-                'preprocessing_config': preprocessing_config,
-                'normalization_type': 'vae_specific',
-                'data_statistics': {}
-            }
-            
-            # Add VAE-specific configuration
-            if vae_type == 'beta':
-                metadata['beta_value'] = preprocessing_config.get('beta_value', 4.0)
-            elif vae_type == 'conditional':
-                metadata['conditional_setup'] = True
-            elif vae_type == 'vqvae':
-                metadata['codebook_size'] = preprocessing_config.get('codebook_size', 512)
-                metadata['commitment_cost'] = preprocessing_config.get('commitment_cost', 0.25)
-            
-            return metadata
-
-        # Main processing
-        logger.info("=== VAE Data Preprocessing Component ===")
-        logger.info(f"VAE Type: {args.vae_type}")
-        logger.info(f"Input data shape: {args.data_shape}")
-        
-        # Parse preprocessing config
-        try:
-            preprocessing_config = json.loads(args.preprocessing_config)
-        except:
-            preprocessing_config = {}
-        
-        logger.info(f"Preprocessing config: {preprocessing_config}")
-        
-        # Load the DataLoaders
         with open(args.train_data, 'rb') as f:
             train_loader = pickle.load(f)
         with open(args.val_data, 'rb') as f:
             val_loader = pickle.load(f)
         
-        logger.info(f"Loaded DataLoaders: Train={len(train_loader)} batches, Val={len(val_loader)} batches")
-        
-        # Create preprocessing metadata
-        preprocessing_metadata = create_vae_metadata(args.data_shape, args.vae_type, preprocessing_config)
-        
-        # Global variable for class mapping
         class_mapping = {}
         
-        # Create processed datasets
-        processed_train_dataset = ProcessedVAEDataset(train_loader, args.vae_type, preprocessing_metadata)
-        processed_val_dataset = ProcessedVAEDataset(val_loader, args.vae_type, preprocessing_metadata)
+        processed_train_dataset = ProcessedVAEDataset(train_loader, args.vae_type)
+        processed_val_dataset = ProcessedVAEDataset(val_loader, args.vae_type)
         
-        # Create new DataLoaders
         original_batch_size = train_loader.batch_size
         processed_train_loader = DataLoader(processed_train_dataset, batch_size=original_batch_size, shuffle=True, num_workers=0)
         processed_val_loader = DataLoader(processed_val_dataset, batch_size=original_batch_size, shuffle=False, num_workers=0)
         
-        # Create output directories
-        os.makedirs(os.path.dirname(args.processed_train_data) or ".", exist_ok=True)
-        os.makedirs(os.path.dirname(args.processed_val_data) or ".", exist_ok=True)
-        os.makedirs(os.path.dirname(args.processed_data_shape) or ".", exist_ok=True)
-        os.makedirs(os.path.dirname(args.preprocessing_metadata) or ".", exist_ok=True)
-        os.makedirs(os.path.dirname(args.class_mapping) or ".", exist_ok=True)
+        h, w, c = map(int, args.data_shape.split(','))
+        flattened_dim = h * w * c
         
-        # Save outputs
+        metadata = {
+            'vae_type': args.vae_type,
+            'flattened_input_dim': flattened_dim,
+            'num_train_samples': len(processed_train_dataset),
+            'num_val_samples': len(processed_val_dataset)
+        }
+        
+        os.makedirs(os.path.dirname(args.processed_train_data) or '.', exist_ok=True)
+        os.makedirs(os.path.dirname(args.processed_val_data) or '.', exist_ok=True)
+        os.makedirs(os.path.dirname(args.processed_data_shape) or '.', exist_ok=True)
+        os.makedirs(os.path.dirname(args.preprocessing_metadata) or '.', exist_ok=True)
+        os.makedirs(os.path.dirname(args.class_mapping) or '.', exist_ok=True)
+        
         with open(args.processed_train_data, 'wb') as f:
             pickle.dump(processed_train_loader, f)
         with open(args.processed_val_data, 'wb') as f:
             pickle.dump(processed_val_loader, f)
         with open(args.processed_data_shape, 'w') as f:
-            f.write(str(preprocessing_metadata['flattened_input_dim']))
+            f.write(str(flattened_dim))
         with open(args.preprocessing_metadata, 'wb') as f:
-            pickle.dump(preprocessing_metadata, f)
+            pickle.dump(metadata, f)
         with open(args.class_mapping, 'w') as f:
             f.write(json.dumps(class_mapping))
         
-        logger.info("=== VAE Data Preprocessing Completed Successfully! ===")
-        logger.info(f"Training samples: {len(processed_train_dataset)}")
-        logger.info(f"Validation samples: {len(processed_val_dataset)}")
-        logger.info(f"Flattened dimension: {preprocessing_metadata['flattened_input_dim']}")
+        logger.info('VAE preprocessing completed successfully')
+        " -- "$@"
 
     args:
       - --train_data
