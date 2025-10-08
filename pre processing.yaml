@@ -14,7 +14,7 @@ outputs:
   - {name: class_mapping, type: String, description: "Class labels mapping JSON string for conditional VAE"}
 implementation:
   container:
-    image: nesy-factory:latest
+    image: nikhilv215/nesy-factory:v22
     command:
       - sh
       - -c
