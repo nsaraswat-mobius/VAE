@@ -1,0 +1,228 @@
+name: Load dataset for VAE training
+description: Downloads and prepares dataset (MNIST/Fashion-MNIST/CIFAR-10) for VAE
+inputs:
+  - {name: dataset_name, type: String, description: 'Dataset to load (mnist, fashion_mnist, cifar10)', default: 'mnist'}
+  - {name: batch_size, type: Integer, description: 'Batch size for data loading', default: '64'}
+  - {name: validation_split, type: Float, description: 'Fraction of data for validation', default: '0.2'}
+  - {name: normalize, type: Boolean, description: 'Whether to normalize data to [-1, 1]', default: 'true'}
+outputs:
+  - {name: train_data, type: Dataset}
+  - {name: val_data, type: Dataset}
+  - {name: data_shape, type: String}
+  - {name: num_samples, type: Integer}
+implementation:
+  container:
+    image: nikhilv215/nesy-factory:v22
+    command:
+      - sh
+      - -c
+      - |
+        python3 -m pip install --quiet torch torchvision scikit-learn || \
+        python3 -m pip install --quiet torch torchvision scikit-learn --user
+        exec "$0" "$@"
+      - python3
+      - -u
+      - -c
+      - |
+        import argparse
+        import os
+        import pickle
+        import torch
+        import torchvision
+        import torchvision.transforms as transforms
+        from torch.utils.data import DataLoader, random_split
+        import json
+        import logging
+
+        parser = argparse.ArgumentParser()
+        parser.add_argument('--dataset_name', type=str, required=True, help='Dataset to load')
+        parser.add_argument('--batch_size', type=int, required=True, help='Batch size for data loading')
+        parser.add_argument('--validation_split', type=float, required=True, help='Validation split fraction')
+        parser.add_argument('--normalize', type=str, required=True, help='Whether to normalize data')
+        parser.add_argument('--train_data', type=str, required=True, help='Path to output train dataset')
+        parser.add_argument('--val_data', type=str, required=True, help='Path to output validation dataset')
+        parser.add_argument('--data_shape', type=str, required=True, help='Path to output data shape info')
+        parser.add_argument('--num_samples', type=str, required=True, help='Path to output number of samples')
+        args = parser.parse_args()
+
+        # Setup logging
+        logging.basicConfig(level=logging.INFO)
+        logger = logging.getLogger("data_loader")
+
+        # Parse parameters
+        dataset_name = args.dataset_name.lower()
+        batch_size = args.batch_size
+        validation_split = args.validation_split
+        normalize = args.normalize.lower() == 'true'
+        
+        logger.info(f"Loading {dataset_name} dataset...")
+        logger.info(f"Batch size: {batch_size}, Validation split: {validation_split}")
+        logger.info(f"Normalize: {normalize}")
+
+        # Create data directory
+        data_dir = "/tmp/datasets"
+        os.makedirs(data_dir, exist_ok=True)
+
+        # Define transforms based on dataset and normalization
+        if normalize:
+            if dataset_name in ['mnist', 'fashion_mnist']:
+                transform = transforms.Compose([
+                    transforms.ToTensor(),
+                    transforms.Normalize((0.5,), (0.5,))  # Normalize to [-1, 1]
+                ])
+            elif dataset_name == 'cifar10':
+                transform = transforms.Compose([
+                    transforms.ToTensor(),
+                    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))  # Normalize to [-1, 1]
+                ])
+        else:
+            transform = transforms.Compose([
+                transforms.ToTensor()  # Only convert to tensor [0, 1]
+            ])
+
+        # Load dataset based on name
+        try:
+            if dataset_name == 'mnist':
+                train_dataset = torchvision.datasets.MNIST(
+                    root=data_dir, 
+                    train=True, 
+                    download=True, 
+                    transform=transform
+                )
+                test_dataset = torchvision.datasets.MNIST(
+                    root=data_dir, 
+                    train=False, 
+                    download=True, 
+                    transform=transform
+                )
+                data_shape = "28,28,1"
+                
+            elif dataset_name == 'fashion_mnist':
+                train_dataset = torchvision.datasets.FashionMNIST(
+                    root=data_dir, 
+                    train=True, 
+                    download=True, 
+                    transform=transform
+                )
+                test_dataset = torchvision.datasets.FashionMNIST(
+                    root=data_dir, 
+                    train=False, 
+                    download=True, 
+                    transform=transform
+                )
+                data_shape = "28,28,1"
+                
+            elif dataset_name == 'cifar10':
+                train_dataset = torchvision.datasets.CIFAR10(
+                    root=data_dir, 
+                    train=True, 
+                    download=True, 
+                    transform=transform
+                )
+                test_dataset = torchvision.datasets.CIFAR10(
+                    root=data_dir, 
+                    train=False, 
+                    download=True, 
+                    transform=transform
+                )
+                data_shape = "32,32,3"
+                
+            else:
+                raise ValueError(f"Unsupported dataset: {dataset_name}")
+                
+        except Exception as e:
+            logger.error(f"Failed to load dataset {dataset_name}: {e}")
+            raise
+
+        # Split training data into train and validation
+        train_size = int((1 - validation_split) * len(train_dataset))
+        val_size = len(train_dataset) - train_size
+        train_data, val_data = random_split(
+            train_dataset, 
+            [train_size, val_size],
+            generator=torch.Generator().manual_seed(42)  # For reproducibility
+        )
+
+        logger.info(f"Dataset split - Train: {len(train_data)}, Validation: {len(val_data)}")
+
+        # Create data loaders
+        train_loader = DataLoader(
+            train_data, 
+            batch_size=batch_size, 
+            shuffle=True, 
+            num_workers=0,  # Set to 0 for container compatibility
+            pin_memory=False
+        )
+        val_loader = DataLoader(
+            val_data, 
+            batch_size=batch_size, 
+            shuffle=False, 
+            num_workers=0,
+            pin_memory=False
+        )
+
+        # Create output directories
+        os.makedirs(os.path.dirname(args.train_data) or ".", exist_ok=True)
+        os.makedirs(os.path.dirname(args.val_data) or ".", exist_ok=True)
+        os.makedirs(os.path.dirname(args.data_shape) or ".", exist_ok=True)
+        os.makedirs(os.path.dirname(args.num_samples) or ".", exist_ok=True)
+
+        # Save train data loader
+        with open(args.train_data, "wb") as f:
+            pickle.dump(train_loader, f)
+        logger.info(f"Train data saved to: {args.train_data}")
+
+        # Save validation data loader
+        with open(args.val_data, "wb") as f:
+            pickle.dump(val_loader, f)
+        logger.info(f"Validation data saved to: {args.val_data}")
+
+        # Save data shape information
+        with open(args.data_shape, "w") as f:
+            f.write(data_shape)
+        logger.info(f"Data shape saved: {data_shape}")
+
+        # Save number of training samples
+        with open(args.num_samples, "w") as f:
+            f.write(str(len(train_data)))
+        logger.info(f"Number of samples saved: {len(train_data)}")
+
+        # Save metadata for reference
+        metadata = {
+            'dataset_name': dataset_name,
+            'data_shape': data_shape,
+            'num_train_samples': len(train_data),
+            'num_val_samples': len(val_data),
+            'batch_size': batch_size,
+            'normalize': normalize,
+            'validation_split': validation_split
+        }
+        
+        metadata_path = os.path.join(os.path.dirname(args.train_data) or ".", 'dataset_metadata.json')
+        with open(metadata_path, 'w') as f:
+            json.dump(metadata, f, indent=2)
+        
+        logger.info(f"Data loading completed successfully!")
+        logger.info(f"Dataset: {dataset_name}")
+        logger.info(f"Shape: {data_shape}")
+        logger.info(f"Training samples: {len(train_data)}")
+        logger.info(f"Validation samples: {len(val_data)}")
+        logger.info(f"Metadata saved to: {metadata_path}")
+
+    args:
+      - --dataset_name
+      - {inputValue: dataset_name}
+      - --batch_size
+      - {inputValue: batch_size}
+      - --validation_split
+      - {inputValue: validation_split}
+      - --normalize
+      - {inputValue: normalize}
+      - --train_data
+      - {outputPath: train_data}
+      - --val_data
+      - {outputPath: val_data}
+      - --data_shape
+      - {outputPath: data_shape}
+      - --num_samples
+      - {outputPath: num_samples}
