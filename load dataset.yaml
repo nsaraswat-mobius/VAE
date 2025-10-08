@@ -2,9 +2,9 @@ name: Load dataset for VAE training
 description: Downloads and prepares dataset (MNIST/Fashion-MNIST/CIFAR-10) for VAE training with train/validation split.
 inputs:
   - {name: dataset_name, type: String, description: 'Dataset to load (mnist, fashion_mnist, cifar10)', default: 'mnist'}
-  - {name: batch_size, type: Integer, description: 'Batch size for data loading', default: '64'}
-  - {name: validation_split, type: Float, description: 'Fraction of data for validation', default: '0.2'}
-  - {name: normalize, type: Boolean, description: 'Whether to normalize data to [-1, 1]', default: 'true'}
+  - {name: batch_size, type: String, description: 'Batch size for data loading', default: '64'}
+  - {name: validation_split, type: String, description: 'Fraction of data for validation', default: '0.2'}
+  - {name: normalize, type: String, description: 'Whether to normalize data to [-1, 1]', default: 'true'}
 outputs:
   - {name: train_data, type: Dataset}
   - {name: val_data, type: Dataset}
@@ -36,8 +36,8 @@ implementation:
 
         parser = argparse.ArgumentParser()
         parser.add_argument('--dataset_name', type=str, required=True, help='Dataset to load')
-        parser.add_argument('--batch_size', type=int, required=True, help='Batch size for data loading')
-        parser.add_argument('--validation_split', type=float, required=True, help='Validation split fraction')
+        parser.add_argument('--batch_size', type=str, required=True, help='Batch size for data loading')
+        parser.add_argument('--validation_split', type=str, required=True, help='Validation split fraction')
         parser.add_argument('--normalize', type=str, required=True, help='Whether to normalize data')
         parser.add_argument('--train_data', type=str, required=True, help='Path to output train dataset')
         parser.add_argument('--val_data', type=str, required=True, help='Path to output validation dataset')
@@ -51,8 +51,8 @@ implementation:
 
         # Parse parameters
         dataset_name = args.dataset_name.lower()
-        batch_size = args.batch_size
-        validation_split = args.validation_split
+        batch_size = int(args.batch_size)
+        validation_split = float(args.validation_split)
         normalize = args.normalize.lower() == 'true'
         
         logger.info(f"Loading {dataset_name} dataset...")
