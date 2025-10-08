@@ -1,5 +1,5 @@
 name: Load dataset for VAE training
-description: Downloads and prepares dataset (MNIST/Fashion-MNIST/CIFAR-10) for VAE
+description: Downloads and prepares dataset (MNIST/Fashion-MNIST/CIFAR-10) for VAE training with train/validation split.
 inputs:
   - {name: dataset_name, type: String, description: 'Dataset to load (mnist, fashion_mnist, cifar10)', default: 'mnist'}
   - {name: batch_size, type: Integer, description: 'Batch size for data loading', default: '64'}
@@ -9,7 +9,7 @@ outputs:
   - {name: train_data, type: Dataset}
   - {name: val_data, type: Dataset}
   - {name: data_shape, type: String}
-  - {name: num_samples, type: Integer}
+  - {name: num_samples, type: String}
 implementation:
   container:
     image: nikhilv215/nesy-factory:v22
