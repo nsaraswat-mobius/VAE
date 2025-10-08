@@ -1,0 +1,318 @@
+name: Preprocess VAE Dataset
+description: Takes raw image data from DataLoaders, applies VAE-specific preprocessing, and outputs processed DataLoaders with metadata for all VAE types (Standard, Beta, Conditional, VQ-VAE).
+inputs:
+  - {name: train_data, type: Dataset, description: "Training data loader pickle file from data loader component"}
+  - {name: val_data, type: Dataset, description: "Validation data loader pickle file from data loader component"}
+  - {name: data_shape, type: String, description: "Data shape from data loader component (height,width,channels)"}
+  - {name: vae_type, type: String, default: "standard", description: "Type of VAE: standard, beta, conditional, vqvae"}
+  - {name: preprocessing_config, type: String, default: "{}", description: "JSON string with preprocessing configuration"}
+outputs:
+  - {name: processed_train_data, type: Dataset, description: "Processed training DataLoader"}
+  - {name: processed_val_data, type: Dataset, description: "Processed validation DataLoader"}
+  - {name: processed_data_shape, type: String, description: "Flattened input dimension for VAE"}
+  - {name: preprocessing_metadata, type: Dataset, description: "Metadata about preprocessing operations"}
+  - {name: class_mapping, type: String, description: "Class labels mapping JSON string for conditional VAE"}
+implementation:
+  container:
+    image: nikhilv215/nesy-factory:v22
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        pip install scikit-learn torch torchvision
+
+        # Create and change to a temporary working directory
+        TMP_DIR=$(mktemp -d -t vae-preprocessing-XXXXXXXXXX)
+        cd "$TMP_DIR"
+
+        # The input data from the data loader component will be available at these paths
+        # train_data and val_data are pickled DataLoader objects
+        # data_shape contains the image dimensions as "height,width,channels"
+        mkdir -p processed_data
+        mkdir -p metadata
+
+        # --- Main Python script for VAE data preprocessing ---
+        cat > vae_preprocessing.py << 'EOF'
+        import os
+        import pickle
+        import torch
+        import json
+        import numpy as np
+        from torch.utils.data import DataLoader, Dataset
+        import logging
+
+        logging.basicConfig(level=logging.INFO)
+        logger = logging.getLogger(__name__)
+
+        class ProcessedVAEDataset(Dataset):
+            def __init__(self, original_loader, vae_type, preprocessing_metadata):
+                self.data = []
+                self.labels = []
+                self.vae_type = vae_type
+                
+                logger.info(f"Processing dataset for {vae_type} VAE...")
+                logger.info(f"Original loader has {len(original_loader)} batches")
+                
+                # Extract all data from DataLoader and flatten for VAE
+                for batch_idx, (batch_data, batch_labels) in enumerate(original_loader):
+                    # Flatten images for VAE processing (batch_size, height*width*channels)
+                    flattened_data = batch_data.view(batch_data.size(0), -1)
+                    self.data.append(flattened_data)
+                    self.labels.append(batch_labels)
+                    
+                    if batch_idx % 50 == 0:
+                        logger.info(f"Processed batch {batch_idx}/{len(original_loader)}")
+                
+                # Concatenate all batches
+                self.data = torch.cat(self.data, dim=0)
+                self.labels = torch.cat(self.labels, dim=0)
+                
+                logger.info(f"Final dataset shape: {self.data.shape}, Labels shape: {self.labels.shape}")
+                
+                # Apply VAE-specific preprocessing
+                self._apply_vae_preprocessing(preprocessing_metadata)
+                
+                # Update metadata with data statistics
+                preprocessing_metadata['data_statistics'] = {
+                    'mean': float(self.data.mean()),
+                    'std': float(self.data.std()),
+                    'min': float(self.data.min()),
+                    'max': float(self.data.max()),
+                    'num_samples': len(self.data)
+                }
+                
+                if vae_type == 'conditional':
+                    unique_labels = torch.unique(self.labels)
+                    preprocessing_metadata['num_classes'] = len(unique_labels)
+                    preprocessing_metadata['class_distribution'] = {
+                        int(label): int((self.labels == label).sum()) 
+                        for label in unique_labels
+                    }
+                    logger.info(f"Found {len(unique_labels)} unique classes for conditional VAE")
+            
+            def _apply_vae_preprocessing(self, preprocessing_metadata):
+                global class_mapping
+                class_mapping = {}
+                
+                logger.info(f"Applying {self.vae_type} VAE preprocessing...")
+                logger.info(f"Data range before preprocessing: [{self.data.min():.3f}, {self.data.max():.3f}]")
+                
+                if self.vae_type == 'standard':
+                    # Standard VAE: ensure data is in [0, 1] range
+                    if self.data.min() < 0:
+                        self.data = (self.data + 1) / 2  # Convert from [-1, 1] to [0, 1]
+                        logger.info("Normalized data from [-1, 1] to [0, 1] range for Standard VAE")
+                    preprocessing_metadata['preprocessing_applied'].append('standard_vae_normalization')
+                
+                elif self.vae_type == 'beta':
+                    # Beta VAE: same normalization as standard but optimized for disentanglement
+                    if self.data.min() < 0:
+                        self.data = (self.data + 1) / 2
+                        logger.info("Normalized data from [-1, 1] to [0, 1] range for Beta VAE")
+                    preprocessing_metadata['preprocessing_applied'].append('beta_vae_normalization')
+                    preprocessing_metadata['beta_optimized'] = True
+                
+                elif self.vae_type == 'conditional':
+                    # Conditional VAE: normalize data and remap labels
+                    if self.data.min() < 0:
+                        self.data = (self.data + 1) / 2
+                        logger.info("Normalized data from [-1, 1] to [0, 1] range for Conditional VAE")
+                    
+                    # Create class mapping starting from 0
+                    unique_labels = torch.unique(self.labels)
+                    class_mapping = {int(label): idx for idx, label in enumerate(unique_labels)}
+                    
+                    # Remap labels to start from 0
+                    remapped_labels = torch.zeros_like(self.labels)
+                    for original_label, new_label in class_mapping.items():
+                        remapped_labels[self.labels == original_label] = new_label
+                    self.labels = remapped_labels
+                    
+                    logger.info(f"Remapped labels for Conditional VAE: {class_mapping}")
+                    preprocessing_metadata['preprocessing_applied'].extend([
+                        'conditional_vae_normalization',
+                        'label_remapping'
+                    ])
+                
+                elif self.vae_type == 'vqvae':
+                    # VQ-VAE: works better with data in [-1, 1] range
+                    if self.data.max() <= 1 and self.data.min() >= 0:
+                        self.data = self.data * 2 - 1  # Convert from [0, 1] to [-1, 1]
+                        logger.info("Normalized data from [0, 1] to [-1, 1] range for VQ-VAE")
+                    preprocessing_metadata['preprocessing_applied'].append('vqvae_normalization')
+                    preprocessing_metadata['quantization_ready'] = True
+                
+                else:
+                    logger.warning(f"Unknown VAE type: {self.vae_type}, applying standard preprocessing")
+                    if self.data.min() < 0:
+                        self.data = (self.data + 1) / 2
+                    preprocessing_metadata['preprocessing_applied'].append('default_normalization')
+                
+                logger.info(f"Data range after preprocessing: [{self.data.min():.3f}, {self.data.max():.3f}]")
+            
+            def __len__(self):
+                return len(self.data)
+            
+            def __getitem__(self, idx):
+                return self.data[idx], self.labels[idx]
+
+        def create_vae_metadata(original_shape, vae_type, preprocessing_config):
+            h, w, c = map(int, original_shape.split(','))
+            input_dim = h * w * c
+            
+            metadata = {
+                'original_shape': [h, w, c],
+                'flattened_input_dim': input_dim,
+                'vae_type': vae_type,
+                'preprocessing_applied': [],
+                'preprocessing_config': preprocessing_config,
+                'normalization_type': 'vae_specific',
+                'data_statistics': {},
+                'data_loader_compatible': True  # Flag indicating this came from data loader component
+            }
+            
+            # Add VAE-specific configuration
+            if vae_type == 'beta':
+                metadata['beta_value'] = preprocessing_config.get('beta_value', 4.0)
+            elif vae_type == 'conditional':
+                metadata['conditional_setup'] = True
+            elif vae_type == 'vqvae':
+                metadata['codebook_size'] = preprocessing_config.get('codebook_size', 512)
+                metadata['commitment_cost'] = preprocessing_config.get('commitment_cost', 0.25)
+            
+            return metadata
+
+        if __name__ == '__main__':
+            # Get input parameters from command line arguments (from data loader component outputs)
+            train_data_path = os.environ['TRAIN_DATA_PATH']
+            val_data_path = os.environ['VAL_DATA_PATH']
+            data_shape = os.environ['DATA_SHAPE']
+            vae_type = os.environ['VAE_TYPE'].lower()
+            preprocessing_config = json.loads(os.environ['PREPROCESSING_CONFIG'])
+            
+            logger.info("=== VAE Data Preprocessing Component ===")
+            logger.info(f"Receiving data from Data Loader Component")
+            logger.info(f"VAE Type: {vae_type}")
+            logger.info(f"Input data shape: {data_shape}")
+            logger.info(f"Preprocessing config: {preprocessing_config}")
+            
+            # Verify input files exist (from data loader component)
+            if not os.path.exists(train_data_path):
+                raise FileNotFoundError(f"Training data file not found: {train_data_path}")
+            if not os.path.exists(val_data_path):
+                raise FileNotFoundError(f"Validation data file not found: {val_data_path}")
+            
+            logger.info("Input files verified from data loader component")
+            
+            # Load the DataLoaders created by data loader component
+            logger.info("Loading training DataLoader from data loader component...")
+            with open(train_data_path, 'rb') as f:
+                train_loader = pickle.load(f)
+            
+            logger.info("Loading validation DataLoader from data loader component...")
+            with open(val_data_path, 'rb') as f:
+                val_loader = pickle.load(f)
+            
+            logger.info(f"Successfully loaded DataLoaders:")
+            logger.info(f"  - Train batches: {len(train_loader)}, batch size: {train_loader.batch_size}")
+            logger.info(f"  - Val batches: {len(val_loader)}, batch size: {val_loader.batch_size}")
+            
+            # Create preprocessing metadata
+            preprocessing_metadata = create_vae_metadata(data_shape, vae_type, preprocessing_config)
+            
+            # Global variable for class mapping
+            global class_mapping
+            class_mapping = {}
+            
+            # Create processed datasets
+            logger.info("Processing training dataset for VAE...")
+            processed_train_dataset = ProcessedVAEDataset(train_loader, vae_type, preprocessing_metadata)
+            
+            logger.info("Processing validation dataset for VAE...")
+            processed_val_dataset = ProcessedVAEDataset(val_loader, vae_type, preprocessing_metadata)
+            
+            # Create new DataLoaders with processed data, maintaining original batch size
+            original_batch_size = train_loader.batch_size
+            processed_train_loader = DataLoader(
+                processed_train_dataset, 
+                batch_size=original_batch_size, 
+                shuffle=True,
+                num_workers=0  # Avoid multiprocessing issues in containers
+            )
+            processed_val_loader = DataLoader(
+                processed_val_dataset, 
+                batch_size=original_batch_size, 
+                shuffle=False,
+                num_workers=0
+            )
+            
+            logger.info(f"Created processed DataLoaders with batch size: {original_batch_size}")
+            
+            # Save processed DataLoaders
+            processed_train_path = os.path.join('processed_data', f'processed_train_{vae_type}.pkl')
+            processed_val_path = os.path.join('processed_data', f'processed_val_{vae_type}.pkl')
+            
+            with open(processed_train_path, 'wb') as f:
+                pickle.dump(processed_train_loader, f)
+            logger.info(f"Saved processed training data to: {processed_train_path}")
+            
+            with open(processed_val_path, 'wb') as f:
+                pickle.dump(processed_val_loader, f)
+            logger.info(f"Saved processed validation data to: {processed_val_path}")
+            
+            # Save preprocessing metadata
+            metadata_path = os.path.join('metadata', f'preprocessing_metadata_{vae_type}.pkl')
+            with open(metadata_path, 'wb') as f:
+                pickle.dump(preprocessing_metadata, f)
+            logger.info(f"Saved preprocessing metadata to: {metadata_path}")
+            
+            # Save processed data shape (flattened dimension)
+            processed_shape = str(preprocessing_metadata['flattened_input_dim'])
+            with open('processed_shape.txt', 'w') as f:
+                f.write(processed_shape)
+            logger.info(f"Flattened input dimension for VAE: {processed_shape}")
+            
+            # Save class mapping as JSON
+            class_mapping_json = json.dumps(class_mapping, indent=2)
+            with open('class_mapping.json', 'w') as f:
+                f.write(class_mapping_json)
+            logger.info(f"Class mapping saved: {class_mapping}")
+            
+            # Final summary
+            logger.info("=== VAE Data Preprocessing Completed Successfully! ===")
+            logger.info(f"VAE Type: {vae_type}")
+            logger.info(f"Training samples: {len(processed_train_dataset)}")
+            logger.info(f"Validation samples: {len(processed_val_dataset)}")
+            logger.info(f"Preprocessing operations: {preprocessing_metadata['preprocessing_applied']}")
+            if vae_type == 'conditional':
+                logger.info(f"Number of classes: {preprocessing_metadata.get('num_classes', 'N/A')}")
+            logger.info("Ready for VAE model building and training!")
+        EOF
+
+        # Set environment variables for the Python script
+        TRAIN_DATA_PATH="$0" \
+        VAL_DATA_PATH="$1" \
+        DATA_SHAPE="$2" \
+        VAE_TYPE="$3" \
+        PREPROCESSING_CONFIG="$4" \
+        python vae_preprocessing.py
+
+        # Copy outputs to the expected locations
+        cp processed_data/processed_train_*.pkl "$5"
+        cp processed_data/processed_val_*.pkl "$6"
+        cp processed_shape.txt "$7"
+        cp metadata/preprocessing_metadata_*.pkl "$8"
+        cp class_mapping.json "$9"
+
+    args:
+      - {inputPath: train_data}
+      - {inputPath: val_data}
+      - {inputValue: data_shape}
+      - {inputValue: vae_type}
+      - {inputValue: preprocessing_config}
+      - {outputPath: processed_train_data}
+      - {outputPath: processed_val_data}
+      - {outputPath: processed_data_shape}
+      - {outputPath: preprocessing_metadata}
+      - {outputPath: class_mapping}
