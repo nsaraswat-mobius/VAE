@@ -249,13 +249,20 @@ implementation:
         print(f"  config_str: '{args.config_str}'")
         print(f"  model_name: '{args.model_name}'")
 
+        # Clean up model name (remove extra quotes)
+        model_name = args.model_name.strip().strip('"').strip("'")
+        print(f"Cleaned model_name: '{model_name}'")
+
         try:
             # Parse config_str with error handling
-            if not args.config_str or args.config_str.strip() == '':
+            config_str_clean = args.config_str.strip().strip("'").strip('"')
+            print(f"Cleaned config_str: '{config_str_clean}'")
+            
+            if not config_str_clean or config_str_clean.strip() == '':
                 print("Warning: config_str is empty, using default config")
                 config = {'input_dim': 784, 'hidden_dim': 512, 'latent_dim': 128}
             else:
-                config = json.loads(args.config_str)
+                config = json.loads(config_str_clean)
                 print(f"Parsed config: {config}")
         except json.JSONDecodeError as e:
             print(f"Error parsing config_str: {e}")
@@ -265,11 +272,14 @@ implementation:
 
         try:
             # Parse weight_in with error handling
-            if not args.weight_in or args.weight_in.strip() == '':
+            weight_in_clean = args.weight_in.strip().strip("'").strip('"')
+            print(f"Cleaned weight_in: '{weight_in_clean}'")
+            
+            if not weight_in_clean or weight_in_clean.strip() == '':
                 print("Warning: weight_in is empty, using default weights")
                 weight = {}
             else:
-                weight = json.loads(args.weight_in)
+                weight = json.loads(weight_in_clean)
                 print(f"Parsed weight: {weight}")
         except json.JSONDecodeError as e:
             print(f"Error parsing weight_in: {e}")
@@ -280,10 +290,10 @@ implementation:
         # Merge weight into config
         for key, value in weight.items():
             config[key] = value
-        config['model_name'] = args.model_name
+        config['model_name'] = model_name
         
         try:
-            model = create_vae_model(args.model_name, config)
+            model = create_vae_model(model_name, config)
             print("VAE Model created successfully.")
 
             model_info = model.get_model_info()
@@ -292,9 +302,9 @@ implementation:
             # Combine config and model_info
             combined_info = {**model_info, **config}
 
-            os.makedirs(os.path.dirname(args.model_out), exist_ok=True)
-            os.makedirs(os.path.dirname(args.config_updated), exist_ok=True)
-            os.makedirs(os.path.dirname(args.model_info_out), exist_ok=True)
+            os.makedirs(os.path.dirname(args.model_out) or '.', exist_ok=True)
+            os.makedirs(os.path.dirname(args.config_updated) or '.', exist_ok=True)
+            os.makedirs(os.path.dirname(args.model_info_out) or '.', exist_ok=True)
 
             torch.save(model.state_dict(), args.model_out)
 
@@ -314,16 +324,19 @@ implementation:
             traceback.print_exc()
             
             # Create minimal outputs to prevent Kubeflow errors
-            os.makedirs(os.path.dirname(args.model_out), exist_ok=True)
-            os.makedirs(os.path.dirname(args.config_updated), exist_ok=True)
-            os.makedirs(os.path.dirname(args.model_info_out), exist_ok=True)
+            os.makedirs(os.path.dirname(args.model_out) or '.', exist_ok=True)
+            os.makedirs(os.path.dirname(args.config_updated) or '.', exist_ok=True)
+            os.makedirs(os.path.dirname(args.model_info_out) or '.', exist_ok=True)
             
             # Save error info
-            error_info = {"error": str(e), "config": config}
+            error_info = {"error": str(e), "config": config, "model_name": model_name}
             with open(args.config_updated, 'w') as f:
                 json.dump(error_info, f, indent=2)
             with open(args.model_info_out, 'w') as f:
                 json.dump(error_info, f, indent=2)
+            
+            # Create empty model file to prevent Kubeflow errors
+            torch.save({}, args.model_out)
                 
             raise
 
