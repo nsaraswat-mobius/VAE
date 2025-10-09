@@ -33,6 +33,44 @@ implementation:
         from torch.utils.data import DataLoader, Dataset
         import torchvision.transforms as transforms
         
+        class ProcessedVAEDataset(Dataset):
+            def __init__(self, data_loader, vae_type='standard', transform=None):
+                self.data_loader = data_loader
+                self.vae_type = vae_type
+                self.transform = transform
+                self.class_mapping = {}
+                
+                all_data = []
+                all_labels = []
+                for batch_data, batch_labels in data_loader:
+                    all_data.append(batch_data)
+                    all_labels.append(batch_labels)
+                
+                self.data = torch.cat(all_data, dim=0)
+                self.labels = torch.cat(all_labels, dim=0)
+                
+                if len(self.data.shape) > 2:
+                    self.data = self.data.view(self.data.shape[0], -1)
+                
+                if self.data.max() > 1.0:
+                    self.data = self.data / 255.0
+                
+                unique_labels = torch.unique(self.labels)
+                for i, label in enumerate(unique_labels):
+                    self.class_mapping[label.item()] = i
+            
+            def __len__(self):
+                return len(self.data)
+            
+            def __getitem__(self, idx):
+                sample = self.data[idx]
+                label = self.labels[idx]
+                
+                if self.transform:
+                    sample = self.transform(sample)
+                
+                return sample, label
+        
         class DataWrapper:
           def __init__(self, data_dict):
               self.__dict__.update(data_dict)
@@ -69,7 +107,7 @@ implementation:
             traceback.print_exc()
             exit(1)
             
-        print("Loading config")
+        print("Loading config...")
         print("config file is {args.config}")
         try: 
             config = json.loads(args.config)
@@ -78,7 +116,7 @@ implementation:
                 config = json.load(f)
         print(f"the configs are : {config}")
         
-        print("Loading model")
+        print("Loading model...")
         vae_type = config.get('vae_type', 'standard_vae')
         model = create_vae_model(vae_type, config)
         model.load_state_dict(torch.load(args.model, map_location=torch.device('cpu')))
