@@ -1,0 +1,474 @@
+name: VAE Continual Tasks Generator
+description: Loads preprocessed VAE dataset and splits it into continual learning tasks
+inputs:
+  - name: data_pickle
+    type: Dataset
+    description: "Pickle file containing VAE processed dataset (train/val data loaders)."
+  - name: splitting_strategy
+    type: String
+    description: "Strategy for splitting data: temporal_split, class_incremental, feature_drift, data_corruption"
+  - name: num_tasks
+    type: Integer
+    description: "Number of continual learning tasks to create"
+  - name: config
+    type: String
+    description: "VAE and continual learning configuration"
+    
+outputs:
+  - name: tasks_pickle
+    type: Dataset
+    description: "Pickle file containing list of continual learning tasks for VAE"
+implementation:
+  container:
+    image: nikhilv215/nesy-factory:v22
+    command:
+      - sh
+      - -c
+      - |
+        exec "$0" "$@"
+      - python3
+      - -u
+      - -c
+      - |
+        import argparse, os, pickle
+        import numpy as np
+        import torch
+        import json
+        from typing import Dict, List, Tuple, Any
+        from torch.utils.data import DataLoader, Dataset, Subset
+        import random
+        
+        class ProcessedVAEDataset(Dataset):
+            def __init__(self, original_loader, vae_type):
+                data_list = []
+                label_list = []
+                for batch_data, batch_labels in original_loader:
+                    flat_data = batch_data.view(batch_data.size(0), -1)
+                    data_list.append(flat_data)
+                    label_list.append(batch_labels)
+                
+                self.data = torch.cat(data_list, dim=0)
+                self.labels = torch.cat(label_list, dim=0)
+                self.vae_type = vae_type
+                self.class_mapping = {}
+                
+                self.apply_preprocessing()
+            
+            def apply_preprocessing(self):
+                if self.vae_type == 'standard' or self.vae_type == 'beta':
+                    if self.data.min() < 0:
+                        self.data = (self.data + 1) / 2
+                elif self.vae_type == 'conditional':
+                    if self.data.min() < 0:
+                        self.data = (self.data + 1) / 2
+                    unique_labels = torch.unique(self.labels)
+                    self.class_mapping = {int(label): idx for idx, label in enumerate(unique_labels)}
+                    remapped = torch.zeros_like(self.labels)
+                    for orig, new in self.class_mapping.items():
+                        remapped[self.labels == orig] = new
+                    self.labels = remapped
+                elif self.vae_type == 'vqvae':
+                    if self.data.max() <= 1 and self.data.min() >= 0:
+                        self.data = self.data * 2 - 1
+            
+            def __len__(self):
+                return len(self.data)
+            
+            def __getitem__(self, idx):
+                return self.data[idx], self.labels[idx]
+
+        class DataWrapper:
+            def __init__(self, data_dict):
+                self.__dict__.update(data_dict)
+
+        class VAEContinualDataSplitter:
+            def __init__(self, train_loader, val_loader, config, strategy='temporal_split'):
+                self.train_loader = train_loader
+                self.val_loader = val_loader
+                self.config = config
+                self.strategy = strategy
+                self.vae_type = config.get('vae_type', 'standard_vae')
+                
+                # Convert loaders to datasets if needed
+                if hasattr(train_loader, 'dataset'):
+                    self.train_dataset = train_loader.dataset
+                else:
+                    # Create dataset from loader
+                    self.train_dataset = ProcessedVAEDataset(train_loader, self.vae_type)
+                
+                if hasattr(val_loader, 'dataset'):
+                    self.val_dataset = val_loader.dataset
+                else:
+                    self.val_dataset = ProcessedVAEDataset(val_loader, self.vae_type)
+                
+            def create_continual_tasks(self, num_tasks: int = 3) -> List[Dict]:
+                if self.strategy == 'temporal_split':
+                    return self._temporal_split(num_tasks)
+                elif self.strategy == 'class_incremental':
+                    return self._class_incremental_split(num_tasks)
+                elif self.strategy == 'feature_drift':
+                    return self._feature_drift_split(num_tasks)
+                elif self.strategy == 'data_corruption':
+                    return self._data_corruption_split(num_tasks)
+                else:
+                    raise ValueError(f"Unknown strategy: {self.strategy}")
+            
+            def _temporal_split(self, num_tasks: int) -> List[Dict]:
+                """Split data temporally - each task gets a sequential portion of the data"""
+                tasks = []
+                
+                train_size = len(self.train_dataset)
+                val_size = len(self.val_dataset)
+                
+                # Split datasets into tasks
+                train_splits = np.array_split(range(train_size), num_tasks)
+                val_splits = np.array_split(range(val_size), num_tasks)
+                
+                for i in range(num_tasks):
+                    # Create subset datasets
+                    train_subset = Subset(self.train_dataset, train_splits[i])
+                    val_subset = Subset(self.val_dataset, val_splits[i])
+                    
+                    # Create data loaders
+                    batch_size = self.config.get('batch_size', 32)
+                    train_loader = DataLoader(train_subset, batch_size=batch_size, shuffle=True)
+                    val_loader = DataLoader(val_subset, batch_size=batch_size, shuffle=False)
+                    
+                    task_data = {
+                        'task_id': i,
+                        'train_loader': train_loader,
+                        'val_loader': val_loader,
+                        'train_dataset': train_subset,
+                        'val_dataset': val_subset,
+                        'vae_type': self.vae_type,
+                        'description': f'Temporal Period {i+1}/{num_tasks}',
+                        'task_info': {
+                            'strategy': 'temporal_split',
+                            'train_samples': len(train_splits[i]),
+                            'val_samples': len(val_splits[i]),
+                            'time_period': i
+                        }
+                    }
+                    
+                    tasks.append(task_data)
+                
+                return tasks
+            
+            def _class_incremental_split(self, num_tasks: int) -> List[Dict]:
+                """Split data by classes - each task introduces new classes"""
+                tasks = []
+                
+                # Get unique classes from training data
+                train_labels = []
+                for _, labels in self.train_loader:
+                    train_labels.extend(labels.tolist())
+                unique_classes = sorted(list(set(train_labels)))
+                
+                if len(unique_classes) < num_tasks:
+                    print(f"Warning: Only {len(unique_classes)} classes available, but {num_tasks} tasks requested")
+                    num_tasks = len(unique_classes)
+                
+                # Distribute classes across tasks
+                classes_per_task = len(unique_classes) // num_tasks
+                remaining_classes = len(unique_classes) % num_tasks
+                
+                for i in range(num_tasks):
+                    # Determine classes for this task
+                    start_class = i * classes_per_task
+                    end_class = (i + 1) * classes_per_task
+                    if i < remaining_classes:
+                        end_class += 1
+                    
+                    task_classes = unique_classes[start_class:end_class]
+                    
+                    # Filter datasets by classes
+                    train_indices = []
+                    val_indices = []
+                    
+                    # Get indices for training data
+                    for idx, (_, label) in enumerate(self.train_dataset):
+                        if label.item() in task_classes:
+                            train_indices.append(idx)
+                    
+                    # Get indices for validation data
+                    for idx, (_, label) in enumerate(self.val_dataset):
+                        if label.item() in task_classes:
+                            val_indices.append(idx)
+                    
+                    # Create subset datasets
+                    train_subset = Subset(self.train_dataset, train_indices)
+                    val_subset = Subset(self.val_dataset, val_indices)
+                    
+                    # Create data loaders
+                    batch_size = self.config.get('batch_size', 32)
+                    train_loader = DataLoader(train_subset, batch_size=batch_size, shuffle=True)
+                    val_loader = DataLoader(val_subset, batch_size=batch_size, shuffle=False)
+                    
+                    task_data = {
+                        'task_id': i,
+                        'train_loader': train_loader,
+                        'val_loader': val_loader,
+                        'train_dataset': train_subset,
+                        'val_dataset': val_subset,
+                        'vae_type': self.vae_type,
+                        'description': f'Classes {task_classes} ({len(task_classes)} classes)',
+                        'task_info': {
+                            'strategy': 'class_incremental',
+                            'classes': task_classes,
+                            'train_samples': len(train_indices),
+                            'val_samples': len(val_indices)
+                        }
+                    }
+                    
+                    tasks.append(task_data)
+                
+                return tasks
+            
+            def _feature_drift_split(self, num_tasks: int) -> List[Dict]:
+                """Create tasks with progressive feature drift"""
+                tasks = []
+                
+                train_size = len(self.train_dataset)
+                val_size = len(self.val_dataset)
+                
+                # Split datasets into overlapping windows
+                overlap_ratio = 0.3  # 30% overlap between consecutive tasks
+                
+                for i in range(num_tasks):
+                    # Calculate drift intensity
+                    drift_factor = i / (num_tasks - 1) if num_tasks > 1 else 0
+                    
+                    # Calculate window indices with overlap
+                    window_size = train_size // num_tasks
+                    start_idx = max(0, int(i * window_size * (1 - overlap_ratio)))
+                    end_idx = min(train_size, start_idx + int(window_size * (1 + overlap_ratio)))
+                    
+                    train_indices = list(range(start_idx, end_idx))
+                    
+                    # Similar for validation
+                    val_window_size = val_size // num_tasks
+                    val_start_idx = max(0, int(i * val_window_size * (1 - overlap_ratio)))
+                    val_end_idx = min(val_size, val_start_idx + int(val_window_size * (1 + overlap_ratio)))
+                    val_indices = list(range(val_start_idx, val_end_idx))
+                    
+                    # Create modified dataset with drift
+                    train_subset = DriftedDataset(self.train_dataset, train_indices, drift_factor)
+                    val_subset = DriftedDataset(self.val_dataset, val_indices, drift_factor)
+                    
+                    # Create data loaders
+                    batch_size = self.config.get('batch_size', 32)
+                    train_loader = DataLoader(train_subset, batch_size=batch_size, shuffle=True)
+                    val_loader = DataLoader(val_subset, batch_size=batch_size, shuffle=False)
+                    
+                    task_data = {
+                        'task_id': i,
+                        'train_loader': train_loader,
+                        'val_loader': val_loader,
+                        'train_dataset': train_subset,
+                        'val_dataset': val_subset,
+                        'vae_type': self.vae_type,
+                        'description': f'Feature Drift {i+1} (Intensity: {drift_factor:.2f})',
+                        'task_info': {
+                            'strategy': 'feature_drift',
+                            'drift_factor': drift_factor,
+                            'train_samples': len(train_indices),
+                            'val_samples': len(val_indices)
+                        }
+                    }
+                    
+                    tasks.append(task_data)
+                
+                return tasks
+            
+            def _data_corruption_split(self, num_tasks: int) -> List[Dict]:
+                """Create tasks with increasing data corruption levels"""
+                tasks = []
+                
+                corruption_levels = np.linspace(0.0, 0.5, num_tasks)  # 0% to 50% corruption
+                
+                train_size = len(self.train_dataset)
+                val_size = len(self.val_dataset)
+                
+                # Split data equally across tasks
+                train_splits = np.array_split(range(train_size), num_tasks)
+                val_splits = np.array_split(range(val_size), num_tasks)
+                
+                for i in range(num_tasks):
+                    corruption_level = corruption_levels[i]
+                    
+                    # Create corrupted datasets
+                    train_subset = CorruptedDataset(self.train_dataset, train_splits[i], corruption_level)
+                    val_subset = CorruptedDataset(self.val_dataset, val_splits[i], corruption_level)
+                    
+                    # Create data loaders
+                    batch_size = self.config.get('batch_size', 32)
+                    train_loader = DataLoader(train_subset, batch_size=batch_size, shuffle=True)
+                    val_loader = DataLoader(val_subset, batch_size=batch_size, shuffle=False)
+                    
+                    task_data = {
+                        'task_id': i,
+                        'train_loader': train_loader,
+                        'val_loader': val_loader,
+                        'train_dataset': train_subset,
+                        'val_dataset': val_subset,
+                        'vae_type': self.vae_type,
+                        'description': f'Corruption Level {corruption_level:.1%}',
+                        'task_info': {
+                            'strategy': 'data_corruption',
+                            'corruption_level': corruption_level,
+                            'train_samples': len(train_splits[i]),
+                            'val_samples': len(val_splits[i])
+                        }
+                    }
+                    
+                    tasks.append(task_data)
+                
+                return tasks
+
+        class DriftedDataset(Dataset):
+            """Dataset wrapper that applies feature drift"""
+            def __init__(self, base_dataset, indices, drift_factor):
+                self.base_dataset = base_dataset
+                self.indices = indices
+                self.drift_factor = drift_factor
+                
+            def __len__(self):
+                return len(self.indices)
+                
+            def __getitem__(self, idx):
+                real_idx = self.indices[idx]
+                data, label = self.base_dataset[real_idx]
+                
+                # Apply drift transformation
+                if self.drift_factor > 0:
+                    # Add systematic drift (rotation + scaling)
+                    drift_noise = torch.randn_like(data) * 0.05 * self.drift_factor
+                    scaling_factor = 1.0 + 0.1 * self.drift_factor
+                    data = data * scaling_factor + drift_noise
+                    
+                    # Clip to valid range
+                    data = torch.clamp(data, 0, 1)
+                
+                return data, label
+
+        class CorruptedDataset(Dataset):
+            """Dataset wrapper that applies data corruption"""
+            def __init__(self, base_dataset, indices, corruption_level):
+                self.base_dataset = base_dataset
+                self.indices = indices
+                self.corruption_level = corruption_level
+                
+            def __len__(self):
+                return len(self.indices)
+                
+            def __getitem__(self, idx):
+                real_idx = self.indices[idx]
+                data, label = self.base_dataset[real_idx]
+                
+                # Apply corruption
+                if self.corruption_level > 0:
+                    # Random corruption mask
+                    corruption_mask = torch.rand_like(data) < self.corruption_level
+                    
+                    # Apply different types of corruption
+                    corruption_type = random.choice(['noise', 'dropout', 'flip'])
+                    
+                    if corruption_type == 'noise':
+                        # Gaussian noise corruption
+                        noise = torch.randn_like(data) * 0.3
+                        data = torch.where(corruption_mask, data + noise, data)
+                    elif corruption_type == 'dropout':
+                        # Set corrupted pixels to zero
+                        data = torch.where(corruption_mask, torch.zeros_like(data), data)
+                    elif corruption_type == 'flip':
+                        # Flip corrupted pixels
+                        data = torch.where(corruption_mask, 1.0 - data, data)
+                    
+                    # Clip to valid range
+                    data = torch.clamp(data, 0, 1)
+                
+                return data, label
+
+        # Parse arguments
+        parser = argparse.ArgumentParser()
+        parser.add_argument('--data_pickle', type=str, required=True, help='Input VAE data pickle path')
+        parser.add_argument('--splitting_strategy', type=str, default='temporal_split', help='Split strategy')
+        parser.add_argument('--num_tasks', type=int, default=3, help='Number of tasks to create')
+        parser.add_argument('--tasks_pickle', type=str, required=True, help='Output pickle for tasks')
+        parser.add_argument('--config', type=str, required=True, help='VAE and continual learning config')
+        args = parser.parse_args()
+
+        print(f"Loading VAE data from: {args.data_pickle}")
+        print(f"Splitting strategy: {args.splitting_strategy}")
+        print(f"Number of tasks: {args.num_tasks}")
+
+        # Load VAE data (should contain train_loader and val_loader)
+        with open(args.data_pickle, "rb") as f:
+            vae_data = pickle.load(f)
+
+        print(f"Loaded VAE data type: {type(vae_data)}")
+        
+        # Handle different data formats
+        if hasattr(vae_data, 'train_loader') and hasattr(vae_data, 'val_loader'):
+            train_loader = vae_data.train_loader
+            val_loader = vae_data.val_loader
+        elif isinstance(vae_data, dict):
+            train_loader = vae_data.get('train_loader')
+            val_loader = vae_data.get('val_loader')
+        elif isinstance(vae_data, tuple) and len(vae_data) == 2:
+            train_loader, val_loader = vae_data
+        else:
+            raise ValueError(f"Unexpected data format: {type(vae_data)}")
+
+        print(f"Train loader type: {type(train_loader)}")
+        print(f"Val loader type: {type(val_loader)}")
+
+        # Parse config
+        try:
+            config = json.loads(args.config)
+        except:
+            config_str = args.config.strip()
+            if config_str.startswith("'") and config_str.endswith("'"):
+                config_str = config_str[1:-1]
+            config_str = config_str.replace("'", '"')
+            config = json.loads(config_str)
+        
+        print(f"VAE continual learning config: {config}")
+
+        # Create continual learning tasks
+        splitter = VAEContinualDataSplitter(
+            train_loader=train_loader,
+            val_loader=val_loader,
+            config=config,
+            strategy=args.splitting_strategy
+        )
+        
+        tasks = splitter.create_continual_tasks(num_tasks=int(args.num_tasks))
+
+        print(f"Created {len(tasks)} continual learning tasks")
+        for i, task in enumerate(tasks):
+            print(f"  Task {i}: {task['description']}")
+            print(f"    Train samples: {task['task_info'].get('train_samples', 'N/A')}")
+            print(f"    Val samples: {task['task_info'].get('val_samples', 'N/A')}")
+
+        # Save tasks list as pickle
+        output_dir = os.path.dirname(args.tasks_pickle)
+        if output_dir and not os.path.exists(output_dir):
+            os.makedirs(output_dir, exist_ok=True)
+            
+        with open(args.tasks_pickle, "wb") as f:
+            pickle.dump(tasks, f)
+
+        print(f"Saved {len(tasks)} VAE continual learning tasks to {args.tasks_pickle}")
+        
+    args:
+      - --data_pickle
+      - {inputPath: data_pickle}
+      - --splitting_strategy
+      - {inputValue: splitting_strategy}
+      - --num_tasks
+      - {inputValue: num_tasks}
+      - --config
+      - {inputValue: config}
+      - --tasks_pickle
+      - {outputPath: tasks_pickle}
