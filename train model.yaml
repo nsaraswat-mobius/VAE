@@ -34,42 +34,43 @@ implementation:
         import torchvision.transforms as transforms
         
         class ProcessedVAEDataset(Dataset):
-            def __init__(self, data_loader, vae_type='standard', transform=None):
-                self.data_loader = data_loader
+            def __init__(self, original_loader, vae_type):
+                data_list = []
+                label_list = []
+                for batch_data, batch_labels in original_loader:
+                    flat_data = batch_data.view(batch_data.size(0), -1)
+                    data_list.append(flat_data)
+                    label_list.append(batch_labels)
+                
+                self.data = torch.cat(data_list, dim=0)
+                self.labels = torch.cat(label_list, dim=0)
                 self.vae_type = vae_type
-                self.transform = transform
                 self.class_mapping = {}
                 
-                all_data = []
-                all_labels = []
-                for batch_data, batch_labels in data_loader:
-                    all_data.append(batch_data)
-                    all_labels.append(batch_labels)
-                
-                self.data = torch.cat(all_data, dim=0)
-                self.labels = torch.cat(all_labels, dim=0)
-                
-                if len(self.data.shape) > 2:
-                    self.data = self.data.view(self.data.shape[0], -1)
-                
-                if self.data.max() > 1.0:
-                    self.data = self.data / 255.0
-                
-                unique_labels = torch.unique(self.labels)
-                for i, label in enumerate(unique_labels):
-                    self.class_mapping[label.item()] = i
+                self.apply_preprocessing()
+            
+            def apply_preprocessing(self):
+                if self.vae_type == 'standard' or self.vae_type == 'beta':
+                    if self.data.min() < 0:
+                        self.data = (self.data + 1) / 2
+                elif self.vae_type == 'conditional':
+                    if self.data.min() < 0:
+                        self.data = (self.data + 1) / 2
+                    unique_labels = torch.unique(self.labels)
+                    self.class_mapping = {int(label): idx for idx, label in enumerate(unique_labels)}
+                    remapped = torch.zeros_like(self.labels)
+                    for orig, new in self.class_mapping.items():
+                        remapped[self.labels == orig] = new
+                    self.labels = remapped
+                elif self.vae_type == 'vqvae':
+                    if self.data.max() <= 1 and self.data.min() >= 0:
+                        self.data = self.data * 2 - 1
             
             def __len__(self):
                 return len(self.data)
             
             def __getitem__(self, idx):
-                sample = self.data[idx]
-                label = self.labels[idx]
-                
-                if self.transform:
-                    sample = self.transform(sample)
-                
-                return sample, label
+                return self.data[idx], self.labels[idx]
         
         class DataWrapper:
           def __init__(self, data_dict):
@@ -107,7 +108,7 @@ implementation:
             traceback.print_exc()
             exit(1)
             
-        print("Loading config")
+        print("Loading config...")
         print("config file is {args.config}")
         try: 
             config = json.loads(args.config)
@@ -116,7 +117,7 @@ implementation:
                 config = json.load(f)
         print(f"the configs are : {config}")
         
-        print("Loading model")
+        print("Loading model...")
         vae_type = config.get('vae_type', 'standard_vae')
         
         # Create the same model architecture as in model builder
