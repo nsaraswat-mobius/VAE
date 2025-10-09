@@ -1,0 +1,588 @@
+name: VAE RLAF Loop
+description: Triggers the DQN RLAF pipeline in a loop to optimize VAE model hyperparameters using continual learning, controlled by a pierce_or_not flag.
+inputs:
+  - {name: trained_model, type: Model}
+  - {name: init_metrics, type: Metrics}
+  - {name: data_path, type: Dataset}
+  - {name: config, type: String}
+  - {name: domain, type: String}
+  - {name: schema_id, type: String}
+  - {name: model_id, type: String}
+  - {name: dqn_pipeline_id, type: String}
+  - {name: pipeline_domain, type: String}
+  - {name: dqn_experiment_id, type: String}
+  - {name: access_token, type: string}
+  - {name: tasks, type: Dataset}
+outputs:
+  - {name: rlaf_output, type: Dataset}
+  - {name: retrained_model, type: Model}
+implementation:
+  container:
+    image: nikhilv215/nesy-factory:v22
+    command:
+      - sh
+      - -c
+      - |
+        exec "$0" "$@"
+      - python3
+      - -u
+      - -c
+      - |
+        import torch
+        import torch.nn as nn
+        import torch.optim as optim
+        import torch.nn.functional as F
+        import os
+        import json
+        import argparse
+        import requests
+        from requests.adapters import HTTPAdapter
+        from urllib3.util.retry import Retry
+        import time
+        import pickle
+        from typing import List, Dict, Any
+        import numpy as np
+        from torch.utils.data import DataLoader, Dataset, Subset
+        import random
+        import copy
+
+        class ProcessedVAEDataset(Dataset):
+            def __init__(self, data, labels, vae_type):
+                self.data = data
+                self.labels = labels
+                self.vae_type = vae_type
+                self.class_mapping = {}
+
+            def __len__(self):
+                return len(self.data)
+
+            def __getitem__(self, idx):
+                return self.data[idx], self.labels[idx]
+
+        class DataWrapper:
+            def __init__(self, data_dict):
+                self.__dict__.update(data_dict)
+
+        class ContinualVAETrainer:
+            def __init__(self, config):
+                self.config = config
+                self.results = {}
+                self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+            def train_continual_vae(self, tasks, model, strategies=['naive', 'replay', 'regularized']):
+                results = {}
+                
+                for strategy_name in strategies:
+                    print(f'Training VAE with {strategy_name.upper()} strategy')
+                    strategy_results = self._train_single_strategy(tasks, strategy_name, model)
+                    results[strategy_name] = strategy_results
+                    
+                return results
+
+            def _train_single_strategy(self, tasks, strategy_name, model):
+                # Create fresh model copy for each strategy
+                model_copy = copy.deepcopy(model).to(self.device)
+                optimizer = optim.Adam(model_copy.parameters(), lr=self.config.get('learning_rate', 0.001))
+                
+                # Track metrics across tasks
+                task_metrics = []
+                all_task_performance = []
+                previous_task_data = []
+                
+                print(f"Learning {len(tasks)} sequential VAE tasks")
+                
+                for task_idx, task_data in enumerate(tasks):
+                    print(f"Learning Task {task_idx + 1}: {task_data['description']}")
+                    
+                    # Get data loaders for current task
+                    train_loader = task_data['train_loader']
+                    val_loader = task_data['val_loader']
+                    
+                    # Apply strategy-specific training
+                    if strategy_name == 'naive':
+                        training_loader = train_loader
+                    elif strategy_name == 'replay':
+                        if previous_task_data:
+                            training_loader = self._create_replay_loader(train_loader, previous_task_data)
+                        else:
+                            training_loader = train_loader
+                    elif strategy_name == 'regularized':
+                        training_loader = train_loader
+                        if task_idx > 0:
+                            self._store_important_params(model_copy)
+                    else:
+                        training_loader = train_loader
+                    
+                    # Train VAE on current task
+                    print(f"  Training VAE on Task {task_idx + 1}")
+                    for epoch in range(self.config.get('epochs', 50)):
+                        if strategy_name == 'regularized' and task_idx > 0:
+                            loss = self._train_epoch_with_regularization(model_copy, optimizer, training_loader)
+                        else:
+                            loss = self._train_epoch(model_copy, optimizer, training_loader)
+                        
+                        if epoch % 10 == 0:
+                            print(f"    Epoch {epoch:03d} | Loss: {loss:.4f}")
+                    
+                    # Store task data for potential replay
+                    if strategy_name == 'replay':
+                        previous_task_data.append(task_data)
+                        if len(previous_task_data) > 3:
+                            previous_task_data = previous_task_data[-3:]
+                    
+                    # Evaluate on current task
+                    current_task_metrics = self._evaluate_vae(model_copy, val_loader)
+                    task_metrics.append(current_task_metrics)
+                    
+                    print(f"    Task {task_idx + 1} VAE Loss: {current_task_metrics['vae_loss']:.4f}")
+                    
+                    # Evaluate on all previous tasks
+                    task_performance = []
+                    for eval_task_idx in range(task_idx + 1):
+                        eval_val_loader = tasks[eval_task_idx]['val_loader']
+                        eval_metrics = self._evaluate_vae(model_copy, eval_val_loader)
+                        task_performance.append({
+                            'task_id': eval_task_idx,
+                            'vae_loss': eval_metrics['vae_loss'],
+                            'reconstruction_loss': eval_metrics['reconstruction_loss'],
+                            'kl_loss': eval_metrics['kl_loss'],
+                            'description': tasks[eval_task_idx]['description']
+                        })
+                    
+                    all_task_performance.append(task_performance)
+                    
+                    if task_idx > 0:
+                        print(f"Performance on previous tasks:")
+                        for prev_task in task_performance[:-1]:
+                            print(f"    Task {prev_task['task_id'] + 1}: Loss {prev_task['vae_loss']:.4f}")
+                
+                # Calculate continual learning metrics
+                cl_metrics = self._calculate_continual_metrics(all_task_performance)
+                
+                # Calculate average metrics
+                final_eval_metrics = []
+                for i in range(len(tasks)):
+                    metrics = self._evaluate_vae(model_copy, tasks[i]['val_loader'])
+                    final_eval_metrics.append(metrics)
+                
+                avg_metrics = {}
+                if final_eval_metrics:
+                    for key in final_eval_metrics[0]:
+                        avg_metrics[key] = np.mean([m[key] for m in final_eval_metrics])
+
+                results = {
+                    'strategy': strategy_name,
+                    'task_metrics': task_metrics,
+                    'all_task_performance': all_task_performance,
+                    'continual_metrics': cl_metrics,
+                    'final_model': model_copy,
+                    'average_eval_metrics': avg_metrics
+                }
+                
+                return results
+
+            def _train_epoch(self, model, optimizer, train_loader):
+                model.train()
+                total_loss = 0
+                num_batches = 0
+                
+                for batch_data, batch_labels in train_loader:
+                    batch_data = batch_data.to(self.device)
+                    
+                    optimizer.zero_grad()
+                    
+                    # VAE forward pass
+                    if hasattr(model, 'vae_type') and model.vae_type == 'conditional_vae':
+                        batch_labels = batch_labels.to(self.device)
+                        recon_batch, mu, logvar = model(batch_data, batch_labels)
+                    elif hasattr(model, 'vae_type') and model.vae_type == 'vq_vae':
+                        recon_batch, vq_loss, _ = model(batch_data)
+                        loss = F.mse_loss(recon_batch, batch_data) + vq_loss
+                        loss.backward()
+                        optimizer.step()
+                        total_loss += loss.item()
+                        num_batches += 1
+                        continue
+                    else:
+                        recon_batch, mu, logvar = model(batch_data)
+                    
+                    # VAE loss calculation
+                    recon_loss = F.mse_loss(recon_batch, batch_data, reduction='sum')
+                    kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
+                    
+                    # Total VAE loss
+                    beta = self.config.get('beta', 1.0)
+                    loss = recon_loss + beta * kl_loss
+                    
+                    loss.backward()
+                    optimizer.step()
+                    
+                    total_loss += loss.item()
+                    num_batches += 1
+                
+                return total_loss / num_batches if num_batches > 0 else 0
+
+            def _train_epoch_with_regularization(self, model, optimizer, train_loader):
+                base_loss = self._train_epoch(model, optimizer, train_loader)
+                
+                # Add regularization penalty
+                reg_loss = 0.0
+                reg_lambda = 0.1
+                
+                if hasattr(self, 'important_params'):
+                    for name, param in model.named_parameters():
+                        if name in self.important_params and param.requires_grad:
+                            reg_loss += torch.sum((param - self.important_params[name]).pow(2))
+                
+                total_loss = base_loss + reg_lambda * reg_loss.item()
+                return total_loss
+
+            def _evaluate_vae(self, model, val_loader):
+                model.eval()
+                total_loss = 0
+                total_recon_loss = 0
+                total_kl_loss = 0
+                num_batches = 0
+                
+                with torch.no_grad():
+                    for batch_data, batch_labels in val_loader:
+                        batch_data = batch_data.to(self.device)
+                        
+                        if hasattr(model, 'vae_type') and model.vae_type == 'conditional_vae':
+                            batch_labels = batch_labels.to(self.device)
+                            recon_batch, mu, logvar = model(batch_data, batch_labels)
+                        elif hasattr(model, 'vae_type') and model.vae_type == 'vq_vae':
+                            recon_batch, vq_loss, _ = model(batch_data)
+                            loss = F.mse_loss(recon_batch, batch_data) + vq_loss
+                            total_loss += loss.item()
+                            total_recon_loss += F.mse_loss(recon_batch, batch_data).item()
+                            total_kl_loss += vq_loss.item()
+                            num_batches += 1
+                            continue
+                        else:
+                            recon_batch, mu, logvar = model(batch_data)
+                        
+                        recon_loss = F.mse_loss(recon_batch, batch_data, reduction='sum')
+                        kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
+                        
+                        beta = self.config.get('beta', 1.0)
+                        loss = recon_loss + beta * kl_loss
+                        
+                        total_loss += loss.item()
+                        total_recon_loss += recon_loss.item()
+                        total_kl_loss += kl_loss.item()
+                        num_batches += 1
+                
+                return {
+                    'vae_loss': total_loss / num_batches if num_batches > 0 else 0,
+                    'reconstruction_loss': total_recon_loss / num_batches if num_batches > 0 else 0,
+                    'kl_loss': total_kl_loss / num_batches if num_batches > 0 else 0
+                }
+
+            def _create_replay_loader(self, current_loader, previous_task_data):
+                # Simplified replay implementation
+                return current_loader
+
+            def _store_important_params(self, model):
+                if not hasattr(self, 'important_params'):
+                    self.important_params = {}
+                
+                for name, param in model.named_parameters():
+                    if param.requires_grad:
+                        self.important_params[name] = param.clone().detach()
+
+            def _calculate_continual_metrics(self, all_task_performance):
+                final_performance = all_task_performance[-1]
+                average_loss = np.mean([task['vae_loss'] for task in final_performance])
+                
+                # Backward transfer
+                backward_transfers = []
+                if len(all_task_performance) > 1:
+                    for task_idx in range(len(all_task_performance) - 1):
+                        initial_loss = all_task_performance[task_idx][task_idx]['vae_loss']
+                        final_loss = all_task_performance[-1][task_idx]['vae_loss']
+                        backward_transfer = initial_loss - final_loss  # Lower loss is better
+                        backward_transfers.append(backward_transfer)
+                
+                avg_backward_transfer = np.mean(backward_transfers) if backward_transfers else 0.0
+                
+                # Forgetting
+                forgetting_scores = []
+                for task_idx in range(len(all_task_performance) - 1):
+                    min_loss = all_task_performance[task_idx][task_idx]['vae_loss']
+                    final_loss = all_task_performance[-1][task_idx]['vae_loss']
+                    forgetting = final_loss - min_loss  # Increase in loss is forgetting
+                    forgetting_scores.append(max(0, forgetting))
+                
+                avg_forgetting = np.mean(forgetting_scores) if forgetting_scores else 0.0
+                
+                return {
+                    'average_loss': average_loss,
+                    'backward_transfer': avg_backward_transfer,
+                    'forgetting': avg_forgetting,
+                    'num_tasks': len(all_task_performance)
+                }
+
+        # API/DB Helper Functions
+        def get_retry_session():
+            retry_strategy = Retry(
+                total=5,
+                status_forcelist=[500, 502, 503, 504],
+                backoff_factor=1
+            )
+            adapter = HTTPAdapter(max_retries=retry_strategy)
+            session = requests.Session()
+            session.mount("https://", adapter)
+            session.mount("http://", adapter)
+            return session
+
+        def trigger_pipeline(config, pipeline_domain, dqn_params=None):
+            http = get_retry_session()
+            url = f"{pipeline_domain}/bob-service-test/v1.0/pipeline/trigger/ml?pipelineId={config['pipeline_id']}"
+            pipeline_params = {"param_json": json.dumps(dqn_params)} if dqn_params else {}
+            payload = json.dumps({
+                "pipelineType": "ML", "containerResources": {}, "experimentId": config['experiment_id'],
+                "enableCaching": True, "parameters": pipeline_params, "version": 1
+            })
+            print(f"{payload}")
+            headers = {
+                'accept': 'application/json', 'Authorization': f"Bearer {config['access_token']}",
+                'Content-Type': 'application/json'
+            }
+            response = http.post(url, headers=headers, data=payload, timeout=30)
+            response.raise_for_status()
+            print(f"Triggered pipeline. Response: {response.json()}")
+            return response.json()['runId']
+
+        def get_pipeline_status(config, pipeline_domain):
+            http = get_retry_session()
+            url = f"{pipeline_domain}/bob-service-test/v1.0/pipeline/{config['pipeline_id']}/status/ml/{config['run_id']}"
+            headers = {'accept': 'application/json', 'Authorization': f"Bearer {config['access_token']}"}
+            response = http.get(url, headers=headers, timeout=30)
+            response.raise_for_status()
+            pipeline_status = response.json()
+            print(f"Full response from get_pipeline_status: {pipeline_status}")
+            latest_state = pipeline_status['run_details']['state_history'][-1]
+            return latest_state['state']
+
+        def get_instance(access_token, domain, schema_id, model_id):
+            http = get_retry_session()
+            url = f"{domain}/pi-entity-instances-service/v3.0/schemas/{schema_id}/instances/list"
+            headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+            payload = {"dbType": "TIDB", "ownedOnly": True, "filter": {"model_id": model_id}}
+            response = http.post(url, headers=headers, json=payload, timeout=30)
+            response.raise_for_status()
+            print(f"Full response from get_instance: {response.json()}")
+            return response.json()['content'][0]
+
+        def update_instance_field(access_token, domain, schema_id, model_id, field, value):
+            http = get_retry_session()
+            url = f"{domain}/pi-entity-instances-service/v2.0/schemas/{schema_id}/instances"
+            headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+            payload = {
+                "dbType": "TIDB",
+                "conditionalFilter": {"conditions": [{"field": "model_id", "operator": "EQUAL", "value": model_id}]},
+                "partialUpdateRequests": [{"patch": [{"operation": "REPLACE", "path": f"{field}", "value": value}]}]
+            }
+            print("cURL command for update_instance_field")
+            headers_str = " ".join([f"-H '{k}: {v}'" for k, v in headers.items()])
+            print(f"curl -X PATCH '{url}' {headers_str} -d '{json.dumps(payload)}'")    
+            response = http.patch(url, headers=headers, data=json.dumps(payload), timeout=30)
+            response.raise_for_status()
+            print(f"Full response from update_instance_field: {response.json()}")
+            print(f"Successfully updated field '{field}' for model_id '{model_id}'")
+
+        # Core Logic
+        def trigger_and_wait_for_dqn_pipeline(config, pipeline_domain, dqn_params):
+            run_id = trigger_pipeline(config, pipeline_domain, dqn_params)
+            config["run_id"] = run_id
+            while True:
+                status = get_pipeline_status(config, pipeline_domain)
+                print(f"Current DQN pipeline status: {status}")
+                if status == 'SUCCEEDED':
+                    print("DQN Pipeline execution completed.")
+                    break
+                elif status in ['FAILED', 'ERROR']:
+                    raise RuntimeError(f"DQN Pipeline failed with status {status}")
+                time.sleep(60)
+
+        def model_retraining(action, model_path, data_path, config_path, tasks_path, output_model_path, previous_metrics, dqn_params):
+            # Load VAE model architecture
+            from nesy_factory.VAE import create_vae_model
+            
+            with open(config_path, 'r') as f: 
+                config = json.load(f)
+            with open(tasks_path, "rb") as f: 
+                tasks = pickle.load(f)
+            
+            config.update(action)
+            
+            # Create VAE model
+            vae_type = config.get('vae_type', 'standard_vae')
+            model = create_vae_model(vae_type, config)
+            
+            # Load trained weights
+            model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
+            
+            print("Starting VAE continual learning experiments")
+            trainer = ContinualVAETrainer(config)
+            continual_strategies = ['naive']
+            
+            results = trainer.train_continual_vae(tasks=tasks, strategies=continual_strategies, model=model)
+            print(f"VAE continual learning results: {results}")
+            
+            average_eval_metrics = results['naive']['average_eval_metrics']
+            
+            # Compare with previous metrics (lower loss is better for VAE)
+            improvement_score = 0
+            for param in dqn_params:
+                key = param['key']
+                sign = 1 if param['sign'] == '+' else -1
+                if key in average_eval_metrics and key in previous_metrics:
+                    improvement = (average_eval_metrics[key] - previous_metrics[key]) * sign
+                    improvement_score += improvement
+
+            if improvement_score > 0:
+                print(f"VAE metrics improved (score: {improvement_score:.4f}). Saving model.")
+                os.makedirs(os.path.dirname(output_model_path), exist_ok=True)
+                final_model = results['naive']['final_model']
+                torch.save(final_model.state_dict(), output_model_path)
+                print(f"Saved retrained VAE model to {output_model_path}")
+            else:
+                print(f"No improvement in VAE metrics (score: {improvement_score:.4f}). Model not saved.")
+                os.makedirs(os.path.dirname(output_model_path), exist_ok=True)
+                with open(output_model_path, 'w') as f:
+                    f.write("VAE model not saved due to lack of improvement.")
+
+            return {"metrics": average_eval_metrics, "model_path": output_model_path}
+
+        # Main Execution
+        def main():
+            parser = argparse.ArgumentParser()
+            parser.add_argument('--trained_model', type=str, required=True)
+            parser.add_argument('--init_metrics', type=str, required=True)
+            parser.add_argument('--rlaf_output', type=str, required=True)
+            parser.add_argument('--data_path', type=str, required=True)
+            parser.add_argument('--config', type=str, required=True)
+            parser.add_argument('--domain', type=str, required=True)
+            parser.add_argument('--schema_id', type=str, required=True)
+            parser.add_argument('--model_id', type=str, required=True)
+            parser.add_argument('--dqn_pipeline_id', type=str, required=True)
+            parser.add_argument('--dqn_experiment_id', type=str, required=True)
+            parser.add_argument('--access_token', type=str, required=True)
+            parser.add_argument('--tasks', type=str, required=True)
+            parser.add_argument('--pipeline_domain', type=str, required=True)
+            parser.add_argument('--retrained_model', type=str, required=True)
+            args = parser.parse_args()
+
+            with open(args.access_token, 'r') as f:
+                access_token = f.read().strip()
+            with open(args.init_metrics, 'r') as f:
+                current_metrics = json.load(f)
+ 
+            action_id_for_next_pierce = -1
+ 
+            for i in range(2):
+                print(f"VAE RLAF Loop Iteration {i+1}")
+                
+                cleaned_metrics = {}
+                dqn_params = []
+                for key, value in current_metrics.items():
+                    try:
+                        cleaned_metrics[key] = float(value)
+                        if "loss" in key.lower():
+                            dqn_params.append({"key": key, "sign": "-", "mul": 1.0})  # Lower loss is better
+                        elif "accuracy" in key.lower() or "f1" in key.lower():
+                            dqn_params.append({"key": key, "sign": "+", "mul": 1.0})  # Higher accuracy is better
+                    except (ValueError, TypeError):
+                        print(f"Warning: Could not convert VAE metric '{key}' with value '{value}' to float. Skipping.")
+                
+                print(f"Dynamically generated param_json for VAE DQN: {json.dumps(dqn_params)}")
+
+                instance = get_instance(access_token, args.domain, args.schema_id, args.model_id)
+                print(f"Instance data: {instance}")
+                
+                if instance.get('pierce2rlaf'):
+                    latest_pierce2rlaf = instance['pierce2rlaf'][-1]
+                    previous_state = latest_pierce2rlaf['current_state']
+                    episode = latest_pierce2rlaf['episode']
+                else:
+                    previous_state = {key: 0.0 for key in cleaned_metrics.keys()}
+                    episode = 0
+ 
+                new_pierce2rlaf_entry = {
+                    "action_id": action_id_for_next_pierce, 
+                    "previous_state": previous_state,
+                    "current_state": cleaned_metrics, 
+                    "episode": episode, 
+                    "timestamp": int(time.time())
+                }
+                pierce2rlaf_history = instance.get("pierce2rlaf", [])
+                pierce2rlaf_history.append(new_pierce2rlaf_entry)
+                update_instance_field(access_token, args.domain, args.schema_id, args.model_id, "pierce2rlaf", pierce2rlaf_history)
+
+                dqn_config = {
+                    "pipeline_id": args.dqn_pipeline_id, 
+                    "experiment_id": args.dqn_experiment_id, 
+                    "access_token": access_token
+                }
+                print(f"DQN config: {dqn_config}")
+                trigger_and_wait_for_dqn_pipeline(dqn_config, args.pipeline_domain, dqn_params)
+
+                updated_instance = get_instance(access_token, args.domain, args.schema_id, args.model_id)
+                latest_rlaf2pierce = updated_instance['rlaf2pierce'][-1]
+                
+                if not latest_rlaf2pierce.get("pierce_or_not", True):
+                    print("pierce_or_not is false. Exiting VAE RLAF loop.")
+                    break
+                    
+                print(f"RLAF2Pierce response: {latest_rlaf2pierce}")
+                rlaf_actions = updated_instance.get('rlaf_actions', {}).get('actions', [])
+                action_id_for_next_pierce = latest_rlaf2pierce['action_id']
+                action_details = next((a for a in rlaf_actions if a["id"] == action_id_for_next_pierce), None)
+                if not action_details:
+                    raise ValueError(f"Action with ID {action_id_for_next_pierce} not found in rlaf_actions")
+ 
+                print(f"DQN pipeline recommended VAE action: {action_details}. Retraining VAE model.")
+                retraining_results = model_retraining(
+                    action_details['params'], args.trained_model, args.data_path, args.config, args.tasks,
+                    args.retrained_model, previous_state, dqn_params
+                )
+                current_metrics = retraining_results["metrics"]
+
+            os.makedirs(os.path.dirname(args.rlaf_output), exist_ok=True)
+            with open(args.rlaf_output, 'w') as f:
+                json.dump({"final_metrics": current_metrics}, f, indent=4)
+            print(f"VAE RLAF loop finished. Final parameters written to {args.rlaf_output}")
+
+        if __name__ == '__main__':
+            main()
+    args:
+      - --trained_model
+      - {inputPath: trained_model}
+      - --init_metrics
+      - {inputPath: init_metrics}
+      - --rlaf_output
+      - {outputPath: rlaf_output}
+      - --data_path
+      - {inputPath: data_path}
+      - --config
+      - {inputPath: config}
+      - --domain
+      - {inputValue: domain}
+      - --schema_id
+      - {inputValue: schema_id}
+      - --model_id
+      - {inputValue: model_id}
+      - --dqn_pipeline_id
+      - {inputValue: dqn_pipeline_id}
+      - --dqn_experiment_id
+      - {inputValue: dqn_experiment_id}
+      - --access_token
+      - {inputPath: access_token}
+      - --tasks
+      - {inputPath: tasks}
+      - --pipeline_domain
+      - {inputValue: pipeline_domain}
+      - --retrained_model
+      - {outputPath: retrained_model}
