@@ -1,9 +1,10 @@
 name: VAE Train Model
 description: VAE Trains the model using provided data and config parameters.
 inputs:
-  - {name: data_path, type: Dataset}           
-  - {name: model, type: Model}             # VAE model from build model brick
-  - {name: config, type: String}           # Training configuration (epochs, etc.)
+  - {name: data_path, type: Dataset}           # Training data from preprocessing
+  - {name: val_data_path, type: Dataset}       # Validation data from preprocessing
+  - {name: model, type: Model}                 # VAE model from build model brick
+  - {name: config, type: String}               # Training configuration (epochs, etc.)
 outputs:
   - {name: trained_model, type: Model}     # Trained model object
   - {name: epoch_loss, type: String}
@@ -39,6 +40,7 @@ implementation:
         # Parse arguments
         parser = argparse.ArgumentParser()
         parser.add_argument('--data_path', type=str, required=True)
+        parser.add_argument('--val_data_path', type=str, required=True)
         parser.add_argument('--model', type=str, required=True)
         parser.add_argument('--config', type=str, required=True)
         parser.add_argument('--trained_model', type=str, required=True)
@@ -46,24 +48,20 @@ implementation:
         args = parser.parse_args()
 
         print(f"Data path: {args.data_path}")
+        print(f"Val data path: {args.val_data_path}")
         print(f"Model path: {args.model}")
         print(f"Config path: {args.config}")
         print(f"Output path: {args.trained_model}")
         
-        # Load data
+        # Load training data
         try:
             with open(args.data_path, "rb") as f:
-                data = pickle.load(f)
-            print(f"Successfully loaded data. Type: {type(data)}")
+                train_loader = pickle.load(f)
+            print(f"Successfully loaded training data. Type: {type(train_loader)}")
             
-            if isinstance(data, dict) and 'train_loader' in data:
-                print(f"Data contains train_loader and val_loader")
-                train_loader = data['train_loader']
-                val_loader = data['val_loader']
-            else:
-                print(f"Data structure: {data.keys() if isinstance(data, dict) else type(data)}")
-                train_loader = data
-                val_loader = data
+            with open(args.val_data_path, "rb") as f:
+                val_loader = pickle.load(f)
+            print(f"Successfully loaded validation data. Type: {type(val_loader)}")
                 
         except Exception as e:
             print(f"Error loading data: {e}")
@@ -71,7 +69,7 @@ implementation:
             traceback.print_exc()
             exit(1)
             
-        print("Loading config...")
+        print("Loading config")
         print("config file is {args.config}")
         try: 
             config = json.loads(args.config)
@@ -80,7 +78,7 @@ implementation:
                 config = json.load(f)
         print(f"the configs are : {config}")
         
-        print("Loading model...")
+        print("Loading model")
         vae_type = config.get('vae_type', 'standard_vae')
         model = create_vae_model(vae_type, config)
         model.load_state_dict(torch.load(args.model, map_location=torch.device('cpu')))
@@ -158,6 +156,8 @@ implementation:
     args:
       - --data_path
       - {inputPath: data_path}
+      - --val_data_path
+      - {inputPath: val_data_path}
       - --model
       - {inputPath: model}
       - --config
