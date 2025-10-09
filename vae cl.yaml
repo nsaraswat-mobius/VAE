@@ -117,7 +117,7 @@ implementation:
                     raise ValueError(f"Unknown strategy: {self.strategy}")
             
             def _temporal_split(self, num_tasks: int) -> List[Dict]:
-                """Split data temporally - each task gets a sequential portion of the data"""
+                # Split data temporally - each task gets a sequential portion of the data
                 tasks = []
                 
                 train_size = len(self.train_dataset)
@@ -158,7 +158,7 @@ implementation:
                 return tasks
             
             def _class_incremental_split(self, num_tasks: int) -> List[Dict]:
-                """Split data by classes - each task introduces new classes"""
+                # Split data by classes - each task introduces new classes
                 tasks = []
                 
                 # Get unique classes from training data
@@ -228,7 +228,7 @@ implementation:
                 return tasks
             
             def _feature_drift_split(self, num_tasks: int) -> List[Dict]:
-                """Create tasks with progressive feature drift"""
+                # Create tasks with progressive feature drift
                 tasks = []
                 
                 train_size = len(self.train_dataset)
@@ -284,7 +284,7 @@ implementation:
                 return tasks
             
             def _data_corruption_split(self, num_tasks: int) -> List[Dict]:
-                """Create tasks with increasing data corruption levels"""
+                # Create tasks with increasing data corruption levels
                 tasks = []
                 
                 corruption_levels = np.linspace(0.0, 0.5, num_tasks)  # 0% to 50% corruption
@@ -329,7 +329,7 @@ implementation:
                 return tasks
 
         class DriftedDataset(Dataset):
-            """Dataset wrapper that applies feature drift"""
+            # Dataset wrapper that applies feature drift
             def __init__(self, base_dataset, indices, drift_factor):
                 self.base_dataset = base_dataset
                 self.indices = indices
@@ -355,7 +355,7 @@ implementation:
                 return data, label
 
         class CorruptedDataset(Dataset):
-            """Dataset wrapper that applies data corruption"""
+            # Dataset wrapper that applies data corruption
             def __init__(self, base_dataset, indices, corruption_level):
                 self.base_dataset = base_dataset
                 self.indices = indices
