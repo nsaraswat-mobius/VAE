@@ -33,24 +33,18 @@ implementation:
         import torchvision.transforms as transforms
         
         class ProcessedVAEDataset(Dataset):
-            """
-            Custom dataset for VAE that handles different data formats and VAE types
-            """
             def __init__(self, data, labels=None, vae_type='standard', transform=None):
                 self.data = data
                 self.labels = labels
                 self.vae_type = vae_type
                 self.transform = transform
                 
-                # Ensure data is float32 and normalized
                 if isinstance(self.data, np.ndarray):
                     self.data = torch.FloatTensor(self.data)
                 
-                # Normalize to [0, 1] if not already
                 if self.data.max() > 1.0:
                     self.data = self.data / 255.0
                 
-                # Flatten data for VAE input
                 if len(self.data.shape) > 2:
                     self.data = self.data.view(self.data.shape[0], -1)
             
@@ -66,14 +60,13 @@ implementation:
                 if self.labels is not None:
                     label = self.labels[idx]
                     if self.vae_type == 'conditional_vae':
-                        # Return one-hot encoded labels for conditional VAE
                         num_classes = len(torch.unique(self.labels))
                         label_onehot = torch.zeros(num_classes)
                         label_onehot[label] = 1
                         return sample, label_onehot
                     return sample, label
                 else:
-                    return sample, torch.tensor(0)  # Dummy label
+                    return sample, torch.tensor(0)
         
         class DataWrapper:
           def __init__(self, data_dict):
