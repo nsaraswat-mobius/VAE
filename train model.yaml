@@ -1,0 +1,161 @@
+name: VAE Train Model
+description: VAE Trains the model using provided data and config parameters.
+inputs:
+  - {name: data_path, type: Dataset}           
+  - {name: model, type: Model}             # VAE model from build model brick
+  - {name: config, type: String}           # Training configuration (epochs, etc.)
+outputs:
+  - {name: trained_model, type: Model}     # Trained model object
+  - {name: epoch_loss, type: String}
+implementation:
+  container:
+    image: nikhilv215/nesy-factory:v22
+    command:
+      - sh
+      - -c
+      - |
+        exec "$0" "$@"
+      - python3
+      - -u
+      - -c
+      - |
+        import torch
+        import argparse
+        import pickle
+        import os
+        import json
+        import numpy as np
+        from nesy_factory.VAE import create_model
+        from nesy_factory.utils import set_random_seed
+        import torch.nn as nn
+        import torch.optim as optim
+        from torch.utils.data import DataLoader
+        
+        class DataWrapper:
+          def __init__(self, data_dict):
+              self.__dict__.update(data_dict)
+
+        # Parse arguments
+        parser = argparse.ArgumentParser()
+        parser.add_argument('--data_path', type=str, required=True)
+        parser.add_argument('--model', type=str, required=True)
+        parser.add_argument('--config', type=str, required=True)
+        parser.add_argument('--trained_model', type=str, required=True)
+        parser.add_argument('--epoch_loss', type=str, required=True)
+        args = parser.parse_args()
+
+        print(f"Data path: {args.data_path}")
+        print(f"Model path: {args.model}")
+        print(f"Config path: {args.config}")
+        print(f"Output path: {args.trained_model}")
+        
+        # Load data
+        try:
+            with open(args.data_path, "rb") as f:
+                data = pickle.load(f)
+            print(f"Successfully loaded data. Type: {type(data)}")
+            if 'train_loader' in data:
+                print(f"Data contains train_loader and val_loader")
+                train_loader = data['train_loader']
+                val_loader = data['val_loader']
+            else:
+                print(f"Data structure: {data.keys() if isinstance(data, dict) else type(data)}")
+        except Exception as e:
+            print(f"Error loading data: {e}")
+            exit(1)
+            
+        print("Loading config...")
+        print("config file is {args.config}")
+        try: 
+            config = json.loads(args.config)
+        except : 
+            with open(args.config) as f:
+                config = json.load(f)
+        print(f"the configs are : {config}")
+        
+        print("Loading model...")
+        vae_type = config.get('vae_type', 'standard_vae')
+        model = create_model(vae_type, config)
+        model.load_state_dict(torch.load(args.model, map_location=torch.device('cpu')))
+        
+        epochs = config.get('epochs', 50)
+        learning_rate = config.get('learning_rate', 0.001)
+        beta = config.get('beta', 1.0)
+        
+        # Set device
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        model = model.to(device)
+        
+        # Setup optimizer
+        optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+        
+        print(f"Training for {epochs} epochs")
+        print(" Starting VAE Model Training ")
+        epoch_loss_data = []
+        
+        for epoch in range(epochs):
+            model.train()
+            total_loss = 0
+            num_batches = 0
+            
+            for batch_idx, (data_batch, _) in enumerate(train_loader):
+                data_batch = data_batch.to(device)
+                optimizer.zero_grad()
+                
+                if vae_type == 'conditional_vae':
+                    labels = _.to(device)
+                    recon_batch, mu, logvar = model(data_batch, labels)
+                elif vae_type == 'vq_vae':
+                    recon_batch, vq_loss, _ = model(data_batch)
+                    loss = nn.functional.mse_loss(recon_batch, data_batch) + vq_loss
+                else:
+                    recon_batch, mu, logvar = model(data_batch)
+                    recon_loss = nn.functional.mse_loss(recon_batch, data_batch, reduction='sum')
+                    kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
+                    if vae_type == 'beta_vae':
+                        loss = recon_loss + beta * kl_loss
+                    else:
+                        loss = recon_loss + kl_loss
+                
+                loss.backward()
+                optimizer.step()
+                total_loss += loss.item()
+                num_batches += 1
+            
+            avg_loss = total_loss / num_batches
+            print(f"Epoch {epoch} | Loss: {avg_loss}")
+            epoch_loss_data.append({'epoch': epoch, 'loss': avg_loss})
+
+        output_dir_epoch_loss = os.path.dirname(args.epoch_loss)
+        if output_dir_epoch_loss and not os.path.exists(output_dir_epoch_loss):
+            os.makedirs(output_dir_epoch_loss, exist_ok=True)
+        with open(args.epoch_loss, 'w') as f:
+            f.write(json.dumps(epoch_loss_data))
+        print("Finished VAE Model Training ")
+        
+        # Save trained model
+        print("Saving trained model...")
+        try:
+            # Create parent directory if it doesn't exist
+            output_dir = os.path.dirname(args.trained_model)
+            if output_dir and not os.path.exists(output_dir):
+                os.makedirs(output_dir, exist_ok=True)
+                print(f"Created directory: {output_dir}")
+            
+            torch.save(model.state_dict(), args.trained_model)
+            print(f"Saved trained model to {args.trained_model}")
+        except Exception as e:
+            print(f"Error saving trained model: {e}")
+            exit(1)
+
+    args:
+      - --data_path
+      - {inputPath: data_path}
+      - --model
+      - {inputPath: model}
+      - --config
+      - {inputValue: config}
+      - --trained_model
+      - {outputPath: trained_model}
+      - --epoch_loss
+      - {outputPath: epoch_loss}
