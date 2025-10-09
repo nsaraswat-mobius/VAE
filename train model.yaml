@@ -32,42 +32,6 @@ implementation:
         from torch.utils.data import DataLoader, Dataset
         import torchvision.transforms as transforms
         
-        class ProcessedVAEDataset(Dataset):
-            def __init__(self, data, labels=None, vae_type='standard', transform=None):
-                self.data = data
-                self.labels = labels
-                self.vae_type = vae_type
-                self.transform = transform
-                
-                if isinstance(self.data, np.ndarray):
-                    self.data = torch.FloatTensor(self.data)
-                
-                if self.data.max() > 1.0:
-                    self.data = self.data / 255.0
-                
-                if len(self.data.shape) > 2:
-                    self.data = self.data.view(self.data.shape[0], -1)
-            
-            def __len__(self):
-                return len(self.data)
-            
-            def __getitem__(self, idx):
-                sample = self.data[idx]
-                
-                if self.transform:
-                    sample = self.transform(sample)
-                
-                if self.labels is not None:
-                    label = self.labels[idx]
-                    if self.vae_type == 'conditional_vae':
-                        num_classes = len(torch.unique(self.labels))
-                        label_onehot = torch.zeros(num_classes)
-                        label_onehot[label] = 1
-                        return sample, label_onehot
-                    return sample, label
-                else:
-                    return sample, torch.tensor(0)
-        
         class DataWrapper:
           def __init__(self, data_dict):
               self.__dict__.update(data_dict)
@@ -91,14 +55,20 @@ implementation:
             with open(args.data_path, "rb") as f:
                 data = pickle.load(f)
             print(f"Successfully loaded data. Type: {type(data)}")
-            if 'train_loader' in data:
+            
+            if isinstance(data, dict) and 'train_loader' in data:
                 print(f"Data contains train_loader and val_loader")
                 train_loader = data['train_loader']
                 val_loader = data['val_loader']
             else:
                 print(f"Data structure: {data.keys() if isinstance(data, dict) else type(data)}")
+                train_loader = data
+                val_loader = data
+                
         except Exception as e:
             print(f"Error loading data: {e}")
+            import traceback
+            traceback.print_exc()
             exit(1)
             
         print("Loading config...")
