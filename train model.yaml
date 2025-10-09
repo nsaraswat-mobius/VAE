@@ -25,7 +25,7 @@ implementation:
         import os
         import json
         import numpy as np
-        from nesy_factory.VAE import create_model
+        from nesy_factory.VAE import create_vae_model
         from nesy_factory.utils import set_random_seed
         import torch.nn as nn
         import torch.optim as optim
@@ -75,7 +75,7 @@ implementation:
         
         print("Loading model...")
         vae_type = config.get('vae_type', 'standard_vae')
-        model = create_model(vae_type, config)
+        model = create_vae_model(vae_type, config)
         model.load_state_dict(torch.load(args.model, map_location=torch.device('cpu')))
         
         epochs = config.get('epochs', 50)
