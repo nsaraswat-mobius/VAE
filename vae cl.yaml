@@ -1,9 +1,12 @@
 name: VAE Continual Tasks Generator
 description: Loads preprocessed VAE dataset and splits it into continual learning tasks
 inputs:
-  - name: data_pickle
+  - name: processed_train_data
     type: Dataset
-    description: "Pickle file containing VAE processed dataset (train/val data loaders)."
+    description: "Processed training data loader pickle file from preprocessing component"
+  - name: processed_val_data
+    type: Dataset
+    description: "Processed validation data loader pickle file from preprocessing component"
   - name: splitting_strategy
     type: String
     description: "Strategy for splitting data: temporal_split, class_incremental, feature_drift, data_corruption"
@@ -391,37 +394,28 @@ implementation:
 
         # Parse arguments
         parser = argparse.ArgumentParser()
-        parser.add_argument('--data_pickle', type=str, required=True, help='Input VAE data pickle path')
+        parser.add_argument('--processed_train_data', type=str, required=True, help='Processed training data pickle path')
+        parser.add_argument('--processed_val_data', type=str, required=True, help='Processed validation data pickle path')
         parser.add_argument('--splitting_strategy', type=str, default='temporal_split', help='Split strategy')
         parser.add_argument('--num_tasks', type=int, default=3, help='Number of tasks to create')
         parser.add_argument('--tasks_pickle', type=str, required=True, help='Output pickle for tasks')
         parser.add_argument('--config', type=str, required=True, help='VAE and continual learning config')
         args = parser.parse_args()
 
-        print(f"Loading VAE data from: {args.data_pickle}")
+        print(f"Loading processed training data from: {args.processed_train_data}")
+        print(f"Loading processed validation data from: {args.processed_val_data}")
         print(f"Splitting strategy: {args.splitting_strategy}")
         print(f"Number of tasks: {args.num_tasks}")
 
-        # Load VAE data (should contain train_loader and val_loader)
-        with open(args.data_pickle, "rb") as f:
-            vae_data = pickle.load(f)
+        # Load processed train and val data separately
+        with open(args.processed_train_data, "rb") as f:
+            train_loader = pickle.load(f)
+            
+        with open(args.processed_val_data, "rb") as f:
+            val_loader = pickle.load(f)
 
-        print(f"Loaded VAE data type: {type(vae_data)}")
-        
-        # Handle different data formats
-        if hasattr(vae_data, 'train_loader') and hasattr(vae_data, 'val_loader'):
-            train_loader = vae_data.train_loader
-            val_loader = vae_data.val_loader
-        elif isinstance(vae_data, dict):
-            train_loader = vae_data.get('train_loader')
-            val_loader = vae_data.get('val_loader')
-        elif isinstance(vae_data, tuple) and len(vae_data) == 2:
-            train_loader, val_loader = vae_data
-        else:
-            raise ValueError(f"Unexpected data format: {type(vae_data)}")
-
-        print(f"Train loader type: {type(train_loader)}")
-        print(f"Val loader type: {type(val_loader)}")
+        print(f"Loaded train loader type: {type(train_loader)}")
+        print(f"Loaded val loader type: {type(val_loader)}")
 
         # Parse config
         try:
@@ -462,8 +456,10 @@ implementation:
         print(f"Saved {len(tasks)} VAE continual learning tasks to {args.tasks_pickle}")
         
     args:
-      - --data_pickle
-      - {inputPath: data_pickle}
+      - --processed_train_data
+      - {inputPath: processed_train_data}
+      - --processed_val_data
+      - {inputPath: processed_val_data}
       - --splitting_strategy
       - {inputValue: splitting_strategy}
       - --num_tasks
