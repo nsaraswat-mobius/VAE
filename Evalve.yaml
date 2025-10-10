@@ -55,7 +55,7 @@ implementation:
             total_kl_loss = 0
             num_samples = 0
             
-            print("Starting VAE model evaluation")
+            print("Starting VAE model evaluation...")
             with torch.no_grad():
                 for batch_idx, (data_batch, labels) in enumerate(data_loader):
                     data_batch = data_batch.to(device)
@@ -67,30 +67,53 @@ implementation:
                             outputs = model(data_batch, labels)
                         elif vae_type == 'vq_vae':
                             outputs = model(data_batch)
-                            if len(outputs) == 3:
-                                recon_batch, vq_loss, _ = outputs
-                            else:
-                                recon_batch, vq_loss = outputs[0], outputs[1]
-                            recon_loss = F.mse_loss(recon_batch, data_batch, reduction='sum')
-                            total_loss += (recon_loss + vq_loss).item()
-                            total_recon_loss += recon_loss.item()
-                            total_kl_loss += vq_loss.item()
-                            num_samples += batch_size
-                            continue
                         else:
                             outputs = model(data_batch)
                         
                         # Handle different output formats
-                        if len(outputs) == 3:
-                            recon_batch, mu, logvar = outputs
-                        elif len(outputs) == 2:
-                            recon_batch, mu = outputs
-                            logvar = torch.zeros_like(mu)  # Default logvar if not provided
+                        if isinstance(outputs, dict):
+                            # Handle dictionary output format
+                            print(f"Dict output keys: {outputs.keys()}")
+                            recon_batch = outputs.get('reconstruction', outputs.get('recon', outputs.get('x_recon', None)))
+                            mu = outputs.get('mu', outputs.get('z_mean', outputs.get('mean', None)))
+                            logvar = outputs.get('logvar', outputs.get('z_logvar', outputs.get('log_var', None)))
+                            
+                            if recon_batch is None:
+                                print("Could not find reconstruction in dict output, skipping batch")
+                                continue
+                            if mu is None:
+                                mu = torch.zeros(batch_size, config.get('latent_dim', 128)).to(device)
+                            if logvar is None:
+                                logvar = torch.zeros_like(mu)
+                                
+                        elif isinstance(outputs, (tuple, list)):
+                            # Handle tuple/list output format
+                            if vae_type == 'vq_vae':
+                                if len(outputs) >= 2:
+                                    recon_batch, vq_loss = outputs[0], outputs[1]
+                                    recon_loss = F.mse_loss(recon_batch, data_batch, reduction='sum')
+                                    total_loss += (recon_loss + vq_loss).item()
+                                    total_recon_loss += recon_loss.item()
+                                    total_kl_loss += vq_loss.item()
+                                    num_samples += batch_size
+                                    continue
+                                else:
+                                    print(f"Unexpected VQ-VAE output format: {len(outputs)} outputs")
+                                    continue
+                            else:
+                                if len(outputs) == 3:
+                                    recon_batch, mu, logvar = outputs
+                                elif len(outputs) == 2:
+                                    recon_batch, mu = outputs
+                                    logvar = torch.zeros_like(mu)
+                                else:
+                                    print(f"Unexpected tuple output format: {len(outputs)} outputs")
+                                    recon_batch = outputs[0]
+                                    mu = torch.zeros(batch_size, config.get('latent_dim', 128)).to(device)
+                                    logvar = torch.zeros_like(mu)
                         else:
-                            print(f"Unexpected model output format: {len(outputs)} outputs")
-                            recon_batch = outputs[0]
-                            mu = torch.zeros(batch_size, config.get('latent_dim', 128)).to(device)
-                            logvar = torch.zeros_like(mu)
+                            print(f"Unexpected output type: {type(outputs)}")
+                            continue
                         
                         # Compute VAE losses
                         if vae_type != 'vq_vae':
@@ -109,7 +132,10 @@ implementation:
                             
                     except Exception as e:
                         print(f"Error in batch {batch_idx}: {e}")
-                        print(f"Model output: {type(outputs) if 'outputs' in locals() else 'No outputs'}")
+                        if 'outputs' in locals():
+                            print(f"Model output type: {type(outputs)}")
+                            if isinstance(outputs, dict):
+                                print(f"Dict keys: {list(outputs.keys())}")
                         continue
             
             # Calculate average metrics
@@ -162,7 +188,7 @@ implementation:
             print(f"Successfully loaded {vae_type} model weights")
         except Exception as e:
             print(f"Error loading model weights: {e}")
-            print("Trying to load with strict=False...")
+            print("Trying to load with strict=False")
             try:
                 model.load_state_dict(torch.load(args.trained_model, map_location=torch.device('cpu')), strict=False)
                 print("Model loaded with strict=False")
