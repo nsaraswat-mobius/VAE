@@ -146,12 +146,20 @@ implementation:
             avg_recon_loss = total_recon_loss / num_samples if num_samples > 0 else 0
             avg_kl_loss = total_kl_loss / num_samples if num_samples > 0 else 0
             
+            # Check error threshold if specified
+            threshold_exceeded = False
+            error_absolute_threshold = config.get('error_absolute_threshold') if config else None
+            if error_absolute_threshold is not None:
+                threshold_exceeded = avg_loss > error_absolute_threshold
+                print(f"Error threshold check: {avg_loss:.4f} > {error_absolute_threshold} = {threshold_exceeded}")
+            
             eval_metrics = {
                 'vae_loss': avg_loss,
                 'reconstruction_loss': avg_recon_loss,
-                'kl_divergence': avg_kl_loss,
+                'kl_loss': avg_kl_loss,
                 'num_samples': num_samples,
-                'model_type': vae_type
+                'model_type': vae_type,
+                'threshold_exceeded': threshold_exceeded
             }
             
             return eval_metrics
