@@ -142,11 +142,11 @@ implementation:
                         eval_val_loader = tasks[eval_task_idx]['val_loader']
                         eval_metrics = self._evaluate_vae(model_copy, eval_val_loader)
                         task_performance.append({
-                            'task_id': eval_task_idx,
-                            'vae_loss': eval_metrics['vae_loss'],
-                            'reconstruction_loss': eval_metrics['reconstruction_loss'],
-                            'kl_loss': eval_metrics['kl_loss'],
-                            'description': tasks[eval_task_idx]['description']
+                            'task_id': int(eval_task_idx),
+                            'vae_loss': float(eval_metrics['vae_loss']),
+                            'reconstruction_loss': float(eval_metrics['reconstruction_loss']),
+                            'kl_loss': float(eval_metrics['kl_loss']),
+                            'description': str(tasks[eval_task_idx]['description'])
                         })
                     
                     all_task_performance.append(task_performance)
@@ -168,7 +168,23 @@ implementation:
                 avg_metrics = {}
                 if final_eval_metrics:
                     for key in final_eval_metrics[0]:
-                        avg_metrics[key] = np.mean([m[key] for m in final_eval_metrics])
+                        # Ensure numeric values for averaging
+                        numeric_values = []
+                        for m in final_eval_metrics:
+                            try:
+                                if isinstance(m[key], (int, float)):
+                                    numeric_values.append(float(m[key]))
+                                else:
+                                    # Try to convert string to float
+                                    numeric_values.append(float(str(m[key])))
+                            except (ValueError, TypeError):
+                                print(f"Warning: Could not convert metric '{key}' value '{m[key]}' to numeric. Skipping.")
+                                continue
+                        
+                        if numeric_values:
+                            avg_metrics[key] = float(np.mean(numeric_values))
+                        else:
+                            avg_metrics[key] = 0.0
 
                 results = {
                     'strategy': strategy_name,
@@ -257,7 +273,7 @@ implementation:
                     total_loss += loss.item()
                     num_batches += 1
                 
-                return total_loss / num_batches if num_batches > 0 else 0
+                return float(total_loss / num_batches) if num_batches > 0 else 0.0
 
             def _train_epoch_with_regularization(self, model, optimizer, train_loader):
                 base_loss = self._train_epoch(model, optimizer, train_loader)
@@ -269,9 +285,9 @@ implementation:
                 if hasattr(self, 'important_params'):
                     for name, param in model.named_parameters():
                         if name in self.important_params and param.requires_grad:
-                            reg_loss += torch.sum((param - self.important_params[name]).pow(2))
+                            reg_loss += torch.sum((param - self.important_params[name]).pow(2)).item()
                 
-                total_loss = base_loss + reg_lambda * reg_loss.item()
+                total_loss = float(base_loss) + reg_lambda * float(reg_loss)
                 return total_loss
 
             def _evaluate_vae(self, model, val_loader):
@@ -365,16 +381,16 @@ implementation:
                             continue
                 
                 # Calculate average metrics (same as evalve component)
-                avg_loss = total_loss / num_samples if num_samples > 0 else 0
-                avg_recon_loss = total_recon_loss / num_samples if num_samples > 0 else 0
-                avg_kl_loss = total_kl_loss / num_samples if num_samples > 0 else 0
+                avg_loss = float(total_loss / num_samples) if num_samples > 0 else 0.0
+                avg_recon_loss = float(total_recon_loss / num_samples) if num_samples > 0 else 0.0
+                avg_kl_loss = float(total_kl_loss / num_samples) if num_samples > 0 else 0.0
                 
                 return {
                     'vae_loss': avg_loss,
                     'reconstruction_loss': avg_recon_loss,
                     'kl_loss': avg_kl_loss,
-                    'num_samples': num_samples,
-                    'model_type': vae_type
+                    'num_samples': int(num_samples),
+                    'model_type': str(vae_type)
                 }
 
             def _create_replay_loader(self, current_loader, previous_task_data):
@@ -391,28 +407,62 @@ implementation:
 
             def _calculate_continual_metrics(self, all_task_performance):
                 final_performance = all_task_performance[-1]
-                average_loss = np.mean([task['vae_loss'] for task in final_performance])
                 
-                # Backward transfer
+                # Safely extract numeric values for loss calculations
+                loss_values = []
+                for task in final_performance:
+                    try:
+                        loss_val = task['vae_loss']
+                        if isinstance(loss_val, (int, float)):
+                            loss_values.append(float(loss_val))
+                        elif isinstance(loss_val, str):
+                            loss_values.append(float(loss_val))
+                        else:
+                            loss_values.append(float(str(loss_val)))
+                    except (ValueError, TypeError):
+                        print(f"Warning: Could not convert loss value '{task['vae_loss']}' to float")
+                        loss_values.append(0.0)
+                
+                average_loss = float(np.mean(loss_values)) if loss_values else 0.0
+                
+                # Backward transfer - safely handle numeric conversions
                 backward_transfers = []
                 if len(all_task_performance) > 1:
                     for task_idx in range(len(all_task_performance) - 1):
-                        initial_loss = all_task_performance[task_idx][task_idx]['vae_loss']
-                        final_loss = all_task_performance[-1][task_idx]['vae_loss']
-                        backward_transfer = initial_loss - final_loss  # Lower loss is better
-                        backward_transfers.append(backward_transfer)
+                        try:
+                            initial_loss_val = all_task_performance[task_idx][task_idx]['vae_loss']
+                            final_loss_val = all_task_performance[-1][task_idx]['vae_loss']
+                            
+                            # Convert to float safely
+                            initial_loss = float(initial_loss_val) if isinstance(initial_loss_val, (int, float)) else float(str(initial_loss_val))
+                            final_loss = float(final_loss_val) if isinstance(final_loss_val, (int, float)) else float(str(final_loss_val))
+                            
+                            backward_transfer = initial_loss - final_loss  # Lower loss is better
+                            backward_transfers.append(backward_transfer)
+                        except (ValueError, TypeError, KeyError) as e:
+                            print(f"Warning: Could not calculate backward transfer for task {task_idx}: {e}")
+                            backward_transfers.append(0.0)
                 
-                avg_backward_transfer = np.mean(backward_transfers) if backward_transfers else 0.0
+                avg_backward_transfer = float(np.mean(backward_transfers)) if backward_transfers else 0.0
                 
-                # Forgetting
+                # Forgetting - safely handle numeric conversions
                 forgetting_scores = []
                 for task_idx in range(len(all_task_performance) - 1):
-                    min_loss = all_task_performance[task_idx][task_idx]['vae_loss']
-                    final_loss = all_task_performance[-1][task_idx]['vae_loss']
-                    forgetting = final_loss - min_loss  # Increase in loss is forgetting
-                    forgetting_scores.append(max(0, forgetting))
+                    try:
+                        min_loss_val = all_task_performance[task_idx][task_idx]['vae_loss']
+                        final_loss_val = all_task_performance[-1][task_idx]['vae_loss']
+                        
+                        # Convert to float safely
+                        min_loss = float(min_loss_val) if isinstance(min_loss_val, (int, float)) else float(str(min_loss_val))
+                        final_loss = float(final_loss_val) if isinstance(final_loss_val, (int, float)) else float(str(final_loss_val))
+                        
+                        forgetting = final_loss - min_loss  # Increase in loss is forgetting
+                        forgetting_scores.append(max(0.0, forgetting))
+                    except (ValueError, TypeError, KeyError) as e:
+                        print(f"Warning: Could not calculate forgetting for task {task_idx}: {e}")
+                        forgetting_scores.append(0.0)
                 
-                avg_forgetting = np.mean(forgetting_scores) if forgetting_scores else 0.0
+                avg_forgetting = float(np.mean(forgetting_scores)) if forgetting_scores else 0.0
                 
                 return {
                     'average_loss': average_loss,
@@ -634,13 +684,21 @@ implementation:
             average_eval_metrics = results['naive']['average_eval_metrics']
             
             # Compare with previous metrics (lower loss is better for VAE)
-            improvement_score = 0
+            improvement_score = 0.0
             for param in dqn_params:
                 key = param['key']
                 sign = 1 if param['sign'] == '+' else -1
                 if key in average_eval_metrics and key in previous_metrics:
-                    improvement = (average_eval_metrics[key] - previous_metrics[key]) * sign
-                    improvement_score += improvement
+                    try:
+                        # Ensure both values are numeric
+                        current_val = float(average_eval_metrics[key])
+                        previous_val = float(previous_metrics[key])
+                        improvement = (current_val - previous_val) * sign
+                        improvement_score += improvement
+                        print(f"Metric {key}: {previous_val:.4f} -> {current_val:.4f}, improvement: {improvement:.4f}")
+                    except (ValueError, TypeError) as e:
+                        print(f"Warning: Could not compute improvement for metric '{key}': {e}")
+                        continue
 
             if improvement_score > 0:
                 print(f"VAE metrics improved (score: {improvement_score:.4f}). Saving model.")
@@ -651,10 +709,28 @@ implementation:
             else:
                 print(f"No improvement in VAE metrics (score: {improvement_score:.4f}). Model not saved.")
                 os.makedirs(os.path.dirname(output_model_path), exist_ok=True)
+                # Create a dummy file to satisfy Kubeflow output requirements
                 with open(output_model_path, 'w') as f:
                     f.write("VAE model not saved due to lack of improvement.")
 
-            return {"metrics": average_eval_metrics, "model_path": output_model_path}
+            # Ensure all metrics are JSON serializable
+            serializable_metrics = {}
+            for key, value in average_eval_metrics.items():
+                try:
+                    if isinstance(value, (int, float, bool)):
+                        serializable_metrics[key] = float(value)
+                    elif isinstance(value, str):
+                        try:
+                            serializable_metrics[key] = float(value)
+                        except ValueError:
+                            serializable_metrics[key] = str(value)
+                    else:
+                        serializable_metrics[key] = str(value)
+                except Exception as e:
+                    print(f"Warning: Could not serialize metric '{key}': {e}")
+                    serializable_metrics[key] = 0.0
+
+            return {"metrics": serializable_metrics, "model_path": output_model_path}
 
         # Main Execution
         def main():
@@ -689,13 +765,25 @@ implementation:
                 dqn_params = []
                 for key, value in current_metrics.items():
                     try:
-                        cleaned_metrics[key] = float(value)
+                        # Handle different types of values
+                        if isinstance(value, (int, float)):
+                            numeric_value = float(value)
+                        elif isinstance(value, str):
+                            numeric_value = float(value)
+                        elif hasattr(value, 'item'):  # Handle numpy scalars
+                            numeric_value = float(value.item())
+                        else:
+                            # Try to convert to float
+                            numeric_value = float(str(value))
+                        
+                        cleaned_metrics[key] = numeric_value
+                        
                         if "loss" in key.lower():
                             dqn_params.append({"key": key, "sign": "-", "mul": 1.0})  # Lower loss is better
                         elif "accuracy" in key.lower() or "f1" in key.lower():
                             dqn_params.append({"key": key, "sign": "+", "mul": 1.0})  # Higher accuracy is better
-                    except (ValueError, TypeError):
-                        print(f"Warning: Could not convert VAE metric '{key}' with value '{value}' to float. Skipping.")
+                    except (ValueError, TypeError) as e:
+                        print(f"Warning: Could not convert VAE metric '{key}' with value '{value}' (type: {type(value)}) to float: {e}. Skipping.")
                 
                 print(f"Dynamically generated param_json for VAE DQN: {json.dumps(dqn_params)}")
 
@@ -779,10 +867,37 @@ implementation:
                 )
                 current_metrics = retraining_results["metrics"]
 
+            # Ensure output directories exist and create proper output files
             os.makedirs(os.path.dirname(args.rlaf_output), exist_ok=True)
+            
+            # Ensure all final metrics are properly serializable
+            final_output = {}
+            for key, value in current_metrics.items():
+                try:
+                    if isinstance(value, (int, float, bool)):
+                        final_output[key] = float(value)
+                    elif isinstance(value, str):
+                        try:
+                            final_output[key] = float(value)
+                        except ValueError:
+                            final_output[key] = str(value)
+                    elif hasattr(value, 'item'):  # Handle numpy scalars
+                        final_output[key] = float(value.item())
+                    else:
+                        final_output[key] = str(value)
+                except Exception as e:
+                    print(f"Warning: Could not serialize final metric '{key}': {e}")
+                    final_output[key] = 0.0
+            
             with open(args.rlaf_output, 'w') as f:
-                json.dump({"final_metrics": current_metrics}, f, indent=4)
+                json.dump({"final_metrics": final_output}, f, indent=4)
             print(f"VAE RLAF loop finished. Final parameters written to {args.rlaf_output}")
+            
+            # Ensure retrained model output exists (Kubeflow requirement)
+            if not os.path.exists(args.retrained_model):
+                os.makedirs(os.path.dirname(args.retrained_model), exist_ok=True)
+                with open(args.retrained_model, 'w') as f:
+                    f.write("Retrained model path placeholder")
 
         if __name__ == '__main__':
             main()
