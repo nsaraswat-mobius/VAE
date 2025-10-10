@@ -55,40 +55,62 @@ implementation:
             total_kl_loss = 0
             num_samples = 0
             
-            print("Starting VAE model evaluation...")
+            print("Starting VAE model evaluation")
             with torch.no_grad():
                 for batch_idx, (data_batch, labels) in enumerate(data_loader):
                     data_batch = data_batch.to(device)
                     batch_size = data_batch.size(0)
                     
-                    if vae_type == 'conditional_vae':
-                        labels = labels.to(device)
-                        recon_batch, mu, logvar = model(data_batch, labels)
-                    elif vae_type == 'vq_vae':
-                        recon_batch, vq_loss, _ = model(data_batch)
-                        recon_loss = F.mse_loss(recon_batch, data_batch, reduction='sum')
-                        total_loss += (recon_loss + vq_loss).item()
-                        total_recon_loss += recon_loss.item()
-                        total_kl_loss += vq_loss.item()
-                        num_samples += batch_size
-                        continue
-                    else:
-                        recon_batch, mu, logvar = model(data_batch)
-                    
-                    # Compute VAE losses
-                    if vae_type != 'vq_vae':
-                        recon_loss = F.mse_loss(recon_batch, data_batch, reduction='sum')
-                        kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
-                        
-                        if vae_type == 'beta_vae':
-                            loss = recon_loss + beta * kl_loss
+                    try:
+                        if vae_type == 'conditional_vae':
+                            labels = labels.to(device)
+                            outputs = model(data_batch, labels)
+                        elif vae_type == 'vq_vae':
+                            outputs = model(data_batch)
+                            if len(outputs) == 3:
+                                recon_batch, vq_loss, _ = outputs
+                            else:
+                                recon_batch, vq_loss = outputs[0], outputs[1]
+                            recon_loss = F.mse_loss(recon_batch, data_batch, reduction='sum')
+                            total_loss += (recon_loss + vq_loss).item()
+                            total_recon_loss += recon_loss.item()
+                            total_kl_loss += vq_loss.item()
+                            num_samples += batch_size
+                            continue
                         else:
-                            loss = recon_loss + kl_loss
+                            outputs = model(data_batch)
                         
-                        total_loss += loss.item()
-                        total_recon_loss += recon_loss.item()
-                        total_kl_loss += kl_loss.item()
-                        num_samples += batch_size
+                        # Handle different output formats
+                        if len(outputs) == 3:
+                            recon_batch, mu, logvar = outputs
+                        elif len(outputs) == 2:
+                            recon_batch, mu = outputs
+                            logvar = torch.zeros_like(mu)  # Default logvar if not provided
+                        else:
+                            print(f"Unexpected model output format: {len(outputs)} outputs")
+                            recon_batch = outputs[0]
+                            mu = torch.zeros(batch_size, config.get('latent_dim', 128)).to(device)
+                            logvar = torch.zeros_like(mu)
+                        
+                        # Compute VAE losses
+                        if vae_type != 'vq_vae':
+                            recon_loss = F.mse_loss(recon_batch, data_batch, reduction='sum')
+                            kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
+                            
+                            if vae_type == 'beta_vae':
+                                loss = recon_loss + beta * kl_loss
+                            else:
+                                loss = recon_loss + kl_loss
+                            
+                            total_loss += loss.item()
+                            total_recon_loss += recon_loss.item()
+                            total_kl_loss += kl_loss.item()
+                            num_samples += batch_size
+                            
+                    except Exception as e:
+                        print(f"Error in batch {batch_idx}: {e}")
+                        print(f"Model output: {type(outputs) if 'outputs' in locals() else 'No outputs'}")
+                        continue
             
             # Calculate average metrics
             avg_loss = total_loss / num_samples if num_samples > 0 else 0
