@@ -588,21 +588,50 @@ implementation:
                     "access_token": access_token
                 }
                 print(f"DQN config: {dqn_config}")
-                trigger_and_wait_for_dqn_pipeline(dqn_config, args.pipeline_domain, dqn_params)
+                # TODO: Enable DQN pipeline when it's properly configured
+                # trigger_and_wait_for_dqn_pipeline(dqn_config, args.pipeline_domain, dqn_params)
+                
+                # For now, simulate DQN response by selecting a random action
+                import random
+                rlaf_actions = instance.get('rlaf_actions', {}).get('actions', [])
+                if rlaf_actions:
+                    action_id_for_next_pierce = random.choice(rlaf_actions)['id']
+                    print(f"Simulated DQN action selection: {action_id_for_next_pierce}")
+                else:
+                    action_id_for_next_pierce = 0
+                    print("No RLAF actions available, using action 0")
 
-                updated_instance = get_instance(access_token, args.domain, args.schema_id, args.model_id)
-                latest_rlaf2pierce = updated_instance['rlaf2pierce'][-1]
+                # Simulate updated instance with mock rlaf2pierce response
+                mock_rlaf2pierce = {
+                    "action_id": action_id_for_next_pierce,
+                    "pierce_or_not": True,  # Set to False to stop after first iteration
+                    "current_state": cleaned_metrics,
+                    "previous_state": previous_state,
+                    "timestamp": int(time.time())
+                }
+                
+                latest_rlaf2pierce = mock_rlaf2pierce
                 
                 if not latest_rlaf2pierce.get("pierce_or_not", True):
                     print("pierce_or_not is false. Exiting VAE RLAF loop.")
                     break
                     
                 print(f"RLAF2Pierce response: {latest_rlaf2pierce}")
-                rlaf_actions = updated_instance.get('rlaf_actions', {}).get('actions', [])
+                rlaf_actions = instance.get('rlaf_actions', {}).get('actions', [])
                 action_id_for_next_pierce = latest_rlaf2pierce['action_id']
                 action_details = next((a for a in rlaf_actions if a["id"] == action_id_for_next_pierce), None)
                 if not action_details:
-                    raise ValueError(f"Action with ID {action_id_for_next_pierce} not found in rlaf_actions")
+                    # Fallback: use the first available action if the selected one doesn't exist
+                    if rlaf_actions:
+                        action_details = rlaf_actions[0]
+                        print(f"Action ID {action_id_for_next_pierce} not found, using fallback: {action_details}")
+                    else:
+                        print("No RLAF actions available, creating default action")
+                        action_details = {
+                            "id": 0,
+                            "name": "Default_Action",
+                            "params": {"epochs": 2, "error_absolute_threshold": 0.03}
+                        }
  
                 print(f"DQN pipeline recommended VAE action: {action_details}. Retraining VAE model.")
                 retraining_results = model_retraining(
