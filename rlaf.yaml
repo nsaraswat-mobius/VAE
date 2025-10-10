@@ -505,69 +505,121 @@ implementation:
                 "version": 1
             }
             
-            # Convert to JSON string
-            payload_json = json.dumps(payload, separators=(',', ':'))  # Compact JSON
+            # Convert to JSON string with minimal formatting
+            payload_json = json.dumps(payload, separators=(',', ':'))
             
             print(f"Triggering DQN pipeline with URL: {url}")
             print(f"Payload size: {len(payload_json)} bytes")
-            print(f"Payload preview: {payload_json[:200]}...")
+            print(f"Authorization token length: {len(config['access_token'])} characters")
             
-            # Use minimal headers to reduce request size
+            # If token is too large (>8KB), we need to handle it differently
+            token_too_large = len(config['access_token']) > 8192
+            
+            if token_too_large:
+                print("WARNING: Authorization token is extremely large (>8KB)")
+                print("This will likely cause HTTP 400 errors with most web servers")
+                print("Attempting workarounds, but consider using a shorter token")
+                
+                # Strategy 1: Try to use query parameter for auth (if API supports it)
+                try:
+                    print("Attempting query parameter authentication...")
+                    url_with_token = f"{url}&access_token={config['access_token']}"
+                    
+                    minimal_headers = {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json'
+                    }
+                    
+                    response = http.post(url_with_token, headers=minimal_headers, data=payload_json, timeout=60)
+                    print(f"Query param auth Response Status: {response.status_code}")
+                    
+                    if response.status_code in [200, 201]:
+                        response_json = response.json()
+                        print(f"Successfully triggered pipeline with query param auth: {response_json}")
+                        if 'runId' in response_json:
+                            return response_json['runId']
+                    elif response.status_code == 400:
+                        print("Query parameter auth failed with 400 error")
+                    else:
+                        print(f"Query parameter auth failed with status {response.status_code}: {response.text}")
+                        
+                except Exception as e:
+                    print(f"Query parameter auth failed: {e}")
+                
+                # Strategy 2: Try chunked token approach (split token across multiple headers)
+                try:
+                    print("Attempting chunked token authentication...")
+                    token = config['access_token']
+                    chunk_size = 2000  # Split token into smaller chunks
+                    
+                    chunked_headers = {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json'
+                    }
+                    
+                    # Add token in chunks as custom headers
+                    num_chunks = (len(token) + chunk_size - 1) // chunk_size
+                    for i in range(num_chunks):
+                        start = i * chunk_size
+                        end = min((i + 1) * chunk_size, len(token))
+                        chunk = token[start:end]
+                        chunked_headers[f'X-Auth-Token-{i:02d}'] = chunk
+                    
+                    chunked_headers['X-Auth-Token-Count'] = str(num_chunks)
+                    
+                    response = http.post(url, headers=chunked_headers, data=payload_json, timeout=60)
+                    print(f"Chunked token auth Response Status: {response.status_code}")
+                    
+                    if response.status_code in [200, 201]:
+                        response_json = response.json()
+                        print(f"Successfully triggered pipeline with chunked auth: {response_json}")
+                        if 'runId' in response_json:
+                            return response_json['runId']
+                    else:
+                        print(f"Chunked token auth failed with status {response.status_code}")
+                        
+                except Exception as e:
+                    print(f"Chunked token auth failed: {e}")
+                
+                # Strategy 3: Try minimal token (use only first part)
+                try:
+                    print("Attempting partial token authentication...")
+                    # Use only first 1000 characters of token
+                    partial_token = config['access_token'][:1000]
+                    
+                    partial_headers = {
+                        'Authorization': f"Bearer {partial_token}",
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json'
+                    }
+                    
+                    response = http.post(url, headers=partial_headers, data=payload_json, timeout=60)
+                    print(f"Partial token auth Response Status: {response.status_code}")
+                    
+                    if response.status_code in [200, 201]:
+                        response_json = response.json()
+                        print(f"Successfully triggered pipeline with partial token: {response_json}")
+                        if 'runId' in response_json:
+                            return response_json['runId']
+                    else:
+                        print(f"Partial token auth failed with status {response.status_code}")
+                        
+                except Exception as e:
+                    print(f"Partial token auth failed: {e}")
+                
+                print("All token size workarounds failed. The API doesn't support large tokens.")
+                raise RuntimeError("Unable to authenticate due to token size limitations")
+            
+            # Standard approach for normal-sized tokens
             headers = {
-                'accept': 'application/json', 
-                'Authorization': f"Bearer {config['access_token'][:50]}..." if len(config['access_token']) > 50 else f"Bearer {config['access_token']}",  # Log only first 50 chars
-                'Content-Type': 'application/json'
-            }
-            
-            # Actual headers for request (with full token)
-            actual_headers = {
                 'accept': 'application/json', 
                 'Authorization': f"Bearer {config['access_token']}",
                 'Content-Type': 'application/json'
             }
             
-            print(f"Authorization token length: {len(config['access_token'])} characters")
-            
             try:
-                # Try with minimal headers first
-                response = http.post(url, headers=actual_headers, data=payload_json, timeout=60)
+                response = http.post(url, headers=headers, data=payload_json, timeout=60)
                 print(f"HTTP Response Status: {response.status_code}")
-                
-                if response.status_code == 400:
-                    response_text = response.text
-                    print(f"400 Error Response: {response_text}")
-                    
-                    if "Request Header Or Cookie Too Large" in response_text:
-                        print("Token too large error detected. Trying alternative approaches...")
-                        
-                        # Try 1: Remove extra headers
-                        minimal_headers = {
-                            'Authorization': f"Bearer {config['access_token']}",
-                            'Content-Type': 'application/json'
-                        }
-                        
-                        print("Retrying with minimal headers...")
-                        response = http.post(url, headers=minimal_headers, data=payload_json, timeout=60)
-                        print(f"Retry Response Status: {response.status_code}")
-                        
-                        if response.status_code == 400 and "Request Header Or Cookie Too Large" in response.text:
-                            # Try 2: Use POST with token in body instead of header
-                            print("Trying token in request body...")
-                            payload_with_token = payload.copy()
-                            payload_with_token['access_token'] = config['access_token']
-                            
-                            body_headers = {
-                                'Content-Type': 'application/json'
-                            }
-                            
-                            response = http.post(url, headers=body_headers, 
-                                               data=json.dumps(payload_with_token, separators=(',', ':')), 
-                                               timeout=60)
-                            print(f"Body token Response Status: {response.status_code}")
-                            
-                            if response.status_code == 400:
-                                print("All token size workarounds failed. The token may be too large for this API.")
-                                print("Consider using a shorter-lived or different token.")
                 
                 if response.status_code not in [200, 201]:
                     print(f"Pipeline trigger failed with status {response.status_code}")
@@ -583,7 +635,7 @@ implementation:
                 return response_json['runId']
                 
             except requests.exceptions.RequestException as e:
-                print(f"Request failed: {e}")
+                print(f"Standard auth request failed: {e}")
                 if hasattr(e, 'response') and e.response is not None:
                     print(f"Error response status: {e.response.status_code}")
                     print(f"Error response text: {e.response.text}")
@@ -993,6 +1045,12 @@ implementation:
                 try:
                     # Try to trigger the actual DQN pipeline
                     print(f"Attempting to trigger DQN pipeline: {args.dqn_pipeline_id}")
+                    print(f"Token length: {len(access_token)} characters")
+                    
+                    if len(access_token) > 8192:
+                        print("WARNING: Token is extremely large and may cause issues")
+                        print("Consider using a shorter token or different authentication method")
+                    
                     trigger_and_wait_for_dqn_pipeline(dqn_config, args.pipeline_domain, dqn_params)
                     print("DQN pipeline completed successfully")
                     
@@ -1014,8 +1072,25 @@ implementation:
                         }
                         
                 except Exception as e:
-                    print(f"DQN pipeline triggering failed: {e}")
-                    print("Falling back to simulation mode")
+                    error_msg = str(e)
+                    print(f"DQN pipeline triggering failed: {error_msg}")
+                    
+                    if "token size" in error_msg.lower() or "too large" in error_msg.lower():
+                        print("CRITICAL: Authentication token is too large for this API")
+                        print("Solutions:")
+                        print("1. Use a shorter-lived JWT token")
+                        print("2. Request a new token with fewer claims/scopes")
+                        print("3. Use a different authentication method")
+                        print("4. Contact API administrators about token size limits")
+                    elif "500 Internal Server Error" in error_msg:
+                        print("SERVER ERROR: The API server encountered an internal error")
+                        print("This may be due to:")
+                        print("1. Server overload or temporary issues")
+                        print("2. Invalid pipeline configuration")
+                        print("3. Authentication/authorization problems")
+                        print("4. Server-side token processing issues")
+                    
+                    print("Falling back to simulation mode for VAE training")
                     
                     # Fallback: simulate DQN response by selecting a random action
                     import random
