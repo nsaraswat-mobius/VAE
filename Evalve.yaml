@@ -25,7 +25,6 @@ implementation:
         import json
         import os
         import numpy as np
-        from sklearn.metrics import classification_report
         from nesy_factory.VAE import create_vae_model
         from nesy_factory.utils import set_random_seed
         import torch.nn as nn
@@ -131,8 +130,23 @@ implementation:
         # Load trained VAE model
         print("Loading trained VAE model...")
         vae_type = config.get('vae_type', 'standard_vae')
+        
+        # Create model using the same factory function as training
         model = create_vae_model(vae_type, config)
-        model.load_state_dict(torch.load(args.trained_model, map_location=torch.device('cpu')))
+        
+        # Load the trained weights
+        try:
+            model.load_state_dict(torch.load(args.trained_model, map_location=torch.device('cpu')))
+            print(f"Successfully loaded {vae_type} model weights")
+        except Exception as e:
+            print(f"Error loading model weights: {e}")
+            print("Trying to load with strict=False...")
+            try:
+                model.load_state_dict(torch.load(args.trained_model, map_location=torch.device('cpu')), strict=False)
+                print("Model loaded with strict=False")
+            except Exception as e2:
+                print(f"Failed to load model even with strict=False: {e2}")
+                exit(1)
         
         # Load data
         try:
@@ -159,7 +173,7 @@ implementation:
         os.makedirs(os.path.dirname(args.metrics_json), exist_ok=True)
 
         # Save metrics
-        print("Saving evaluation metrics")
+        print("Saving evaluation metrics...")
         try:
             with open(args.metrics, 'w') as f:
                 json.dump(eval_metrics, f, indent=2)
