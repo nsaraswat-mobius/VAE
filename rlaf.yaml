@@ -492,26 +492,85 @@ implementation:
                 "pipelineType": "ML", "containerResources": {}, "experimentId": config['experiment_id'],
                 "enableCaching": True, "parameters": pipeline_params, "version": 1
             })
-            print(f"{payload}")
+            
+            print(f"Triggering DQN pipeline with URL: {url}")
+            print(f"Payload: {payload}")
+            
             headers = {
-                'accept': 'application/json', 'Authorization': f"Bearer {config['access_token']}",
+                'accept': 'application/json', 
+                'Authorization': f"Bearer {config['access_token']}",
                 'Content-Type': 'application/json'
             }
-            response = http.post(url, headers=headers, data=payload, timeout=30)
-            response.raise_for_status()
-            print(f"Triggered pipeline. Response: {response.json()}")
-            return response.json()['runId']
+            
+            try:
+                response = http.post(url, headers=headers, data=payload, timeout=30)
+                print(f"HTTP Response Status: {response.status_code}")
+                print(f"HTTP Response Headers: {dict(response.headers)}")
+                
+                if response.status_code != 200:
+                    print(f"Pipeline trigger failed with status {response.status_code}")
+                    print(f"Response text: {response.text}")
+                    response.raise_for_status()
+                
+                response_json = response.json()
+                print(f"Triggered pipeline successfully. Response: {response_json}")
+                
+                if 'runId' not in response_json:
+                    raise RuntimeError(f"No runId in response: {response_json}")
+                    
+                return response_json['runId']
+                
+            except requests.exceptions.RequestException as e:
+                print(f"Request failed: {e}")
+                raise
+            except json.JSONDecodeError as e:
+                print(f"Failed to parse JSON response: {e}")
+                print(f"Response text: {response.text}")
+                raise
+            except Exception as e:
+                print(f"Unexpected error during pipeline trigger: {e}")
+                raise
 
         def get_pipeline_status(config, pipeline_domain):
             http = get_retry_session()
             url = f"{pipeline_domain}/bob-service-test/v1.0/pipeline/{config['pipeline_id']}/status/ml/{config['run_id']}"
             headers = {'accept': 'application/json', 'Authorization': f"Bearer {config['access_token']}"}
-            response = http.get(url, headers=headers, timeout=30)
-            response.raise_for_status()
-            pipeline_status = response.json()
-            print(f"Full response from get_pipeline_status: {pipeline_status}")
-            latest_state = pipeline_status['run_details']['state_history'][-1]
-            return latest_state['state']
+            
+            try:
+                response = http.get(url, headers=headers, timeout=30)
+                print(f"Status check HTTP Response: {response.status_code}")
+                
+                if response.status_code != 200:
+                    print(f"Status check failed with status {response.status_code}")
+                    print(f"Response text: {response.text}")
+                    response.raise_for_status()
+                
+                pipeline_status = response.json()
+                print(f"Full response from get_pipeline_status: {pipeline_status}")
+                
+                if 'run_details' not in pipeline_status or 'state_history' not in pipeline_status['run_details']:
+                    raise RuntimeError(f"Invalid pipeline status response structure: {pipeline_status}")
+                
+                state_history = pipeline_status['run_details']['state_history']
+                if not state_history:
+                    raise RuntimeError("Empty state history in pipeline status")
+                    
+                latest_state = state_history[-1]
+                current_status = latest_state['state']
+                print(f"Current pipeline status: {current_status}")
+                
+                return current_status
+                
+            except requests.exceptions.RequestException as e:
+                print(f"Status check request failed: {e}")
+                raise
+            except json.JSONDecodeError as e:
+                print(f"Failed to parse status response JSON: {e}")
+                print(f"Response text: {response.text}")
+                raise
+            except Exception as e:
+                print(f"Unexpected error during status check: {e}")
+                raise
 
         def get_instance(access_token, domain, schema_id, model_id):
             http = get_retry_session()
@@ -542,17 +601,51 @@ implementation:
 
         # Core Logic
         def trigger_and_wait_for_dqn_pipeline(config, pipeline_domain, dqn_params):
-            run_id = trigger_pipeline(config, pipeline_domain, dqn_params)
-            config["run_id"] = run_id
-            while True:
-                status = get_pipeline_status(config, pipeline_domain)
-                print(f"Current DQN pipeline status: {status}")
-                if status == 'SUCCEEDED':
-                    print("DQN Pipeline execution completed.")
-                    break
-                elif status in ['FAILED', 'ERROR']:
-                    raise RuntimeError(f"DQN Pipeline failed with status {status}")
-                time.sleep(60)
+            print(f"Starting DQN pipeline trigger process...")
+            print(f"Pipeline ID: {config['pipeline_id']}")
+            print(f"Experiment ID: {config['experiment_id']}")
+            print(f"Pipeline Domain: {pipeline_domain}")
+            print(f"DQN Parameters: {json.dumps(dqn_params, indent=2)}")
+            
+            try:
+                run_id = trigger_pipeline(config, pipeline_domain, dqn_params)
+                config["run_id"] = run_id
+                print(f"DQN pipeline triggered successfully with run_id: {run_id}")
+                
+                max_wait_time = 1800  # 30 minutes maximum wait time
+                wait_interval = 60    # Check every 60 seconds
+                elapsed_time = 0
+                
+                while elapsed_time < max_wait_time:
+                    try:
+                        status = get_pipeline_status(config, pipeline_domain)
+                        print(f"Current DQN pipeline status: {status} (waited {elapsed_time}s)")
+                        
+                        if status == 'SUCCEEDED':
+                            print("DQN Pipeline execution completed successfully.")
+                            return True
+                        elif status in ['FAILED', 'ERROR', 'CANCELLED']:
+                            raise RuntimeError(f"DQN Pipeline failed with status: {status}")
+                        elif status in ['RUNNING', 'PENDING', 'QUEUED']:
+                            print(f"Pipeline still {status.lower()}, waiting...")
+                        else:
+                            print(f"Unknown pipeline status: {status}, continuing to wait...")
+                        
+                        time.sleep(wait_interval)
+                        elapsed_time += wait_interval
+                        
+                    except Exception as status_error:
+                        print(f"Error checking pipeline status: {status_error}")
+                        if elapsed_time > 300:  # After 5 minutes, give up on status errors
+                            raise RuntimeError(f"Persistent status check failures: {status_error}")
+                        time.sleep(wait_interval)
+                        elapsed_time += wait_interval
+                
+                raise RuntimeError(f"DQN Pipeline timed out after {max_wait_time} seconds")
+                
+            except Exception as e:
+                print(f"DQN pipeline execution failed: {e}")
+                raise
 
         def model_retraining(action, model_path, data_path, config_path, tasks_path, output_model_path, previous_metrics, dqn_params):
             # Load VAE model architecture
@@ -815,29 +908,52 @@ implementation:
                     "access_token": access_token
                 }
                 print(f"DQN config: {dqn_config}")
-                # TODO: Enable DQN pipeline when it's properly configured
-                # trigger_and_wait_for_dqn_pipeline(dqn_config, args.pipeline_domain, dqn_params)
                 
-                # For now, simulate DQN response by selecting a random action
-                import random
-                rlaf_actions = instance.get('rlaf_actions', {}).get('actions', [])
-                if rlaf_actions:
-                    action_id_for_next_pierce = random.choice(rlaf_actions)['id']
-                    print(f"Simulated DQN action selection: {action_id_for_next_pierce}")
-                else:
-                    action_id_for_next_pierce = 0
-                    print("No RLAF actions available, using action 0")
+                try:
+                    # Try to trigger the actual DQN pipeline
+                    print(f"Attempting to trigger DQN pipeline: {args.dqn_pipeline_id}")
+                    trigger_and_wait_for_dqn_pipeline(dqn_config, args.pipeline_domain, dqn_params)
+                    print("DQN pipeline completed successfully")
+                    
+                    # Get updated instance with rlaf2pierce response
+                    updated_instance = get_instance(access_token, args.domain, args.schema_id, args.model_id)
+                    rlaf2pierce_history = updated_instance.get('rlaf2pierce', [])
+                    
+                    if rlaf2pierce_history:
+                        latest_rlaf2pierce = rlaf2pierce_history[-1]
+                        print(f"Received DQN pipeline response: {latest_rlaf2pierce}")
+                    else:
+                        print("No rlaf2pierce response found, using simulation")
+                        latest_rlaf2pierce = {
+                            "action_id": 0,
+                            "pierce_or_not": True,
+                            "current_state": cleaned_metrics,
+                            "previous_state": previous_state,
+                            "timestamp": int(time.time())
+                        }
+                        
+                except Exception as e:
+                    print(f"DQN pipeline triggering failed: {e}")
+                    print("Falling back to simulation mode")
+                    
+                    # Fallback: simulate DQN response by selecting a random action
+                    import random
+                    rlaf_actions = instance.get('rlaf_actions', {}).get('actions', [])
+                    if rlaf_actions:
+                        action_id_for_next_pierce = random.choice(rlaf_actions)['id']
+                        print(f"Simulated DQN action selection: {action_id_for_next_pierce}")
+                    else:
+                        action_id_for_next_pierce = 0
+                        print("No RLAF actions available, using action 0")
 
-                # Simulate updated instance with mock rlaf2pierce response
-                mock_rlaf2pierce = {
-                    "action_id": action_id_for_next_pierce,
-                    "pierce_or_not": True,  # Set to False to stop after first iteration
-                    "current_state": cleaned_metrics,
-                    "previous_state": previous_state,
-                    "timestamp": int(time.time())
-                }
-                
-                latest_rlaf2pierce = mock_rlaf2pierce
+                    # Simulate updated instance with mock rlaf2pierce response
+                    latest_rlaf2pierce = {
+                        "action_id": action_id_for_next_pierce,
+                        "pierce_or_not": True,  # Set to False to stop after first iteration
+                        "current_state": cleaned_metrics,
+                        "previous_state": previous_state,
+                        "timestamp": int(time.time())
+                    }
                 
                 if not latest_rlaf2pierce.get("pierce_or_not", True):
                     print("pierce_or_not is false. Exiting VAE RLAF loop.")
