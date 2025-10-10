@@ -49,7 +49,7 @@ implementation:
                 return self.data[idx], self.labels[idx]
 
         def evaluate_vae_model(model, data_loader, device, vae_type='standard_vae', beta=1.0):
-            """Evaluate VAE model and return metrics"""
+            # Evaluate VAE model and return metrics
             model.eval()
             total_loss = 0
             total_recon_loss = 0
@@ -159,7 +159,7 @@ implementation:
         os.makedirs(os.path.dirname(args.metrics_json), exist_ok=True)
 
         # Save metrics
-        print("Saving evaluation metrics...")
+        print("Saving evaluation metrics")
         try:
             with open(args.metrics, 'w') as f:
                 json.dump(eval_metrics, f, indent=2)
