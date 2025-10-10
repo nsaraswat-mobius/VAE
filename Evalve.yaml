@@ -1,0 +1,186 @@
+name: VAE Evaluate Model
+description: Evaluates the trained VAE model and generates performance metrics.
+inputs:
+  - {name: trained_model, type: Model}     # Trained VAE model from train brick
+  - {name: data_path, type: Dataset}
+  - {name: config, type: String}           # VAE model configuration 
+outputs:
+  - {name: metrics, type: Metrics}         # Evaluation metrics and reports
+  - {name: metrics_json, type: String}     # Evaluation metrics as a JSON string
+implementation:
+  container:
+    image: nikhilv215/nesy-factory:v22
+    command:
+      - sh
+      - -c
+      - |
+        exec "$0" "$@"
+      - python3
+      - -u
+      - -c
+      - |
+        import torch
+        import argparse
+        import pickle
+        import json
+        import os
+        import numpy as np
+        from sklearn.metrics import classification_report
+        from nesy_factory.VAE import create_vae_model
+        from nesy_factory.utils import set_random_seed
+        import torch.nn as nn
+        import torch.nn.functional as F
+        
+        class DataWrapper:
+          def __init__(self, data_dict):
+              self.__dict__.update(data_dict)
+
+        class ProcessedVAEDataset:
+            def __init__(self, data, labels, vae_type):
+                self.data = data
+                self.labels = labels
+                self.vae_type = vae_type
+                self.class_mapping = {}
+
+            def __len__(self):
+                return len(self.data)
+
+            def __getitem__(self, idx):
+                return self.data[idx], self.labels[idx]
+
+        def evaluate_vae_model(model, data_loader, device, vae_type='standard_vae', beta=1.0):
+            """Evaluate VAE model and return metrics"""
+            model.eval()
+            total_loss = 0
+            total_recon_loss = 0
+            total_kl_loss = 0
+            num_samples = 0
+            
+            print("Starting VAE model evaluation...")
+            with torch.no_grad():
+                for batch_idx, (data_batch, labels) in enumerate(data_loader):
+                    data_batch = data_batch.to(device)
+                    batch_size = data_batch.size(0)
+                    
+                    if vae_type == 'conditional_vae':
+                        labels = labels.to(device)
+                        recon_batch, mu, logvar = model(data_batch, labels)
+                    elif vae_type == 'vq_vae':
+                        recon_batch, vq_loss, _ = model(data_batch)
+                        recon_loss = F.mse_loss(recon_batch, data_batch, reduction='sum')
+                        total_loss += (recon_loss + vq_loss).item()
+                        total_recon_loss += recon_loss.item()
+                        total_kl_loss += vq_loss.item()
+                        num_samples += batch_size
+                        continue
+                    else:
+                        recon_batch, mu, logvar = model(data_batch)
+                    
+                    # Compute VAE losses
+                    if vae_type != 'vq_vae':
+                        recon_loss = F.mse_loss(recon_batch, data_batch, reduction='sum')
+                        kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
+                        
+                        if vae_type == 'beta_vae':
+                            loss = recon_loss + beta * kl_loss
+                        else:
+                            loss = recon_loss + kl_loss
+                        
+                        total_loss += loss.item()
+                        total_recon_loss += recon_loss.item()
+                        total_kl_loss += kl_loss.item()
+                        num_samples += batch_size
+            
+            # Calculate average metrics
+            avg_loss = total_loss / num_samples if num_samples > 0 else 0
+            avg_recon_loss = total_recon_loss / num_samples if num_samples > 0 else 0
+            avg_kl_loss = total_kl_loss / num_samples if num_samples > 0 else 0
+            
+            eval_metrics = {
+                'vae_loss': avg_loss,
+                'reconstruction_loss': avg_recon_loss,
+                'kl_divergence': avg_kl_loss,
+                'num_samples': num_samples,
+                'model_type': vae_type
+            }
+            
+            return eval_metrics
+
+        # Parse arguments
+        parser = argparse.ArgumentParser()
+        parser.add_argument('--trained_model', type=str, required=True)
+        parser.add_argument('--data_path', type=str, required=True)
+        parser.add_argument('--config', type=str, required=True)
+        parser.add_argument('--metrics', type=str, required=True)
+        parser.add_argument('--metrics_json', type=str, required=True)
+        args = parser.parse_args()
+
+        print(f"Trained model path: {args.trained_model}")
+        print(f"Data path: {args.data_path}")
+        print(f"Output path: {args.metrics}")
+        
+        print("Loading config...")
+        print(f"config file is {args.config}")
+        try: 
+            config = json.loads(args.config)
+        except : 
+            with open(args.config) as f:
+                config = json.load(f)
+        print(f"the configs are : {config}")
+
+        # Load trained VAE model
+        print("Loading trained VAE model...")
+        vae_type = config.get('vae_type', 'standard_vae')
+        model = create_vae_model(vae_type, config)
+        model.load_state_dict(torch.load(args.trained_model, map_location=torch.device('cpu')))
+        
+        # Load data
+        try:
+            with open(args.data_path, "rb") as f:
+                data_loader = pickle.load(f)
+            print(f"Successfully loaded data. Type: {type(data_loader)}")
+        except Exception as e:
+            print(f"Error loading data: {e}")
+            exit(1)
+        
+        # Set device
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        model = model.to(device)
+        print(f"Using device: {device}")
+        
+        # VAE Model Evaluation 
+        print("Starting VAE Model Evaluation")
+        beta = config.get('beta', 1.0)
+        eval_metrics = evaluate_vae_model(model, data_loader, device, vae_type, beta)
+        print(f"VAE Evaluation Results: {eval_metrics}")
+        
+        # Ensure output directory exists
+        os.makedirs(os.path.dirname(args.metrics), exist_ok=True)
+        os.makedirs(os.path.dirname(args.metrics_json), exist_ok=True)
+
+        # Save metrics
+        print("Saving evaluation metrics...")
+        try:
+            with open(args.metrics, 'w') as f:
+                json.dump(eval_metrics, f, indent=2)
+            print(f"Saved metrics to {args.metrics}")
+
+            with open(args.metrics_json, 'w') as f:
+                json.dump(eval_metrics, f, indent=2)
+            print(f"Saved metrics JSON to {args.metrics_json}")
+
+        except Exception as e:
+            print(f"Error saving metrics: {e}")
+            exit(1)
+
+    args:
+      - --trained_model
+      - {inputPath: trained_model}
+      - --data_path
+      - {inputPath: data_path}
+      - --config
+      - {inputValue: config}
+      - --metrics
+      - {outputPath: metrics}
+      - --metrics_json
+      - {outputPath: metrics_json}
