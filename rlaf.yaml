@@ -194,17 +194,54 @@ implementation:
                     # VAE forward pass
                     if hasattr(model, 'vae_type') and model.vae_type == 'conditional_vae':
                         batch_labels = batch_labels.to(self.device)
-                        recon_batch, mu, logvar = model(batch_data, batch_labels)
+                        outputs = model(batch_data, batch_labels)
                     elif hasattr(model, 'vae_type') and model.vae_type == 'vq_vae':
-                        recon_batch, vq_loss, _ = model(batch_data)
-                        loss = F.mse_loss(recon_batch, batch_data) + vq_loss
-                        loss.backward()
-                        optimizer.step()
-                        total_loss += loss.item()
-                        num_batches += 1
-                        continue
+                        outputs = model(batch_data)
+                        if isinstance(outputs, (tuple, list)) and len(outputs) >= 2:
+                            recon_batch, vq_loss = outputs[0], outputs[1]
+                            loss = F.mse_loss(recon_batch, batch_data) + vq_loss
+                            loss.backward()
+                            optimizer.step()
+                            total_loss += loss.item()
+                            num_batches += 1
+                            continue
                     else:
-                        recon_batch, mu, logvar = model(batch_data)
+                        outputs = model(batch_data)
+                    
+                    # Handle different output formats
+                    if isinstance(outputs, dict):
+                        # Handle dictionary output format
+                        recon_batch = outputs.get('reconstruction', outputs.get('recon', outputs.get('x_recon', None)))
+                        mu = outputs.get('mu', outputs.get('z_mean', outputs.get('mean', None)))
+                        logvar = outputs.get('logvar', outputs.get('z_logvar', outputs.get('log_var', None)))
+                        
+                        if recon_batch is None:
+                            print("Could not find reconstruction in dict output, skipping batch")
+                            continue
+                        if mu is None:
+                            latent_dim = self.config.get('latent_dim', 128)
+                            mu = torch.zeros(batch_data.size(0), latent_dim).to(self.device)
+                        if logvar is None:
+                            logvar = torch.zeros_like(mu)
+                            
+                    elif isinstance(outputs, (tuple, list)):
+                        # Handle tuple/list output format
+                        if len(outputs) == 3:
+                            recon_batch, mu, logvar = outputs
+                        elif len(outputs) == 2:
+                            recon_batch, mu = outputs
+                            logvar = torch.zeros_like(mu)
+                        elif len(outputs) == 1:
+                            recon_batch = outputs[0]
+                            latent_dim = self.config.get('latent_dim', 128)
+                            mu = torch.zeros(batch_data.size(0), latent_dim).to(self.device)
+                            logvar = torch.zeros_like(mu)
+                        else:
+                            print(f"Unexpected tuple output format: {len(outputs)} outputs")
+                            continue
+                    else:
+                        print(f"Unexpected output type: {type(outputs)}")
+                        continue
                     
                     # VAE loss calculation
                     recon_loss = F.mse_loss(recon_batch, batch_data, reduction='sum')
