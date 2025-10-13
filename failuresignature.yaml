@@ -77,6 +77,7 @@ implementation:
                 self.scaler = StandardScaler()
                 
             def fetch_api_data(self, api_url: str, access_token: str) -> List[str]:
+                # Fetch failure signature data from API with retry logic
                 logging.basicConfig(level=logging.INFO)
                 logger = logging.getLogger("api_retry")
 
@@ -153,6 +154,7 @@ implementation:
                     return self.generate_synthetic_failure_logs()
                     
             def generate_synthetic_failure_logs(self) -> List[str]:
+                # Generate synthetic failure logs for testing
                 synthetic_logs = [
                     # Database errors
                     "ERROR 1045: Access denied for user 'app'@'localhost' (using password: YES)",
@@ -209,6 +211,7 @@ implementation:
                 return extended_logs
                 
             def extract_signatures(self, failure_logs: List[str]) -> List[Dict]:
+                # Extract structured failure signatures from raw log data
                 signatures = []
                 
                 for i, log_entry in enumerate(failure_logs):
@@ -242,6 +245,7 @@ implementation:
                 return signatures
             
             def create_embeddings(self, signatures: List[Dict]) -> Tuple[np.ndarray, np.ndarray, List[str]]:
+                # Create embeddings from failure signatures
                 print(f"Creating embeddings for {len(signatures)} failure signatures...")
                 
                 # Prepare text data for TF-IDF
@@ -276,6 +280,7 @@ implementation:
                 return combined_embeddings, labels, unique_types
             
             def deduplicate_signatures(self, signatures: List[Dict], similarity_threshold: float = 0.95) -> List[Dict]:
+                # Remove duplicate failure signatures based on hash similarity
                 print(f"Deduplicating {len(signatures)} signatures...")
                 
                 hash_groups = defaultdict(list)
@@ -297,7 +302,7 @@ implementation:
             
             def create_continual_tasks(self, embeddings: np.ndarray, labels: np.ndarray, 
                                      unique_types: List[str], signatures: List[Dict]) -> List[Dict]:
-                """Create continual learning tasks based on failure types"""
+                # Create continual learning tasks based on failure types
                 print("Creating continual learning tasks...")
                 
                 tasks = []
