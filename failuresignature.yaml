@@ -6,9 +6,9 @@ inputs:
 outputs:
   - {name: train_data, type: Dataset}
   - {name: val_data, type: Dataset}
-  - {name: data_shape, type: Dataset}
-  - {name: vae_type, type: Dataset}
-  - {name: preprocessing_config, type: Dataset}
+  - {name: data_shape, type: String}
+  - {name: vae_type, type: String}
+  - {name: preprocessing_config, type: String}
 implementation:
   container:
     image: nikhilv215/nesy-factory:v22
@@ -145,7 +145,7 @@ implementation:
             }
             
             with open(args.preprocessing_config, 'w') as f:
-                json.dump(preprocessing_config, f)
+                f.write(json.dumps(preprocessing_config))
             
             print(" Enhanced failure signature dataset loading complete!")
             print(f" Training samples: {len(train_data)}")
