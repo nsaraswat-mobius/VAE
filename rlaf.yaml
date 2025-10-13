@@ -9,7 +9,6 @@ inputs:
   - {name: schema_id, type: String}
   - {name: model_id, type: String}
   - {name: dqn_pipeline_id, type: String}
-  - {name: pipeline_domain, type: String}
   - {name: dqn_experiment_id, type: String}
   - {name: access_token, type: string}
   - {name: tasks, type: Dataset}
@@ -473,392 +472,94 @@ implementation:
 
         # API/DB Helper Functions
         def get_retry_session():
-            retry_strategy = Retry(
-                total=3,  # Reduced retries to avoid amplifying large header issues
-                status_forcelist=[500, 502, 503, 504],
-                backoff_factor=1
-            )
-            adapter = HTTPAdapter(max_retries=retry_strategy)
-            session = requests.Session()
-            session.mount("https://", adapter)
-            session.mount("http://", adapter)
-            
-            # Configure session for large headers/tokens
-            session.headers.update({
-                'User-Agent': 'nesy-factory-vae-rlaf/1.0'  # Short user agent
-            })
-            
-            return session
+            return requests.Session()
 
-        def trigger_pipeline(config, pipeline_domain, dqn_params=None):
-            http = get_retry_session()
-            url = f"{pipeline_domain}/bob-service-test/v1.0/pipeline/trigger/ml?pipelineId={config['pipeline_id']}"
-            
-            # Prepare minimal payload to reduce request size
+        def trigger_pipeline(config, dqn_params=None):
+            url = f"https://ig.mobiusdtaas.ai/bob-service-test/v1.0/pipeline/trigger/ml?pipelineId={config['pipeline_id']}"
             pipeline_params = {"param_json": json.dumps(dqn_params)} if dqn_params else {}
-            payload = {
+            payload = json.dumps({
                 "pipelineType": "ML", 
                 "containerResources": {}, 
                 "experimentId": config['experiment_id'],
                 "enableCaching": True, 
                 "parameters": pipeline_params, 
                 "version": 1
-            }
-            
-            # Convert to JSON string with minimal formatting
-            payload_json = json.dumps(payload, separators=(',', ':'))
-            
-            print(f"Triggering DQN pipeline with URL: {url}")
-            print(f"Payload size: {len(payload_json)} bytes")
-            print(f"Authorization token length: {len(config['access_token'])} characters")
-            
-            # Critical token size analysis
-            token_length = len(config['access_token'])
-            
-            if token_length > 10000:
-                print("CRITICAL ERROR: Token exceeds 10KB - this will fail on all standard web servers")
-                print("HTTP 414 'Request-URI Too Large' and HTTP 500 errors are expected")
-                print("")
-                print("IMMEDIATE SOLUTIONS NEEDED:")
-                print("1. Generate a new, shorter JWT token with fewer claims/scopes")
-                print("2. Use OAuth refresh token flow to get a smaller access token")
-                print("3. Request API key authentication instead of JWT")
-                print("4. Contact system administrator to increase server limits")
-                print("5. Use service-to-service authentication with smaller tokens")
-                print("")
-                print("TECHNICAL DETAILS:")
-                print(f"- Current token: {token_length} characters ({token_length/1024:.1f}KB)")
-                print("- Most web servers limit headers to 8KB total")
-                print("- nginx default: 8KB, Apache default: 8KB") 
-                print("- Your token alone exceeds most server limits")
-                print("")
-                print("FALLING BACK TO SIMULATION MODE...")
-                print("DQN pipeline will be simulated to allow VAE training to continue")
-                
-                # Don't even attempt network calls - they will fail
-                # Return a fake run_id to allow simulation mode
-                fake_run_id = f"SIMULATED_RUN_{int(time.time())}"
-                print(f"Generated simulation run_id: {fake_run_id}")
-                return fake_run_id
-                
-            elif token_length > 8192:
-                print("WARNING: Token exceeds 8KB - attempting limited workarounds")
-                
-                # Strategy 1: Try Base64 encoding to reduce token size (if it contains repeated patterns)
-                try:
-                    import base64
-                    print("Attempting Base64 compression authentication...")
-                    
-                    # Try compressing the token
-                    token_bytes = config['access_token'].encode('utf-8')
-                    compressed_token = base64.b64encode(token_bytes).decode('utf-8')
-                    
-                    if len(compressed_token) < len(config['access_token']):
-                        print(f"Compressed token to {len(compressed_token)} characters")
-                        
-                        compressed_headers = {
-                            'Authorization': f"Bearer {compressed_token}",
-                            'Content-Type': 'application/json',
-                            'Accept': 'application/json',
-                            'X-Token-Encoding': 'base64'
-                        }
-                        
-                        response = http.post(url, headers=compressed_headers, data=payload_json, timeout=60)
-                        print(f"Compressed auth Response Status: {response.status_code}")
-                        
-                        if response.status_code in [200, 201]:
-                            response_json = response.json()
-                            print(f"Successfully triggered pipeline with compressed auth: {response_json}")
-                            if 'runId' in response_json:
-                                return response_json['runId']
-                    else:
-                        print("Base64 encoding did not reduce token size")
-                        
-                except Exception as e:
-                    print(f"Compressed auth failed: {e}")
-                
-                # Strategy 2: Try environment variable approach (server-side token storage)
-                try:
-                    print("Attempting server-side token reference...")
-                    
-                    # Send only a hash/reference instead of full token
-                    import hashlib
-                    token_hash = hashlib.sha256(config['access_token'].encode()).hexdigest()[:16]
-                    
-                    reference_headers = {
-                        'Authorization': f"TokenRef {token_hash}",
-                        'Content-Type': 'application/json',
-                        'Accept': 'application/json',
-                        'X-Full-Token-Hash': hashlib.sha256(config['access_token'].encode()).hexdigest()
-                    }
-                    
-                    response = http.post(url, headers=reference_headers, data=payload_json, timeout=60)
-                    print(f"Token reference auth Response Status: {response.status_code}")
-                    
-                    if response.status_code in [200, 201]:
-                        response_json = response.json()
-                        print(f"Successfully triggered pipeline with token reference: {response_json}")
-                        if 'runId' in response_json:
-                            return response_json['runId']
-                    else:
-                        print(f"Token reference auth failed with status {response.status_code}")
-                        
-                except Exception as e:
-                    print(f"Token reference auth failed: {e}")
-                
-                # Strategy 3: Try POST body authentication (move token out of headers)
-                try:
-                    print("Attempting POST body authentication...")
-                    
-                    # Add token to payload instead of headers
-                    auth_payload = payload.copy()
-                    auth_payload['authentication'] = {
-                        'type': 'bearer',
-                        'token': config['access_token']
-                    }
-                    
-                    auth_payload_json = json.dumps(auth_payload, separators=(',', ':'))
-                    
-                    minimal_headers = {
-                        'Content-Type': 'application/json',
-                        'Accept': 'application/json'
-                    }
-                    
-                    response = http.post(url, headers=minimal_headers, data=auth_payload_json, timeout=60)
-                    print(f"POST body auth Response Status: {response.status_code}")
-                    
-                    if response.status_code in [200, 201]:
-                        response_json = response.json()
-                        print(f"Successfully triggered pipeline with POST body auth: {response_json}")
-                        if 'runId' in response_json:
-                            return response_json['runId']
-                    else:
-                        print(f"POST body auth failed with status {response.status_code}")
-                        
-                except Exception as e:
-                    print(f"POST body auth failed: {e}")
-                
-                print("All large token workarounds failed. Entering simulation mode.")
-                fake_run_id = f"SIMULATED_RUN_{int(time.time())}"
-                print(f"Generated simulation run_id: {fake_run_id}")
-                return fake_run_id
-            
-            # Standard approach for normal-sized tokens
+            })
+            print(f"Payload: {payload}")
             headers = {
                 'accept': 'application/json', 
                 'Authorization': f"Bearer {config['access_token']}",
                 'Content-Type': 'application/json'
             }
             
-            try:
-                response = http.post(url, headers=headers, data=payload_json, timeout=60)
-                print(f"HTTP Response Status: {response.status_code}")
-                
-                if response.status_code not in [200, 201]:
-                    print(f"Pipeline trigger failed with status {response.status_code}")
-                    print(f"Response text: {response.text}")
-                    response.raise_for_status()
-                
-                response_json = response.json()
-                print(f"Triggered pipeline successfully. Response: {response_json}")
-                
-                if 'runId' not in response_json:
-                    raise RuntimeError(f"No runId in response: {response_json}")
-                    
-                return response_json['runId']
-                
-            except requests.exceptions.RequestException as e:
-                print(f"Standard auth request failed: {e}")
-                if hasattr(e, 'response') and e.response is not None:
-                    print(f"Error response status: {e.response.status_code}")
-                    print(f"Error response text: {e.response.text}")
-                raise
-            except json.JSONDecodeError as e:
-                print(f"Failed to parse JSON response: {e}")
-                print(f"Response text: {response.text}")
-                raise
-            except Exception as e:
-                print(f"Unexpected error during pipeline trigger: {e}")
-                raise
-
-        def get_pipeline_status(config, pipeline_domain):
-            http = get_retry_session()
-            url = f"{pipeline_domain}/bob-service-test/v1.0/pipeline/{config['pipeline_id']}/status/ml/{config['run_id']}"
+            token_length = len(config['access_token'])
+            print(f"Authorization token length: {token_length} characters")
             
-            # Use minimal headers to avoid "Request Header Too Large" error
+            if token_length > 10000:
+                print("CRITICAL ERROR: Token exceeds 10KB - entering simulation mode")
+                fake_run_id = f"SIMULATED_RUN_{int(time.time())}"
+                print(f"Generated simulation run_id: {fake_run_id}")
+                return fake_run_id
+            
+            response = requests.post(url, headers=headers, data=payload)
+            response.raise_for_status()
+            print(f"Triggered pipeline. Response: {response.json()}")
+            return response.json()['runId']
+
+        def get_pipeline_status(config):
+            url = f"https://ig.mobiusdtaas.ai/bob-service-test/v1.0/pipeline/{config['pipeline_id']}/status/ml/{config['run_id']}"
             headers = {
                 'accept': 'application/json', 
                 'Authorization': f"Bearer {config['access_token']}"
             }
-            
-            try:
-                response = http.get(url, headers=headers, timeout=60)
-                print(f"Status check HTTP Response: {response.status_code}")
-                
-                if response.status_code == 400 and "Request Header Or Cookie Too Large" in response.text:
-                    print("Token too large for status check. Trying alternative...")
-                    # For status checks, we might need to use a different approach
-                    # This depends on your API design - you might need to use query parameters
-                    # or find an alternative status endpoint
-                    print("Status check failed due to token size. Using fallback status.")
-                    return "RUNNING"  # Assume still running if we can't check
-                
-                if response.status_code not in [200, 201]:
-                    print(f"Status check failed with status {response.status_code}")
-                    print(f"Response text: {response.text}")
-                    response.raise_for_status()
-                
-                pipeline_status = response.json()
-                print(f"Pipeline status response size: {len(str(pipeline_status))} characters")
-                
-                if 'run_details' not in pipeline_status or 'state_history' not in pipeline_status['run_details']:
-                    raise RuntimeError(f"Invalid pipeline status response structure: {pipeline_status}")
-                
-                state_history = pipeline_status['run_details']['state_history']
-                if not state_history:
-                    raise RuntimeError("Empty state history in pipeline status")
-                    
-                latest_state = state_history[-1]
-                current_status = latest_state['state']
-                print(f"Current pipeline status: {current_status}")
-                
-                return current_status
-                
-            except requests.exceptions.RequestException as e:
-                print(f"Status check request failed: {e}")
-                if hasattr(e, 'response') and e.response is not None and e.response.status_code == 400:
-                    print("Assuming pipeline is still running due to status check failure")
-                    return "RUNNING"
-                raise
-            except json.JSONDecodeError as e:
-                print(f"Failed to parse status response JSON: {e}")
-                print(f"Response text: {response.text}")
-                raise
-            except Exception as e:
-                print(f"Unexpected error during status check: {e}")
-                raise
+            response = requests.get(url, headers=headers)
+            response.raise_for_status()
+            pipeline_status = response.json()
+            latest_state = pipeline_status['run_details']['state_history'][-1]
+            return latest_state['state']
 
         def get_instance(access_token, domain, schema_id, model_id):
-            http = get_retry_session()
             url = f"{domain}/pi-entity-instances-service/v3.0/schemas/{schema_id}/instances/list"
             headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
             payload = {"dbType": "TIDB", "ownedOnly": True, "filter": {"model_id": model_id}}
-            response = http.post(url, headers=headers, json=payload, timeout=30)
+            response = requests.post(url, headers=headers, json=payload)
             response.raise_for_status()
-            print(f"Full response from get_instance: {response.json()}")
             return response.json()['content'][0]
 
         def update_instance_field(access_token, domain, schema_id, model_id, field, value):
-            http = get_retry_session()
             url = f"{domain}/pi-entity-instances-service/v2.0/schemas/{schema_id}/instances"
             headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
             payload = {
                 "dbType": "TIDB",
                 "conditionalFilter": {"conditions": [{"field": "model_id", "operator": "EQUAL", "value": model_id}]},
-                "partialUpdateRequests": [{"patch": [{"operation": "REPLACE", "path": f"{field}", "value": value}]}]
+                "partialUpdateRequests": [{"patch": [{"operation": "REPLACE", "path": field, "value": value}]}]
             }
-            print("cURL command for update_instance_field")
-            headers_str = " ".join([f"-H '{k}: {v}'" for k, v in headers.items()])
-            print(f"curl -X PATCH '{url}' {headers_str} -d '{json.dumps(payload)}'")    
-            response = http.patch(url, headers=headers, data=json.dumps(payload), timeout=30)
+            response = requests.patch(url, headers=headers, json=payload)
             response.raise_for_status()
-            print(f"Full response from update_instance_field: {response.json()}")
             print(f"Successfully updated field '{field}' for model_id '{model_id}'")
 
         # Core Logic
-        def trigger_and_wait_for_dqn_pipeline(config, pipeline_domain, dqn_params):
-            print(f"Starting DQN pipeline trigger process...")
-            print(f"Pipeline ID: {config['pipeline_id']}")
-            print(f"Experiment ID: {config['experiment_id']}")
-            print(f"Pipeline Domain: {pipeline_domain}")
-            print(f"DQN Parameters: {json.dumps(dqn_params, indent=2)}")
+        def trigger_and_wait_for_dqn_pipeline(config, dqn_params):
+            run_id = trigger_pipeline(config, dqn_params)
+            config["run_id"] = run_id
             
-            try:
-                run_id = trigger_pipeline(config, pipeline_domain, dqn_params)
-                config["run_id"] = run_id
-                
-                # Check if this is a simulated run
-                if run_id.startswith("SIMULATED_RUN_"):
-                    print(f"DQN pipeline is running in SIMULATION MODE with run_id: {run_id}")
-                    print("Simulating pipeline execution and success...")
-                    
-                    # Simulate pipeline execution time
-                    simulation_time = 30  # 30 seconds simulation
-                    print(f"Simulating {simulation_time} seconds of DQN processing...")
-                    time.sleep(simulation_time)
-                    
-                    print("DQN Pipeline simulation completed successfully.")
-                    print("Note: This was a simulation due to authentication token size limitations")
-                    return True
-                
-                print(f"DQN pipeline triggered successfully with run_id: {run_id}")
-                
-                max_wait_time = 1800  # 30 minutes maximum wait time
-                wait_interval = 60    # Check every 60 seconds
-                elapsed_time = 0
-                
-                while elapsed_time < max_wait_time:
-                    try:
-                        status = get_pipeline_status(config, pipeline_domain)
-                        print(f"Current DQN pipeline status: {status} (waited {elapsed_time}s)")
-                        
-                        if status == 'SUCCEEDED':
-                            print("DQN Pipeline execution completed successfully.")
-                            return True
-                        elif status in ['FAILED', 'ERROR', 'CANCELLED']:
-                            raise RuntimeError(f"DQN Pipeline failed with status: {status}")
-                        elif status in ['RUNNING', 'PENDING', 'QUEUED']:
-                            print(f"Pipeline still {status.lower()}, waiting...")
-                        else:
-                            print(f"Unknown pipeline status: {status}, continuing to wait...")
-                        
-                        time.sleep(wait_interval)
-                        elapsed_time += wait_interval
-                        
-                    except Exception as status_error:
-                        print(f"Error checking pipeline status: {status_error}")
-                        if elapsed_time > 300:  # After 5 minutes, give up on status errors
-                            raise RuntimeError(f"Persistent status check failures: {status_error}")
-                        time.sleep(wait_interval)
-                        elapsed_time += wait_interval
-                
-                raise RuntimeError(f"DQN Pipeline timed out after {max_wait_time} seconds")
-                
-            except Exception as e:
-                error_msg = str(e)
-                print(f"DQN pipeline execution failed: {error_msg}")
-                
-                # Enhanced error analysis and guidance
-                if "token size" in error_msg.lower() or "too large" in error_msg.lower():
-                    print("")
-                    print("=" * 60)
-                    print("CRITICAL AUTHENTICATION ERROR - TOKEN TOO LARGE")
-                    print("=" * 60)
-                    print("Your JWT token is over 10KB, which exceeds web server limits.")
-                    print("")
-                    print("IMMEDIATE ACTION REQUIRED:")
-                    print("1. Contact your API administrator about token size limits")
-                    print("2. Request a new token with minimal claims/scopes")
-                    print("3. Use OAuth refresh flow to get shorter access tokens") 
-                    print("4. Consider using API keys instead of JWT tokens")
-                    print("5. Ask about server-side token storage/reference systems")
-                    print("")
-                    print("TECHNICAL ANALYSIS:")
-                    print(f"- Token size: {len(config.get('access_token', ''))} characters")
-                    print("- Standard nginx limit: 8KB headers")
-                    print("- Your token exceeds this by significant margin")
-                    print("- No standard workarounds exist for tokens this large")
-                    print("=" * 60)
-                    print("")
-                elif "414" in error_msg or "URI Too Large" in error_msg:
-                    print("ERROR: URL with token exceeded maximum length (HTTP 414)")
-                    print("The combined URL + token exceeds server limits")
-                elif "500 Internal Server Error" in error_msg:
-                    print("ERROR: Server encountered internal error (HTTP 500)")
-                    print("This may be due to token size or server configuration issues")
-                
-                print("DQN pipeline integration failed. VAE training will continue in simulation mode.")
-                return False
+            # Check if this is a simulated run
+            if run_id.startswith("SIMULATED_RUN_"):
+                print(f"DQN pipeline is running in SIMULATION MODE with run_id: {run_id}")
+                print("Simulating pipeline execution...")
+                time.sleep(30)  # Simulate processing time
+                print("DQN Pipeline simulation completed.")
+                return True
+            
+            while True:
+                status = get_pipeline_status(config)
+                print(f"Current DQN pipeline status: {status}")
+                if status == 'SUCCEEDED':
+                    print("DQN Pipeline execution completed.")
+                    break
+                elif status in ['FAILED', 'ERROR']:
+                    raise RuntimeError(f"DQN Pipeline failed with status {status}")
+                time.sleep(60)
 
         def model_retraining(action, model_path, data_path, config_path, tasks_path, output_model_path, previous_metrics, dqn_params):
             # Load VAE model architecture
@@ -1053,7 +754,6 @@ implementation:
             parser.add_argument('--dqn_experiment_id', type=str, required=True)
             parser.add_argument('--access_token', type=str, required=True)
             parser.add_argument('--tasks', type=str, required=True)
-            parser.add_argument('--pipeline_domain', type=str, required=True)
             parser.add_argument('--retrained_model', type=str, required=True)
             args = parser.parse_args()
 
@@ -1123,133 +823,44 @@ implementation:
                 print(f"DQN config: {dqn_config}")
                 
                 try:
-                    # Try to trigger the actual DQN pipeline
-                    print(f"Attempting to trigger DQN pipeline: {args.dqn_pipeline_id}")
-                    print(f"Token length: {len(access_token)} characters")
+                    trigger_and_wait_for_dqn_pipeline(dqn_config, dqn_params)
                     
-                    if len(access_token) > 10000:
-                        print("")
-                        print(" CRITICAL WARNING: AUTHENTICATION TOKEN TOO LARGE 🚨")
-                        print(f"Token size: {len(access_token)} characters ({len(access_token)/1024:.1f}KB)")
-                        print("This exceeds all standard web server limits and will cause failures.")
-                        print("")
-                        print("REQUIRED ACTIONS:")
-                        print("• Generate new token with minimal scopes/claims")
-                        print("• Use OAuth refresh flow for smaller tokens")
-                        print("• Request API key authentication method")
-                        print("• Contact administrators about server limits")
-                        print("")
-                    elif len(access_token) > 8192:
-                        print(f"  WARNING: Large token ({len(access_token)} chars) may cause issues")
-                        print("Consider requesting a shorter token if problems occur.")
-                        print("")
+                    # Get updated instance with rlaf2pierce response
+                    updated_instance = get_instance(access_token, args.domain, args.schema_id, args.model_id)
+                    rlaf2pierce_history = updated_instance.get('rlaf2pierce', [])
                     
-                    pipeline_success = trigger_and_wait_for_dqn_pipeline(dqn_config, args.pipeline_domain, dqn_params)
-                    
-                    if pipeline_success:
-                        print("DQN pipeline completed successfully")
-                        
-                        # Get updated instance with rlaf2pierce response
-                        updated_instance = get_instance(access_token, args.domain, args.schema_id, args.model_id)
-                        rlaf2pierce_history = updated_instance.get('rlaf2pierce', [])
-                        
-                        if rlaf2pierce_history:
-                            latest_rlaf2pierce = rlaf2pierce_history[-1]
-                            print(f"Received DQN pipeline response: {latest_rlaf2pierce}")
-                        else:
-                            print("No rlaf2pierce response found, using simulation")
-                            latest_rlaf2pierce = {
-                                "action_id": 0,
-                                "pierce_or_not": True,
-                                "current_state": cleaned_metrics,
-                                "previous_state": previous_state,
-                                "timestamp": int(time.time())
-                            }
+                    if rlaf2pierce_history:
+                        latest_rlaf2pierce = rlaf2pierce_history[-1]
+                        print(f"Received DQN pipeline response: {latest_rlaf2pierce}")
                     else:
-                        # Pipeline failed but trigger_and_wait_for_dqn_pipeline handled it gracefully
-                        print("DQN pipeline integration failed, proceeding with simulation")
-                        raise RuntimeError("DQN pipeline integration failed")
+                        print("No rlaf2pierce response found, using simulation")
+                        latest_rlaf2pierce = {
+                            "action_id": 0,
+                            "pierce_or_not": True,
+                            "current_state": cleaned_metrics,
+                            "previous_state": previous_state,
+                            "timestamp": int(time.time())
+                        }
                         
                 except Exception as e:
-                    error_msg = str(e)
-                    print(f"DQN pipeline triggering failed: {error_msg}")
+                    print(f"DQN pipeline triggering failed: {e}")
+                    print("Falling back to simulation mode for VAE training")
                     
-                    # Enhanced error analysis and user guidance
-                    if "token size" in error_msg.lower() or "too large" in error_msg.lower():
-                        print("")
-                        print("═" * 70)
-                        print(" AUTHENTICATION FAILURE - OVERSIZED TOKEN ")
-                        print("═" * 70)
-                        print(f"Your JWT token is {len(access_token)} characters long.")
-                        print("This is approximately 10x larger than typical tokens!")
-                        print("")
-                        print("WHY THIS HAPPENS:")
-                        print("• JWT contains too many claims, roles, or permissions")
-                        print("• Token includes large embedded data or metadata")
-                        print("• Multiple scopes or audience values included")
-                        print("• Development/debug tokens with extra information")
-                        print("")
-                        print("SOLUTIONS (in order of preference):")
-                        print("1.  Request new token with minimal scopes")
-                        print("2.  Use OAuth refresh flow for fresh, smaller token")
-                        print("3.   Switch to API key authentication")
-                        print("4.  Contact API team about token size optimization")
-                        print("5.   Ask about server header limit increases")
-                        print("")
-                        print("TECHNICAL CONSTRAINTS:")
-                        print("• nginx default header limit: 8KB")
-                        print("• Apache default limit: 8KB")
-                        print("• Most CDNs/proxies: 8KB-16KB")
-                        print(f"• Your token: {len(access_token)/1024:.1f}KB")
-                        print("═" * 70)
-                        print("")
-                    elif "414" in error_msg:
-                        print(" HTTP 414 - Request URI too large")
-                        print("The URL including the token exceeded maximum length limits.")
-                    elif "500" in error_msg:
-                        print(" HTTP 500 - Internal server error")
-                        print("Server failed processing the oversized token.")
-                        print("This often indicates server-side token size limits.")
-                    
-                    print(" FALLBACK: Switching to LOCAL SIMULATION MODE")
-                    print("VAE training will continue with simulated DQN responses.")
-                    print("")
-                    
-                    # Enhanced simulation with more realistic action selection
+                    # Fallback simulation
                     import random
                     rlaf_actions = instance.get('rlaf_actions', {}).get('actions', [])
-                    
                     if rlaf_actions:
-                        # Intelligent action selection based on current metrics
-                        best_action = None
-                        if cleaned_metrics:
-                            # Choose action that might improve the highest loss
-                            max_loss_key = max(cleaned_metrics.keys(), key=lambda k: cleaned_metrics[k] if 'loss' in k.lower() else 0)
-                            print(f"Selecting action to potentially improve metric: {max_loss_key}")
-                            
-                            # Prefer actions that might reduce loss
-                            suitable_actions = [a for a in rlaf_actions if 'loss' in str(a.get('name', '')).lower() or 'improve' in str(a.get('name', '')).lower()]
-                            if suitable_actions:
-                                best_action = random.choice(suitable_actions)
-                            else:
-                                best_action = random.choice(rlaf_actions)
-                        else:
-                            best_action = random.choice(rlaf_actions)
-                        
-                        action_id_for_next_pierce = best_action['id']
-                        print(f" Simulated intelligent DQN action selection: {best_action['name']} (ID: {action_id_for_next_pierce})")
+                        action_id_for_next_pierce = random.choice(rlaf_actions)['id']
+                        print(f"Simulated DQN action selection: {action_id_for_next_pierce}")
                     else:
                         action_id_for_next_pierce = 0
-                        print(" No RLAF actions available, using default action 0")
+                        print("No RLAF actions available, using action 0")
 
-                    # Create realistic simulation response
                     latest_rlaf2pierce = {
                         "action_id": action_id_for_next_pierce,
-                        "pierce_or_not": True,  # Continue optimization
+                        "pierce_or_not": True,
                         "current_state": cleaned_metrics,
                         "previous_state": previous_state,
-                        "simulation_mode": True,
-                        "reason": "Authentication token too large for server",
                         "timestamp": int(time.time())
                     }
                 
@@ -1340,7 +951,5 @@ implementation:
       - {inputPath: access_token}
       - --tasks
       - {inputPath: tasks}
-      - --pipeline_domain
-      - {inputValue: pipeline_domain}
       - --retrained_model
       - {outputPath: retrained_model}
