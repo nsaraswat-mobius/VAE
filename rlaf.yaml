@@ -1129,7 +1129,7 @@ implementation:
                     
                     if len(access_token) > 10000:
                         print("")
-                        print("🚨 CRITICAL WARNING: AUTHENTICATION TOKEN TOO LARGE 🚨")
+                        print(" CRITICAL WARNING: AUTHENTICATION TOKEN TOO LARGE 🚨")
                         print(f"Token size: {len(access_token)} characters ({len(access_token)/1024:.1f}KB)")
                         print("This exceeds all standard web server limits and will cause failures.")
                         print("")
@@ -1140,7 +1140,7 @@ implementation:
                         print("• Contact administrators about server limits")
                         print("")
                     elif len(access_token) > 8192:
-                        print(f"⚠️  WARNING: Large token ({len(access_token)} chars) may cause issues")
+                        print(f"  WARNING: Large token ({len(access_token)} chars) may cause issues")
                         print("Consider requesting a shorter token if problems occur.")
                         print("")
                     
@@ -1178,7 +1178,7 @@ implementation:
                     if "token size" in error_msg.lower() or "too large" in error_msg.lower():
                         print("")
                         print("═" * 70)
-                        print("🚨 AUTHENTICATION FAILURE - OVERSIZED TOKEN 🚨")
+                        print(" AUTHENTICATION FAILURE - OVERSIZED TOKEN ")
                         print("═" * 70)
                         print(f"Your JWT token is {len(access_token)} characters long.")
                         print("This is approximately 10x larger than typical tokens!")
@@ -1190,11 +1190,11 @@ implementation:
                         print("• Development/debug tokens with extra information")
                         print("")
                         print("SOLUTIONS (in order of preference):")
-                        print("1. 🔑 Request new token with minimal scopes")
-                        print("2. 🔄 Use OAuth refresh flow for fresh, smaller token")
-                        print("3. 🗝️  Switch to API key authentication")
-                        print("4. 📞 Contact API team about token size optimization")
-                        print("5. ⚙️  Ask about server header limit increases")
+                        print("1.  Request new token with minimal scopes")
+                        print("2.  Use OAuth refresh flow for fresh, smaller token")
+                        print("3.   Switch to API key authentication")
+                        print("4.  Contact API team about token size optimization")
+                        print("5.   Ask about server header limit increases")
                         print("")
                         print("TECHNICAL CONSTRAINTS:")
                         print("• nginx default header limit: 8KB")
@@ -1204,14 +1204,14 @@ implementation:
                         print("═" * 70)
                         print("")
                     elif "414" in error_msg:
-                        print("🌐 HTTP 414 - Request URI too large")
+                        print(" HTTP 414 - Request URI too large")
                         print("The URL including the token exceeded maximum length limits.")
                     elif "500" in error_msg:
-                        print("🔧 HTTP 500 - Internal server error")
+                        print(" HTTP 500 - Internal server error")
                         print("Server failed processing the oversized token.")
                         print("This often indicates server-side token size limits.")
                     
-                    print("🔄 FALLBACK: Switching to LOCAL SIMULATION MODE")
+                    print(" FALLBACK: Switching to LOCAL SIMULATION MODE")
                     print("VAE training will continue with simulated DQN responses.")
                     print("")
                     
@@ -1237,10 +1237,10 @@ implementation:
                             best_action = random.choice(rlaf_actions)
                         
                         action_id_for_next_pierce = best_action['id']
-                        print(f"🎯 Simulated intelligent DQN action selection: {best_action['name']} (ID: {action_id_for_next_pierce})")
+                        print(f" Simulated intelligent DQN action selection: {best_action['name']} (ID: {action_id_for_next_pierce})")
                     else:
                         action_id_for_next_pierce = 0
-                        print("📋 No RLAF actions available, using default action 0")
+                        print(" No RLAF actions available, using default action 0")
 
                     # Create realistic simulation response
                     latest_rlaf2pierce = {
