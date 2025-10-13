@@ -1,13 +1,13 @@
-name: Failure Signature Dataset Loader
-description: Loads and preprocesses failure signature data for VAE training, including embedding generation, deduplication, and continual learning task creation.
+name: Failure Signature API Dataset Loader
+description: Fetches failure signature data from schema API and prepares VAE-compatible datasets with continual learning tasks for failure analysis.
 inputs:
-  - {name: raw_failure_logs, type: Dataset}
-  - {name: config, type: String}
-  - {name: signature_types, type: String}
+  - {name: api_url, type: String, description: 'API URL to fetch failure signature dataset'}
+  - {name: access_token, type: string, description: 'Bearer access token for API auth'}
+  - {name: config, type: String, description: 'VAE configuration parameters'}
 outputs:
-  - {name: processed_dataset, type: Dataset}
-  - {name: continual_tasks, type: Dataset}
-  - {name: embedding_config, type: String}
+  - {name: data_path, type: Dataset, description: 'Processed dataset for VAE training'}
+  - {name: tasks, type: Dataset, description: 'Continual learning tasks'}
+  - {name: vae_config, type: String, description: 'Updated VAE config with dataset specs'}
 implementation:
   container:
     image: nikhilv215/nesy-factory:v22
@@ -29,13 +29,17 @@ implementation:
         import pickle
         import numpy as np
         import pandas as pd
+        import requests
         from torch.utils.data import DataLoader, Dataset, TensorDataset
+        from sklearn.feature_extraction.text import TfidfVectorizer
+        from sklearn.preprocessing import StandardScaler
+        from requests.adapters import HTTPAdapter
+        from urllib3.util.retry import Retry
+        import logging
         import re
         import hashlib
         from collections import Counter, defaultdict
         from typing import List, Dict, Any, Tuple
-        from sklearn.feature_extraction.text import TfidfVectorizer
-        from sklearn.preprocessing import StandardScaler
         import time
         import random
 
@@ -70,6 +74,138 @@ implementation:
                     stop_words='english'
                 )
                 self.scaler = StandardScaler()
+                
+            def fetch_api_data(self, api_url: str, access_token: str) -> List[str]:
+                logging.basicConfig(level=logging.INFO)
+                logger = logging.getLogger("api_retry")
+
+                # Setup session with retry logic (same as reference)
+                session = requests.Session()
+                retries = Retry(
+                    total=5,
+                    backoff_factor=1,
+                    status_forcelist=[500, 502, 503, 504],
+                    allowed_methods=["POST"]
+                )
+                adapter = HTTPAdapter(max_retries=retries)
+                session.mount("http://", adapter)
+                session.mount("https://", adapter)
+
+                headers = {
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {access_token}"
+                }
+                payload = {
+                    "dbType": "TIDB",
+                    "entityId": "",
+                    "entityIds": [],
+                    "ownedOnly": False,
+                    "projections": [],
+                    "filter": {},
+                    "startTime": 0,
+                    "endTime": 0
+                }
+
+                try:
+                    logger.info("Sending request to API with retries enabled")
+                    resp = session.post(api_url, headers=headers, json=payload, timeout=30)
+                    resp.raise_for_status()
+                    raw_data = resp.json()
+                    
+                    # Extract failure logs from API response
+                    failure_logs = []
+                    if isinstance(raw_data, list):
+                        for item in raw_data:
+                            if isinstance(item, dict):
+                                # Look for log-like fields
+                                for field in ['error_message', 'log_entry', 'failure_description', 'message', 'error']:
+                                    if field in item and item[field]:
+                                        failure_logs.append(str(item[field]))
+                                        break
+                                else:
+                                    # If no log field found, use string representation
+                                    failure_logs.append(str(item))
+                            else:
+                                failure_logs.append(str(item))
+                    elif isinstance(raw_data, dict):
+                        # Handle nested structure
+                        if 'content' in raw_data:
+                            for item in raw_data['content']:
+                                if isinstance(item, dict):
+                                    for field in ['error_message', 'log_entry', 'failure_description', 'message', 'error']:
+                                        if field in item and item[field]:
+                                            failure_logs.append(str(item[field]))
+                                            break
+                                    else:
+                                        failure_logs.append(str(item))
+                                else:
+                                    failure_logs.append(str(item))
+                        else:
+                            failure_logs.append(str(raw_data))
+                    
+                    logger.info(f"Successfully fetched {len(failure_logs)} failure log entries from API")
+                    return failure_logs
+                    
+                except requests.exceptions.RequestException as e:
+                    logger.error(f"API request failed after retries: {e}")
+                    logger.info("Generating synthetic failure log data")
+                    return self.generate_synthetic_failure_logs()
+                    
+            def generate_synthetic_failure_logs(self) -> List[str]:
+                synthetic_logs = [
+                    # Database errors
+                    "ERROR 1045: Access denied for user 'app'@'localhost' (using password: YES)",
+                    "SQLException: Connection to database failed - timeout after 30 seconds",
+                    "FATAL: database connection deadlock detected at transaction 12345",
+                    "ERROR: duplicate key value violates unique constraint users_email_key",
+                    
+                    # Memory issues
+                    "java.lang.OutOfMemoryError: Java heap space at com.app.DataProcessor.process(DataProcessor.java:45)",
+                    "MemoryError: Unable to allocate 2.5GB for array with shape (1000000, 320)",
+                    "OutOfMemoryError: GC overhead limit exceeded in thread pool-2-thread-1",
+                    
+                    # Network errors
+                    "ConnectionError: HTTPSConnectionPool(host='api.service.com', port=443): Max retries exceeded",
+                    "SocketTimeoutException: Read timed out at java.net.SocketInputStream.socketRead0",
+                    "DNS resolution failed for hostname: internal-service.cluster.local",
+                    "ERROR: Connection reset by peer at socket level",
+                    
+                    # Permission errors
+                    "AccessDenied: User does not have permission to access resource /admin/users",
+                    "PermissionError: [Errno 13] Permission denied: '/var/log/application.log'",
+                    "HTTP 403 Forbidden: Insufficient privileges to perform this operation",
+                    
+                    # Null pointer errors
+                    "NullPointerException at com.app.UserService.getUserById(UserService.java:78)",
+                    "TypeError: Cannot read property 'id' of undefined in user-controller.js:42",
+                    "AttributeError: 'NoneType' object has no attribute 'name'",
+                    
+                    # Timeout errors
+                    "TimeoutError: Request timed out after 60 seconds waiting for response",
+                    "HTTPTimeoutError: Request to /api/v1/data timed out after 30.0 seconds",
+                    "Connection timeout: No response from server within 45 seconds",
+                ]
+                
+                # Generate variations and more samples
+                extended_logs = []
+                for _ in range(5):  # Create 5x variations for more data
+                    for log in synthetic_logs:
+                        # Add some randomization to make samples more diverse
+                        if 'ERROR' in log:
+                            # Randomize error codes
+                            error_code = random.randint(1000, 9999)
+                            modified_log = re.sub(r'ERROR\s+\d+', f'ERROR {error_code}', log)
+                            extended_logs.append(modified_log)
+                        elif 'timeout' in log.lower():
+                            # Randomize timeout values
+                            timeout_val = random.randint(10, 120)
+                            modified_log = re.sub(r'\d+\s*seconds?', f'{timeout_val} seconds', log)
+                            extended_logs.append(modified_log)
+                        else:
+                            extended_logs.append(log)
+                
+                print(f"Generated {len(extended_logs)} synthetic failure log entries")
+                return extended_logs
                 
             def extract_signatures(self, failure_logs: List[str]) -> List[Dict]:
                 signatures = []
@@ -139,6 +275,7 @@ implementation:
                 return combined_embeddings, labels, unique_types
             
             def deduplicate_signatures(self, signatures: List[Dict], similarity_threshold: float = 0.95) -> List[Dict]:
+                """Remove duplicate failure signatures based on hash similarity"""
                 print(f"Deduplicating {len(signatures)} signatures...")
                 
                 hash_groups = defaultdict(list)
@@ -160,7 +297,7 @@ implementation:
             
             def create_continual_tasks(self, embeddings: np.ndarray, labels: np.ndarray, 
                                      unique_types: List[str], signatures: List[Dict]) -> List[Dict]:
-                print("Creating continual learning tasks...")
+                print("Creating continual learning tasks")
                 
                 tasks = []
                 
@@ -213,129 +350,36 @@ implementation:
                 
                 return tasks
 
-        def load_failure_logs(data_path: str) -> List[str]:
-            print(f"Loading failure logs from: {data_path}")
-            
-            if not os.path.exists(data_path):
-                print(f"Data path not found: {data_path}")
-                print("Generating synthetic failure log data...")
-                return generate_synthetic_failure_logs()
-            
-            if data_path.endswith('.json'):
-                with open(data_path, 'r') as f:
-                    data = json.load(f)
-                    if isinstance(data, list):
-                        return [str(entry) for entry in data]
-                    elif isinstance(data, dict) and 'logs' in data:
-                        return [str(entry) for entry in data['logs']]
-                    else:
-                        return [str(data)]
-            
-            elif data_path.endswith('.csv'):
-                df = pd.read_csv(data_path)
-                # Look for common log column names
-                log_columns = ['log', 'message', 'error', 'failure', 'description']
-                for col in log_columns:
-                    if col in df.columns:
-                        return df[col].astype(str).tolist()
-                # If no specific column found, use the first column
-                return df.iloc[:, 0].astype(str).tolist()
-            
-            elif data_path.endswith('.txt'):
-                with open(data_path, 'r') as f:
-                    return [line.strip() for line in f if line.strip()]
-            
-            else:
-                print(f"Unsupported format for {data_path}, generating synthetic data...")
-                return generate_synthetic_failure_logs()
-
-        def generate_synthetic_failure_logs() -> List[str]:
-            synthetic_logs = [
-                # Database errors
-                "ERROR 1045: Access denied for user 'app'@'localhost' (using password: YES)",
-                "SQLException: Connection to database failed - timeout after 30 seconds",
-                "FATAL: database connection deadlock detected at transaction 12345",
-                "ERROR: duplicate key value violates unique constraint users_email_key",
-                
-                # Memory issues
-                "java.lang.OutOfMemoryError: Java heap space at com.app.DataProcessor.process(DataProcessor.java:45)",
-                "MemoryError: Unable to allocate 2.5GB for array with shape (1000000, 320)",
-                "OutOfMemoryError: GC overhead limit exceeded in thread pool-2-thread-1",
-                
-                # Network errors
-                "ConnectionError: HTTPSConnectionPool(host='api.service.com', port=443): Max retries exceeded",
-                "SocketTimeoutException: Read timed out at java.net.SocketInputStream.socketRead0",
-                "DNS resolution failed for hostname: internal-service.cluster.local",
-                "ERROR: Connection reset by peer at socket level",
-                
-                # Permission errors
-                "AccessDenied: User does not have permission to access resource /admin/users",
-                "PermissionError: [Errno 13] Permission denied: '/var/log/application.log'",
-                "HTTP 403 Forbidden: Insufficient privileges to perform this operation",
-                
-                # Null pointer errors
-                "NullPointerException at com.app.UserService.getUserById(UserService.java:78)",
-                "TypeError: Cannot read property 'id' of undefined in user-controller.js:42",
-                "AttributeError: 'NoneType' object has no attribute 'name'",
-                
-                # Timeout errors
-                "TimeoutError: Request timed out after 60 seconds waiting for response",
-                "HTTPTimeoutError: Request to /api/v1/data timed out after 30.0 seconds",
-                "Connection timeout: No response from server within 45 seconds",
-                
-                # Application-specific errors
-                "ValidationError: Email format is invalid for user registration",
-                "BusinessLogicError: Insufficient funds for transaction $1000.00",
-                "ConfigurationError: Missing required environment variable DATABASE_URL",
-                "AuthenticationError: Invalid JWT token signature",
-            ]
-            
-            # Generate variations and more samples
-            extended_logs = []
-            for _ in range(3):  # Create 3x variations
-                for log in synthetic_logs:
-                    # Add some randomization to make samples more diverse
-                    if 'ERROR' in log:
-                        # Randomize error codes
-                        import random
-                        error_code = random.randint(1000, 9999)
-                        modified_log = re.sub(r'ERROR\s+\d+', f'ERROR {error_code}', log)
-                        extended_logs.append(modified_log)
-                    elif 'timeout' in log.lower():
-                        # Randomize timeout values
-                        timeout_val = random.randint(10, 120)
-                        modified_log = re.sub(r'\d+\s*seconds?', f'{timeout_val} seconds', log)
-                        extended_logs.append(modified_log)
-                    else:
-                        extended_logs.append(log)
-            
-            print(f"Generated {len(extended_logs)} synthetic failure log entries")
-            return extended_logs
-
         def main():
             parser = argparse.ArgumentParser()
-            parser.add_argument('--raw_failure_logs', type=str, required=True)
-            parser.add_argument('--config', type=str, required=True)
-            parser.add_argument('--signature_types', type=str, required=True)
-            parser.add_argument('--processed_dataset', type=str, required=True)
-            parser.add_argument('--continual_tasks', type=str, required=True)
-            parser.add_argument('--embedding_config', type=str, required=True)
+            parser.add_argument('--api_url', type=str, required=True, help='API URL to fetch failure signature dataset')
+            parser.add_argument('--access_token', type=str, required=True, help='Bearer token for API')
+            parser.add_argument('--config', type=str, required=True, help='VAE configuration file')
+            parser.add_argument('--data_path', type=str, required=True, help='Path to output processed dataset')
+            parser.add_argument('--tasks', type=str, required=True, help='Path to output continual learning tasks')
+            parser.add_argument('--vae_config', type=str, required=True, help='Path to output updated VAE config')
             args = parser.parse_args()
 
-            # Load configuration
+            # Read access token
+            with open(args.access_token, 'r') as f:
+                access_token = f.read().strip()
+            
+            # Load VAE configuration
             with open(args.config, 'r') as f:
                 config = json.load(f)
             
-            with open(args.signature_types, 'r') as f:
-                signature_config = json.load(f)
-            
-            print("Starting Failure Signature Dataset Processing...")
+            print("Starting Failure Signature API Dataset Processing...")
             
             # Initialize processor
             processor = FailureSignatureProcessor(config)
             
-            # Load raw failure logs
-            failure_logs = load_failure_logs(args.raw_failure_logs)
+            # Fetch failure logs from API
+            try:
+                failure_logs = processor.fetch_api_data(args.api_url, access_token)
+            except Exception as e:
+                print(f"API fetch failed: {e}")
+                failure_logs = processor.generate_synthetic_failure_logs()
+            
             print(f"Loaded {len(failure_logs)} failure log entries")
             
             # Extract signatures
@@ -352,7 +396,7 @@ implementation:
             # Create continual learning tasks
             continual_tasks = processor.create_continual_tasks(embeddings, labels, unique_types, unique_signatures)
             
-            # Prepare processed dataset
+            # Prepare processed dataset (compatible with VAE workflow)
             processed_data = {
                 'embeddings': embeddings.tolist(),
                 'labels': labels.tolist(),
@@ -363,56 +407,60 @@ implementation:
                                 ['log_length', 'word_count', 'uppercase_ratio', 'digit_ratio'],
                 'embedding_dim': embeddings.shape[1],
                 'num_samples': len(unique_signatures),
-                'num_classes': len(unique_types)
+                'num_classes': len(unique_types),
+                'scaler_mean': processor.scaler.mean_.tolist(),
+                'scaler_scale': processor.scaler.scale_.tolist()
             }
             
-            # Create embedding configuration for VAE
-            embedding_config = {
+            # Update VAE config with dataset specifications
+            updated_config = config.copy()
+            updated_config.update({
                 'input_dim': embeddings.shape[1],
-                'latent_dim': config.get('latent_dim', 128),
                 'num_classes': len(unique_types),
                 'failure_types': unique_types,
-                'vae_type': config.get('vae_type', 'standard_vae'),
-                'beta': config.get('beta', 1.0),
-                'learning_rate': config.get('learning_rate', 0.001),
-                'epochs': config.get('epochs', 50),
-                'batch_size': config.get('batch_size', 32)
-            }
+                'dataset_type': 'failure_signature_api',
+                'feature_names': [f'tfidf_{i}' for i in range(processor.vectorizer.transform(['test']).shape[1])] + 
+                                list(processor.signature_patterns.keys()) + 
+                                ['log_length', 'word_count', 'uppercase_ratio', 'digit_ratio']
+            })
+            
+            # Ensure output directories exist
+            os.makedirs(os.path.dirname(args.data_path), exist_ok=True)
+            os.makedirs(os.path.dirname(args.tasks), exist_ok=True)
+            os.makedirs(os.path.dirname(args.vae_config), exist_ok=True)
             
             # Save outputs
             print("Saving processed dataset...")
-            os.makedirs(os.path.dirname(args.processed_dataset), exist_ok=True)
-            with open(args.processed_dataset, 'wb') as f:
+            with open(args.data_path, 'wb') as f:
                 pickle.dump(processed_data, f)
             
-            print("Saving continual tasks...")
-            os.makedirs(os.path.dirname(args.continual_tasks), exist_ok=True)
-            with open(args.continual_tasks, 'wb') as f:
+            print("Saving continual learning tasks...")
+            with open(args.tasks, 'wb') as f:
                 pickle.dump(continual_tasks, f)
             
-            print("Saving embedding configuration...")
-            os.makedirs(os.path.dirname(args.embedding_config), exist_ok=True)
-            with open(args.embedding_config, 'w') as f:
-                json.dump(embedding_config, f, indent=4)
+            print("Saving updated VAE configuration...")
+            with open(args.vae_config, 'w') as f:
+                json.dump(updated_config, f, indent=4)
             
-            print("Failure Signature Dataset Processing Complete!")
+            print("Failure Signature API Dataset Processing Complete!")
             print(f"- Processed {len(unique_signatures)} unique failure signatures")
             print(f"- Created embeddings with dimension {embeddings.shape[1]}")
             print(f"- Generated {len(continual_tasks)} continual learning tasks")
             print(f"- Found {len(unique_types)} failure types: {unique_types}")
+            print(f"- Dataset ready for VAE training with input_dim={embeddings.shape[1]}")
 
         if __name__ == '__main__':
             main()
     args:
-      - --raw_failure_logs
-      - {inputPath: raw_failure_logs}
+      - --api_url
+      - {inputValue: api_url}
+      - --access_token
+      - {inputPath: access_token}
       - --config
       - {inputPath: config}
-      - --signature_types
-      - {inputPath: signature_types}
-      - --processed_dataset
-      - {outputPath: processed_dataset}
-      - --continual_tasks
-      - {outputPath: continual_tasks}
-      - --embedding_config
-      - {outputPath: embedding_config}
+      - --data_path
+      - {outputPath: data_path}
+      - --tasks
+      - {outputPath: tasks}
+      - --vae_config
+      - {outputPath: vae_config}
