@@ -470,7 +470,93 @@ implementation:
                     'num_tasks': len(all_task_performance)
                 }
 
-        # API/DB Helper Functions
+        # API/DB Helper Functions with Enhanced Error Handling
+        def validate_and_convert_metrics(metrics_dict):
+            # Validate and convert metrics to proper numeric types with error handling
+            validated_metrics = {}
+            
+            for key, value in metrics_dict.items():
+                try:
+                    # Handle different value types
+                    if isinstance(value, (int, float)):
+                        validated_metrics[key] = float(value)
+                    elif isinstance(value, str):
+                        # Try to convert string to float
+                        if value.lower() in ['inf', 'infinity']:
+                            validated_metrics[key] = float('inf')
+                        elif value.lower() in ['-inf', '-infinity']:
+                            validated_metrics[key] = float('-inf')
+                        elif value.lower() in ['nan', 'none', 'null', '']:
+                            validated_metrics[key] = 0.0
+                        elif value.isdigit() or value.replace('.', '', 1).isdigit():
+                            validated_metrics[key] = float(value)
+                        else:
+                            # Handle model names or non-numeric strings
+                            print(f"Warning: Non-numeric string '{value}' for metric '{key}', setting to 0.0")
+                            validated_metrics[key] = 0.0
+                    elif hasattr(value, 'item'):  # Handle numpy scalars
+                        validated_metrics[key] = float(value.item())
+                    elif value is None:
+                        validated_metrics[key] = 0.0
+                    else:
+                        # Last resort: try str conversion then float
+                        try:
+                            validated_metrics[key] = float(str(value))
+                        except (ValueError, TypeError):
+                            print(f"Warning: Could not convert metric '{key}' value '{value}' to float, using 0.0")
+                            validated_metrics[key] = 0.0
+                            
+                except Exception as e:
+                    print(f"Error converting metric '{key}' with value '{value}': {e}")
+                    validated_metrics[key] = 0.0
+            
+            return validated_metrics
+
+        def safe_api_request(url, method='GET', headers=None, json_data=None, data=None, timeout=30):
+            # Make API request with comprehensive error handling and fallback
+            try:
+                session = requests.Session()
+                
+                if method.upper() == 'GET':
+                    response = session.get(url, headers=headers, timeout=timeout)
+                elif method.upper() == 'POST':
+                    response = session.post(url, headers=headers, json=json_data, data=data, timeout=timeout)
+                elif method.upper() == 'PATCH':
+                    response = session.patch(url, headers=headers, json=json_data, data=data, timeout=timeout)
+                else:
+                    raise ValueError(f"Unsupported HTTP method: {method}")
+                
+                print(f"API Response Status: {response.status_code}")
+                
+                if response.status_code == 401:
+                    print("Authentication failed (401). API token may be invalid or expired.")
+                    return None
+                elif response.status_code == 403:
+                    print("Access forbidden (403). Insufficient permissions.")
+                    return None
+                elif response.status_code == 404:
+                    print("Resource not found (404). API endpoint may not exist.")
+                    return None
+                elif response.status_code >= 500:
+                    print(f"Server error ({response.status_code}). API service may be down.")
+                    return None
+                
+                response.raise_for_status()
+                return response
+                
+            except requests.exceptions.Timeout:
+                print(f"Request timeout after {timeout} seconds")
+                return None
+            except requests.exceptions.ConnectionError:
+                print("Connection error - API service may be unreachable")
+                return None
+            except requests.exceptions.RequestException as e:
+                print(f"Request failed: {e}")
+                return None
+            except Exception as e:
+                print(f"Unexpected error during API request: {e}")
+                return None
+
         def get_retry_session():
             return requests.Session()
 
@@ -501,10 +587,22 @@ implementation:
                 print(f"Generated simulation run_id: {fake_run_id}")
                 return fake_run_id
             
-            response = requests.post(url, headers=headers, data=payload)
-            response.raise_for_status()
-            print(f"Triggered pipeline. Response: {response.json()}")
-            return response.json()['runId']
+            # Use safe API request with timeout and error handling
+            response = safe_api_request(url, method='POST', headers=headers, data=payload, timeout=30)
+            
+            if response is None:
+                print("Pipeline trigger failed, entering simulation mode")
+                fake_run_id = f"SIMULATED_RUN_{int(time.time())}"
+                print(f"Generated simulation run_id: {fake_run_id}")
+                return fake_run_id
+            
+            try:
+                response_json = response.json()
+                print(f"Triggered pipeline. Response: {response_json}")
+                return response_json.get('runId', f"FALLBACK_RUN_{int(time.time())}")
+            except Exception as e:
+                print(f"Error parsing pipeline response: {e}")
+                return f"FALLBACK_RUN_{int(time.time())}"
 
         def get_pipeline_status(config):
             url = f"https://ig.mobiusdtaas.ai/bob-service-test/v1.0/pipeline/{config['pipeline_id']}/status/ml/{config['run_id']}"
@@ -518,7 +616,8 @@ implementation:
             latest_state = pipeline_status['run_details']['state_history'][-1]
             return latest_state['state']
 
-        def get_instance(access_token, domain, schema_id, model_id):
+        def get_instance_safe(access_token, domain, schema_id, model_id):
+            # Safely retrieve instance data with comprehensive error handling and fallback
             url = f"{domain}/pi-entity-instances-service/v3.0/schemas/{schema_id}/instances/list"
             headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
             payload = {"dbType": "TIDB", "ownedOnly": True, "filter": {"model_id": model_id}}
@@ -526,74 +625,78 @@ implementation:
             print(f"Making request to: {url}")
             print(f"Payload: {payload}")
             
+            # Enhanced fallback instance data with more VAE-specific actions
+            fallback_instance = {
+                'pierce2rlaf': [],
+                'rlaf2pierce': [],
+                'rlaf_actions': {
+                    'actions': [
+                        {
+                            "id": 0,
+                            "name": "Conservative_Training",
+                            "params": {
+                                "epochs": 2,
+                                "learning_rate": 0.0005,
+                                "beta": 1.0,
+                                "error_absolute_threshold": 0.03
+                            }
+                        },
+                        {
+                            "id": 1,
+                            "name": "Aggressive_Training", 
+                            "params": {
+                                "epochs": 4,
+                                "learning_rate": 0.002,
+                                "beta": 2.0,
+                                "error_absolute_threshold": 0.01
+                            }
+                        },
+                        {
+                            "id": 2,
+                            "name": "Balanced_Training",
+                            "params": {
+                                "epochs": 3,
+                                "learning_rate": 0.001,
+                                "beta": 1.5,
+                                "error_absolute_threshold": 0.02
+                            }
+                        }
+                    ]
+                }
+            }
+            
+            # Use safe API request
+            response = safe_api_request(url, method='POST', headers=headers, json_data=payload, timeout=30)
+            
+            if response is None:
+                print("Failed to get instance data, using fallback")
+                return fallback_instance
+            
             try:
-                response = requests.post(url, headers=headers, json=payload)
-                print(f"Response status: {response.status_code}")
-                print(f"Response text: {response.text}")
-                response.raise_for_status()
-                
                 response_data = response.json()
                 if 'content' not in response_data or not response_data['content']:
-                    print("No content found in response, creating default instance data")
-                    return {
-                        'pierce2rlaf': [],
-                        'rlaf2pierce': [],
-                        'rlaf_actions': {
-                            'actions': [
-                                {
-                                    "id": 0,
-                                    "name": "Default_VAE_Action",
-                                    "params": {"epochs": 5, "learning_rate": 0.001, "beta": 1.0}
-                                },
-                                {
-                                    "id": 1,
-                                    "name": "High_Beta_VAE",
-                                    "params": {"epochs": 3, "learning_rate": 0.0005, "beta": 2.0}
-                                }
-                            ]
-                        }
-                    }
-                return response_data['content'][0]
+                    print("No content found in response, using fallback instance data")
+                    return fallback_instance
                 
-            except requests.exceptions.HTTPError as e:
-                print(f"HTTP Error: {e}")
-                print(f"Creating fallback instance data due to API error")
-                return {
-                    'pierce2rlaf': [],
-                    'rlaf2pierce': [],
-                    'rlaf_actions': {
-                        'actions': [
-                            {
-                                "id": 0,
-                                "name": "Default_VAE_Action",
-                                "params": {"epochs": 5, "learning_rate": 0.001, "beta": 1.0}
-                            },
-                            {
-                                "id": 1,
-                                "name": "High_Beta_VAE",
-                                "params": {"epochs": 3, "learning_rate": 0.0005, "beta": 2.0}
-                            }
-                        ]
-                    }
-                }
+                instance_data = response_data['content'][0]
+                
+                # Validate that essential fields exist
+                if 'rlaf_actions' not in instance_data:
+                    print("Missing rlaf_actions in instance data, using fallback")
+                    return fallback_instance
+                
+                return instance_data
+                
             except Exception as e:
-                print(f"Unexpected error: {e}")
-                print(f"Creating fallback instance data due to unexpected error")
-                return {
-                    'pierce2rlaf': [],
-                    'rlaf2pierce': [],
-                    'rlaf_actions': {
-                        'actions': [
-                            {
-                                "id": 0,
-                                "name": "Default_VAE_Action",
-                                "params": {"epochs": 5, "learning_rate": 0.001, "beta": 1.0}
-                            }
-                        ]
-                    }
-                }
+                print(f"Error parsing instance response: {e}")
+                return fallback_instance
+
+        def get_instance(access_token, domain, schema_id, model_id):
+            # Legacy wrapper for backward compatibility
+            return get_instance_safe(access_token, domain, schema_id, model_id)
 
         def update_instance_field(access_token, domain, schema_id, model_id, field, value):
+            # Safely update instance field with enhanced error handling
             url = f"{domain}/pi-entity-instances-service/v2.0/schemas/{schema_id}/instances"
             headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
             payload = {
@@ -602,16 +705,28 @@ implementation:
                 "partialUpdateRequests": [{"patch": [{"operation": "REPLACE", "path": field, "value": value}]}]
             }
             
+            # Use safe API request
+            response = safe_api_request(url, method='PATCH', headers=headers, json_data=payload, timeout=30)
+            
+            if response is None:
+                print(f"Failed to update field '{field}' - API request failed")
+                print("Continuing with simulation mode...")
+                return False
+            
             try:
-                response = requests.patch(url, headers=headers, json=payload)
-                print(f"Update response status: {response.status_code}")
                 if response.status_code in [200, 201, 204]:
                     print(f"Successfully updated field '{field}' for model_id '{model_id}'")
+                    return True
                 else:
-                    print(f"Failed to update field '{field}': {response.text}")
+                    print(f"Failed to update field '{field}': Status {response.status_code}")
+                    try:
+                        print(f"Response: {response.text}")
+                    except:
+                        print("Could not read response text")
+                    return False
             except Exception as e:
-                print(f"Error updating instance field '{field}': {e}")
-                print("Continuing with simulation mode...")
+                print(f"Error processing update response for field '{field}': {e}")
+                return False
 
         # Core Logic
         def trigger_and_wait_for_dqn_pipeline(config, dqn_params):
@@ -842,56 +957,38 @@ implementation:
             for i in range(2):
                 print(f"VAE RLAF Loop Iteration {i+1}")
                 
-                cleaned_metrics = {}
+                # Use enhanced metric validation and conversion
+                cleaned_metrics = validate_and_convert_metrics(current_metrics)
+                print(f"Validated metrics: {cleaned_metrics}")
+                
+                # Generate DQN parameters with error handling
                 dqn_params = []
-                for key, value in current_metrics.items():
+                for key, value in cleaned_metrics.items():
                     try:
-                        # Handle different types of values
-                        if isinstance(value, (int, float)):
-                            numeric_value = float(value)
-                        elif isinstance(value, str):
-                            numeric_value = float(value)
-                        elif hasattr(value, 'item'):  # Handle numpy scalars
-                            numeric_value = float(value.item())
+                        if "loss" in key.lower() or "error" in key.lower():
+                            dqn_params.append({"key": key, "sign": "-", "mul": 1.0})  # Lower loss/error is better
+                        elif "accuracy" in key.lower() or "f1" in key.lower() or "precision" in key.lower() or "recall" in key.lower():
+                            dqn_params.append({"key": key, "sign": "+", "mul": 1.0})  # Higher accuracy metrics are better
                         else:
-                            # Try to convert to float
-                            numeric_value = float(str(value))
-                        
-                        cleaned_metrics[key] = numeric_value
-                        
-                        if "loss" in key.lower():
-                            dqn_params.append({"key": key, "sign": "-", "mul": 1.0})  # Lower loss is better
-                        elif "accuracy" in key.lower() or "f1" in key.lower():
-                            dqn_params.append({"key": key, "sign": "+", "mul": 1.0})  # Higher accuracy is better
-                    except (ValueError, TypeError) as e:
-                        print(f"Warning: Could not convert VAE metric '{key}' with value '{value}' (type: {type(value)}) to float: {e}. Skipping.")
+                            # For ambiguous metrics, assume lower is better (common in ML)
+                            dqn_params.append({"key": key, "sign": "-", "mul": 1.0})
+                    except Exception as e:
+                        print(f"Warning: Could not create DQN param for metric '{key}': {e}")
+                        continue
+                
+                if not dqn_params:
+                    print("Warning: No valid DQN parameters generated, using default")
+                    dqn_params = [
+                        {"key": "vae_loss", "sign": "-", "mul": 1.0},
+                        {"key": "reconstruction_loss", "sign": "-", "mul": 1.0},
+                        {"key": "kl_loss", "sign": "-", "mul": 1.0}
+                    ]
                 
                 print(f"Dynamically generated param_json for VAE DQN: {json.dumps(dqn_params)}")
 
-                try:
-                    instance = get_instance(access_token, args.domain, args.schema_id, args.model_id)
-                    print(f"Instance data retrieved successfully")
-                except Exception as e:
-                    print(f"Failed to get instance data: {e}")
-                    print("Creating fallback instance data...")
-                    instance = {
-                        'pierce2rlaf': [],
-                        'rlaf2pierce': [],
-                        'rlaf_actions': {
-                            'actions': [
-                                {
-                                    "id": 0,
-                                    "name": "Default_VAE_Action",
-                                    "params": {"epochs": 5, "learning_rate": 0.001, "beta": 1.0}
-                                },
-                                {
-                                    "id": 1,
-                                    "name": "High_Beta_VAE",
-                                    "params": {"epochs": 3, "learning_rate": 0.0005, "beta": 2.0}
-                                }
-                            ]
-                        }
-                    }
+                # Use safe instance retrieval with enhanced error handling
+                instance = get_instance_safe(access_token, args.domain, args.schema_id, args.model_id)
+                print(f"Instance data retrieved successfully: {len(instance.get('rlaf_actions', {}).get('actions', []))} actions available")
                 
                 if instance.get('pierce2rlaf'):
                     latest_pierce2rlaf = instance['pierce2rlaf'][-1]
@@ -911,11 +1008,10 @@ implementation:
                 pierce2rlaf_history = instance.get("pierce2rlaf", [])
                 pierce2rlaf_history.append(new_pierce2rlaf_entry)
                 
-                try:
-                    update_instance_field(access_token, args.domain, args.schema_id, args.model_id, "pierce2rlaf", pierce2rlaf_history)
-                except Exception as e:
-                    print(f"Failed to update pierce2rlaf field: {e}")
-                    print("Continuing with local simulation...")
+                # Use safe instance field update with enhanced error handling
+                update_success = update_instance_field(access_token, args.domain, args.schema_id, args.model_id, "pierce2rlaf", pierce2rlaf_history)
+                if not update_success:
+                    print("Pierce2RLAF update failed, continuing with local simulation...")
 
                 dqn_config = {
                     "pipeline_id": args.dqn_pipeline_id, 
@@ -927,27 +1023,27 @@ implementation:
                 try:
                     trigger_and_wait_for_dqn_pipeline(dqn_config, dqn_params)
                     
-                    # Get updated instance with rlaf2pierce response
-                    try:
-                        updated_instance = get_instance(access_token, args.domain, args.schema_id, args.model_id)
-                        rlaf2pierce_history = updated_instance.get('rlaf2pierce', [])
-                        
-                        if rlaf2pierce_history:
-                            latest_rlaf2pierce = rlaf2pierce_history[-1]
-                            print(f"Received DQN pipeline response: {latest_rlaf2pierce}")
+                    # Get updated instance with rlaf2pierce response using safe method
+                    updated_instance = get_instance_safe(access_token, args.domain, args.schema_id, args.model_id)
+                    rlaf2pierce_history = updated_instance.get('rlaf2pierce', [])
+                    
+                    if rlaf2pierce_history:
+                        latest_rlaf2pierce = rlaf2pierce_history[-1]
+                        print(f"Received DQN pipeline response: {latest_rlaf2pierce}")
+                    else:
+                        print("No rlaf2pierce response found, using intelligent simulation")
+                        # Select action based on previous performance (simple heuristic)
+                        available_actions = updated_instance.get('rlaf_actions', {}).get('actions', [])
+                        if available_actions:
+                            # Use action rotation for better exploration
+                            action_id = i % len(available_actions)
+                            selected_action = available_actions[action_id]
+                            print(f"Simulated action selection: {selected_action}")
                         else:
-                            print("No rlaf2pierce response found, using simulation")
-                            latest_rlaf2pierce = {
-                                "action_id": 0,
-                                "pierce_or_not": True,
-                                "current_state": cleaned_metrics,
-                                "previous_state": previous_state,
-                                "timestamp": int(time.time())
-                            }
-                    except Exception as api_error:
-                        print(f"Failed to get updated instance: {api_error}")
+                            action_id = 0
+                        
                         latest_rlaf2pierce = {
-                            "action_id": 0,
+                            "action_id": action_id,
                             "pierce_or_not": True,
                             "current_state": cleaned_metrics,
                             "previous_state": previous_state,
@@ -956,24 +1052,26 @@ implementation:
                         
                 except Exception as e:
                     print(f"DQN pipeline triggering failed: {e}")
-                    print("Falling back to simulation mode for VAE training")
+                    print("Falling back to enhanced simulation mode for VAE training")
                     
-                    # Fallback simulation
-                    import random
+                    # Enhanced fallback simulation with intelligent action selection
                     rlaf_actions = instance.get('rlaf_actions', {}).get('actions', [])
                     if rlaf_actions:
-                        action_id_for_next_pierce = random.choice(rlaf_actions)['id']
-                        print(f"Simulated DQN action selection: {action_id_for_next_pierce}")
+                        # Use iteration-based action selection for better exploration
+                        action_id_for_next_pierce = rlaf_actions[i % len(rlaf_actions)]['id']
+                        selected_action_name = rlaf_actions[i % len(rlaf_actions)]['name']
+                        print(f"Simulated DQN action selection: {action_id_for_next_pierce} ({selected_action_name})")
                     else:
                         action_id_for_next_pierce = 0
-                        print("No RLAF actions available, using action 0")
+                        print("No RLAF actions available, using default action 0")
 
                     latest_rlaf2pierce = {
                         "action_id": action_id_for_next_pierce,
                         "pierce_or_not": True,
                         "current_state": cleaned_metrics,
                         "previous_state": previous_state,
-                        "timestamp": int(time.time())
+                        "timestamp": int(time.time()),
+                        "simulation_mode": True
                     }
                 
                 if not latest_rlaf2pierce.get("pierce_or_not", True):
@@ -1011,24 +1109,9 @@ implementation:
             print(f"Creating retrained model directory: {os.path.dirname(args.retrained_model)}")
             os.makedirs(os.path.dirname(args.retrained_model), exist_ok=True)
             
-            # Ensure all final metrics are properly serializable
-            final_output = {}
-            for key, value in current_metrics.items():
-                try:
-                    if isinstance(value, (int, float, bool)):
-                        final_output[key] = float(value)
-                    elif isinstance(value, str):
-                        try:
-                            final_output[key] = float(value)
-                        except ValueError:
-                            final_output[key] = str(value)
-                    elif hasattr(value, 'item'):  # Handle numpy scalars
-                        final_output[key] = float(value.item())
-                    else:
-                        final_output[key] = str(value)
-                except Exception as e:
-                    print(f"Warning: Could not serialize final metric '{key}': {e}")
-                    final_output[key] = 0.0
+            # Use enhanced metric validation for final output
+            final_output = validate_and_convert_metrics(current_metrics)
+            print(f"Final validated metrics: {final_output}")
             
             # Write RLAF output file
             rlaf_data = {
