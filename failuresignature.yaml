@@ -6,9 +6,9 @@ inputs:
 outputs:
   - {name: train_data, type: Dataset}
   - {name: val_data, type: Dataset}
-  - {name: data_shape, type: String}
-  - {name: vae_type, type: String}
-  - {name: preprocessing_config, type: String}
+  - {name: data_shape, type: Dataset}
+  - {name: vae_type, type: Dataset}
+  - {name: preprocessing_config, type: Dataset}
 implementation:
   container:
     image: nikhilv215/nesy-factory:v22
@@ -132,20 +132,18 @@ implementation:
             with open(args.val_data, 'wb') as f:
                 pickle.dump(val_data, f)
             
+            # Write string values without extra quotes
             with open(args.data_shape, 'w') as f:
                 f.write("512,1,1")
             
             with open(args.vae_type, 'w') as f:
                 f.write("standard")
             
-            preprocessing_config = {
-                "input_dim": 512,
-                "num_classes": 8,
-                "dataset_type": "failure_signature"
-            }
+            # For preprocessing_config, write as plain JSON string
+            preprocessing_config_str = '{"input_dim": 512, "num_classes": 8, "dataset_type": "failure_signature"}'
             
             with open(args.preprocessing_config, 'w') as f:
-                f.write(json.dumps(preprocessing_config))
+                f.write(preprocessing_config_str)
             
             print(" Enhanced failure signature dataset loading complete!")
             print(f" Training samples: {len(train_data)}")
