@@ -132,18 +132,22 @@ implementation:
             with open(args.val_data, 'wb') as f:
                 pickle.dump(val_data, f)
             
-            # Write string values without extra quotes
+            # Write string values without any quotes
             with open(args.data_shape, 'w') as f:
                 f.write("512,1,1")
             
             with open(args.vae_type, 'w') as f:
                 f.write("standard")
             
-            # For preprocessing_config, write as plain JSON string
-            preprocessing_config_str = '{"input_dim": 512, "num_classes": 8, "dataset_type": "failure_signature"}'
+            # Write preprocessing config as JSON string
+            preprocessing_config = {
+                "input_dim": 512,
+                "num_classes": 8,
+                "dataset_type": "failure_signature"
+            }
             
             with open(args.preprocessing_config, 'w') as f:
-                f.write(preprocessing_config_str)
+                json.dump(preprocessing_config, f)
             
             print(" Enhanced failure signature dataset loading complete!")
             print(f" Training samples: {len(train_data)}")
