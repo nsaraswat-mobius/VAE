@@ -3,11 +3,12 @@ description: Fetches failure signature data from schema API and prepares VAE-com
 inputs:
   - {name: api_url, type: String, description: 'API URL to fetch failure signature dataset'}
   - {name: access_token, type: string, description: 'Bearer access token for API auth'}
-  - {name: config, type: String, description: 'VAE configuration parameters'}
 outputs:
-  - {name: data_path, type: Dataset, description: 'Processed dataset for VAE training'}
-  - {name: tasks, type: Dataset, description: 'Continual learning tasks'}
-  - {name: vae_config, type: String, description: 'Updated VAE config with dataset specs'}
+  - {name: train_data, type: Dataset, description: "Training data loader pickle file from data loader component"}
+  - {name: val_data, type: Dataset, description: "Validation data loader pickle file from data loader component"}
+  - {name: data_shape, type: String, description: "Data shape from data loader component (height,width,channels)"}
+  - {name: vae_type, type: String, default: "standard", description: "Type of VAE: standard, beta, conditional, vqvae"}
+  - {name: preprocessing_config, type: String, default: "{}", description: "JSON string with preprocessing configuration"}
 implementation:
   container:
     image: nikhilv215/nesy-factory:v22
@@ -241,7 +242,7 @@ implementation:
                 return signatures
             
             def create_embeddings(self, signatures: List[Dict]) -> Tuple[np.ndarray, np.ndarray, List[str]]:
-                print(f"Creating embeddings for {len(signatures)} failure signatures...")
+                print(f"Creating embeddings for {len(signatures)} failure signatures")
                 
                 # Prepare text data for TF-IDF
                 texts = [sig['raw_log'] for sig in signatures]
@@ -275,7 +276,6 @@ implementation:
                 return combined_embeddings, labels, unique_types
             
             def deduplicate_signatures(self, signatures: List[Dict], similarity_threshold: float = 0.95) -> List[Dict]:
-                """Remove duplicate failure signatures based on hash similarity"""
                 print(f"Deduplicating {len(signatures)} signatures...")
                 
                 hash_groups = defaultdict(list)
@@ -297,7 +297,8 @@ implementation:
             
             def create_continual_tasks(self, embeddings: np.ndarray, labels: np.ndarray, 
                                      unique_types: List[str], signatures: List[Dict]) -> List[Dict]:
-                print("Creating continual learning tasks")
+                """Create continual learning tasks based on failure types"""
+                print("Creating continual learning tasks...")
                 
                 tasks = []
                 
@@ -354,19 +355,28 @@ implementation:
             parser = argparse.ArgumentParser()
             parser.add_argument('--api_url', type=str, required=True, help='API URL to fetch failure signature dataset')
             parser.add_argument('--access_token', type=str, required=True, help='Bearer token for API')
-            parser.add_argument('--config', type=str, required=True, help='VAE configuration file')
-            parser.add_argument('--data_path', type=str, required=True, help='Path to output processed dataset')
-            parser.add_argument('--tasks', type=str, required=True, help='Path to output continual learning tasks')
-            parser.add_argument('--vae_config', type=str, required=True, help='Path to output updated VAE config')
+            parser.add_argument('--train_data', type=str, required=True, help='Path to output training data loader')
+            parser.add_argument('--val_data', type=str, required=True, help='Path to output validation data loader')
+            parser.add_argument('--data_shape', type=str, required=True, help='Path to output data shape info')
+            parser.add_argument('--vae_type', type=str, required=True, help='Path to output VAE type')
+            parser.add_argument('--preprocessing_config', type=str, required=True, help='Path to output preprocessing config')
             args = parser.parse_args()
 
             # Read access token
             with open(args.access_token, 'r') as f:
                 access_token = f.read().strip()
             
-            # Load VAE configuration
-            with open(args.config, 'r') as f:
-                config = json.load(f)
+            # Default configuration for failure signatures
+            config = {
+                'vae_type': 'standard_vae',
+                'latent_dim': 128,
+                'hidden_dims': [256, 128],
+                'learning_rate': 0.001,
+                'batch_size': 32,
+                'epochs': 50,
+                'beta': 1.0,
+                'max_features': 500
+            }
             
             print("Starting Failure Signature API Dataset Processing...")
             
@@ -393,61 +403,84 @@ implementation:
             # Create embeddings
             embeddings, labels, unique_types = processor.create_embeddings(unique_signatures)
             
-            # Create continual learning tasks
+            # Create continual learning tasks and split into train/val
             continual_tasks = processor.create_continual_tasks(embeddings, labels, unique_types, unique_signatures)
             
-            # Prepare processed dataset (compatible with VAE workflow)
-            processed_data = {
-                'embeddings': embeddings.tolist(),
-                'labels': labels.tolist(),
-                'signatures': unique_signatures,
-                'unique_types': unique_types,
-                'feature_names': [f'tfidf_{i}' for i in range(processor.vectorizer.transform(['test']).shape[1])] + 
-                                list(processor.signature_patterns.keys()) + 
-                                ['log_length', 'word_count', 'uppercase_ratio', 'digit_ratio'],
-                'embedding_dim': embeddings.shape[1],
-                'num_samples': len(unique_signatures),
-                'num_classes': len(unique_types),
-                'scaler_mean': processor.scaler.mean_.tolist(),
-                'scaler_scale': processor.scaler.scale_.tolist()
-            }
+            # Combine all tasks into global train/val splits for VAE
+            all_train_data = []
+            all_val_data = []
             
-            # Update VAE config with dataset specifications
-            updated_config = config.copy()
-            updated_config.update({
+            for task in continual_tasks:
+                # Extract training data from task loaders
+                train_loader = task['train_loader']
+                val_loader = task['val_loader']
+                
+                # Collect all training samples
+                for batch_data, batch_labels in train_loader:
+                    for i in range(len(batch_data)):
+                        all_train_data.append((batch_data[i].numpy(), batch_labels[i].item()))
+                
+                # Collect all validation samples
+                for batch_data, batch_labels in val_loader:
+                    for i in range(len(batch_data)):
+                        all_val_data.append((batch_data[i].numpy(), batch_labels[i].item()))
+            
+            print(f"Combined training samples: {len(all_train_data)}")
+            print(f"Combined validation samples: {len(all_val_data)}")
+            
+            # Ensure output directories exist
+            os.makedirs(os.path.dirname(args.train_data), exist_ok=True)
+            os.makedirs(os.path.dirname(args.val_data), exist_ok=True)
+            os.makedirs(os.path.dirname(args.data_shape), exist_ok=True)
+            os.makedirs(os.path.dirname(args.vae_type), exist_ok=True)
+            os.makedirs(os.path.dirname(args.preprocessing_config), exist_ok=True)
+            
+            # Save training data
+            print("Saving training data...")
+            with open(args.train_data, 'wb') as f:
+                pickle.dump(all_train_data, f)
+            
+            # Save validation data
+            print("Saving validation data...")
+            with open(args.val_data, 'wb') as f:
+                pickle.dump(all_val_data, f)
+            
+            # Save data shape (embedding dimension)
+            data_shape_info = f"{embeddings.shape[1]},1,1"  # (features, height=1, width=1 for 1D data)
+            print("Saving data shape...")
+            with open(args.data_shape, 'w') as f:
+                f.write(data_shape_info)
+            
+            # Save VAE type
+            print("Saving VAE type...")
+            with open(args.vae_type, 'w') as f:
+                f.write('standard')
+            
+            # Save preprocessing config
+            preprocessing_config = {
                 'input_dim': embeddings.shape[1],
                 'num_classes': len(unique_types),
                 'failure_types': unique_types,
                 'dataset_type': 'failure_signature_api',
+                'scaler_mean': processor.scaler.mean_.tolist(),
+                'scaler_scale': processor.scaler.scale_.tolist(),
                 'feature_names': [f'tfidf_{i}' for i in range(processor.vectorizer.transform(['test']).shape[1])] + 
                                 list(processor.signature_patterns.keys()) + 
                                 ['log_length', 'word_count', 'uppercase_ratio', 'digit_ratio']
-            })
+            }
             
-            # Ensure output directories exist
-            os.makedirs(os.path.dirname(args.data_path), exist_ok=True)
-            os.makedirs(os.path.dirname(args.tasks), exist_ok=True)
-            os.makedirs(os.path.dirname(args.vae_config), exist_ok=True)
-            
-            # Save outputs
-            print("Saving processed dataset...")
-            with open(args.data_path, 'wb') as f:
-                pickle.dump(processed_data, f)
-            
-            print("Saving continual learning tasks...")
-            with open(args.tasks, 'wb') as f:
-                pickle.dump(continual_tasks, f)
-            
-            print("Saving updated VAE configuration...")
-            with open(args.vae_config, 'w') as f:
-                json.dump(updated_config, f, indent=4)
+            print("Saving preprocessing configuration...")
+            with open(args.preprocessing_config, 'w') as f:
+                json.dump(preprocessing_config, f, indent=4)
             
             print("Failure Signature API Dataset Processing Complete!")
             print(f"- Processed {len(unique_signatures)} unique failure signatures")
             print(f"- Created embeddings with dimension {embeddings.shape[1]}")
-            print(f"- Generated {len(continual_tasks)} continual learning tasks")
+            print(f"- Training samples: {len(all_train_data)}")
+            print(f"- Validation samples: {len(all_val_data)}")
+            print(f"- Data shape: {data_shape_info}")
+            print(f"- VAE type: standard")
             print(f"- Found {len(unique_types)} failure types: {unique_types}")
-            print(f"- Dataset ready for VAE training with input_dim={embeddings.shape[1]}")
 
         if __name__ == '__main__':
             main()
@@ -456,11 +489,13 @@ implementation:
       - {inputValue: api_url}
       - --access_token
       - {inputPath: access_token}
-      - --config
-      - {inputPath: config}
-      - --data_path
-      - {outputPath: data_path}
-      - --tasks
-      - {outputPath: tasks}
-      - --vae_config
-      - {outputPath: vae_config}
+      - --train_data
+      - {outputPath: train_data}
+      - --val_data
+      - {outputPath: val_data}
+      - --data_shape
+      - {outputPath: data_shape}
+      - --vae_type
+      - {outputPath: vae_type}
+      - --preprocessing_config
+      - {outputPath: preprocessing_config}
