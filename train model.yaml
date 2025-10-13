@@ -129,9 +129,11 @@ implementation:
         vae_type = config.get('vae_type', 'standard_vae')
         
         # Create the same model architecture as in model builder
-        input_dim = config.get('input_dim', actual_input_dim)  # Use actual dimension
+        input_dim = actual_input_dim  # Force use of actual dimension from preprocessing
         hidden_dim = config.get('hidden_dim', 512)
         latent_dim = config.get('latent_dim', 128)
+        
+        print(f"Model architecture: input_dim={input_dim}, hidden_dim={hidden_dim}, latent_dim={latent_dim}")
         
         if vae_type == 'standard_vae':
             class StandardVAE(nn.Module):
