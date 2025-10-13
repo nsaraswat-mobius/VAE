@@ -1,8 +1,8 @@
-name: Failure Signature API Dataset Loader
+name: Failure Signature API Dataset Loader Fixed
 description: Fetches failure signature data from schema API and prepares VAE-compatible datasets with continual learning tasks for failure analysis.
 inputs:
   - {name: api_url, type: String, description: 'API URL to fetch failure signature dataset'}
-  - {name: access_token, type: string, description: 'Bearer access token for API auth'}
+  - {name: access_token, type: String, description: 'Bearer access token for API auth'}
 outputs:
   - {name: train_data, type: Dataset, description: "Training data loader pickle file from data loader component"}
   - {name: val_data, type: Dataset, description: "Validation data loader pickle file from data loader component"}
@@ -209,7 +209,6 @@ implementation:
                 return extended_logs
                 
             def extract_signatures(self, failure_logs: List[str]) -> List[Dict]:
-                """Extract structured failure signatures from raw log data"""
                 signatures = []
                 
                 for i, log_entry in enumerate(failure_logs):
@@ -298,7 +297,8 @@ implementation:
             
             def create_continual_tasks(self, embeddings: np.ndarray, labels: np.ndarray, 
                                      unique_types: List[str], signatures: List[Dict]) -> List[Dict]:
-                print("Creating continual learning tasks")
+                """Create continual learning tasks based on failure types"""
+                print("Creating continual learning tasks...")
                 
                 tasks = []
                 
