@@ -2,10 +2,10 @@ name: Failure Signature Dataset Loader
 description: Optimized dataset loader for failure signature data with enhanced synthetic data generation
 inputs:
   - name: api_url
-    type: String
+    type: str
     description: API URL to fetch failure signature dataset
   - name: access_token
-    type: String
+    type: str
     description: Bearer access token for API auth
 outputs:
   - name: train_data
@@ -15,13 +15,13 @@ outputs:
     type: Dataset
     description: Validation data pickle file
   - name: data_shape
-    type: String
+    type: str
     description: Data shape
   - name: vae_type
-    type: String
+    type: str
     description: VAE type
   - name: preprocessing_config
-    type: String
+    type: str
     description: Preprocessing configuration JSON
 implementation:
   container:
@@ -157,7 +157,7 @@ implementation:
             print(f" Feature dimension: 512 (enhanced)")
             print(f"  Failure categories: 8")  
             print(f" VAE type: standard")
-            print(f"Ready for VAE pipeline processing!")
+            print(f" Ready for VAE pipeline processing!")
 
         if __name__ == '__main__':
             main()
@@ -165,7 +165,7 @@ implementation:
       - --api_url
       - {inputValue: api_url}
       - --access_token
-      - {inputPath: access_token}
+      - {inputValue: access_token}
       - --train_data
       - {outputPath: train_data}
       - --val_data
