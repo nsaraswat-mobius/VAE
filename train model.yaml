@@ -5,6 +5,7 @@ inputs:
   - {name: val_data_path, type: Dataset}       # Validation data from preprocessing
   - {name: model, type: Model}                 # VAE model from build model brick
   - {name: config, type: String}               # Training configuration (epochs, etc.)
+  - {name: processed_data_shape, type: String} # Input dimension from preprocessing
 outputs:
   - {name: trained_model, type: Model}     # Trained model object
   - {name: epoch_loss, type: String}
@@ -82,6 +83,7 @@ implementation:
         parser.add_argument('--val_data_path', type=str, required=True)
         parser.add_argument('--model', type=str, required=True)
         parser.add_argument('--config', type=str, required=True)
+        parser.add_argument('--processed_data_shape', type=str, required=True)
         parser.add_argument('--trained_model', type=str, required=True)
         parser.add_argument('--epoch_loss', type=str, required=True)
         args = parser.parse_args()
@@ -117,11 +119,17 @@ implementation:
                 config = json.load(f)
         print(f"the configs are : {config}")
         
+        # Read the actual input dimension from preprocessing
+        with open(args.processed_data_shape, 'r') as f:
+            actual_input_dim = int(f.read().strip())
+        
+        print(f"Using input dimension: {actual_input_dim}")
+        
         print("Loading model...")
         vae_type = config.get('vae_type', 'standard_vae')
         
         # Create the same model architecture as in model builder
-        input_dim = config.get('input_dim', 784)
+        input_dim = config.get('input_dim', actual_input_dim)  # Use actual dimension
         hidden_dim = config.get('hidden_dim', 512)
         latent_dim = config.get('latent_dim', 128)
         
@@ -259,6 +267,8 @@ implementation:
       - {inputPath: model}
       - --config
       - {inputValue: config}
+      - --processed_data_shape
+      - {inputPath: processed_data_shape}
       - --trained_model
       - {outputPath: trained_model}
       - --epoch_loss
