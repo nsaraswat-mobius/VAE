@@ -24,6 +24,8 @@ implementation:
         import numpy as np
         import requests
         import random
+        import torch
+        from torch.utils.data import DataLoader, TensorDataset
 
         def main():
             parser = argparse.ArgumentParser()
@@ -104,8 +106,17 @@ implementation:
             train_indices = indices[:split_point]
             val_indices = indices[split_point:]
             
-            train_data = [(embeddings[i], labels[i]) for i in train_indices]
-            val_data = [(embeddings[i], labels[i]) for i in val_indices]
+            # Create PyTorch tensors
+            train_embeddings = torch.FloatTensor(embeddings[train_indices])
+            train_labels = torch.LongTensor(labels[train_indices])
+            val_embeddings = torch.FloatTensor(embeddings[val_indices])
+            val_labels = torch.LongTensor(labels[val_indices])
+            
+            # Create DataLoaders (expected by preprocessing component)
+            train_dataset = TensorDataset(train_embeddings, train_labels)
+            val_dataset = TensorDataset(val_embeddings, val_labels)
+            train_data = DataLoader(train_dataset, batch_size=32, shuffle=True)
+            val_data = DataLoader(val_dataset, batch_size=32, shuffle=False)
             
             # Create output directories
             os.makedirs(os.path.dirname(args.train_data), exist_ok=True)
