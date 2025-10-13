@@ -1,0 +1,418 @@
+name: Failure Signature Dataset Loader
+description: Loads and preprocesses failure signature data for VAE training, including embedding generation, deduplication, and continual learning task creation.
+inputs:
+  - {name: raw_failure_logs, type: Dataset}
+  - {name: config, type: String}
+  - {name: signature_types, type: String}
+outputs:
+  - {name: processed_dataset, type: Dataset}
+  - {name: continual_tasks, type: Dataset}
+  - {name: embedding_config, type: String}
+implementation:
+  container:
+    image: nikhilv215/nesy-factory:v22
+    command:
+      - sh
+      - -c
+      - |
+        exec "$0" "$@"
+      - python3
+      - -u
+      - -c
+      - |
+        import torch
+        import torch.nn as nn
+        import torch.nn.functional as F
+        import os
+        import json
+        import argparse
+        import pickle
+        import numpy as np
+        import pandas as pd
+        from torch.utils.data import DataLoader, Dataset, TensorDataset
+        import re
+        import hashlib
+        from collections import Counter, defaultdict
+        from typing import List, Dict, Any, Tuple
+        from sklearn.feature_extraction.text import TfidfVectorizer
+        from sklearn.preprocessing import StandardScaler
+        import time
+        import random
+
+        class FailureSignatureDataset(Dataset):
+            def __init__(self, embeddings, labels, signatures):
+                self.embeddings = torch.FloatTensor(embeddings)
+                self.labels = torch.LongTensor(labels)
+                self.signatures = signatures
+                
+            def __len__(self):
+                return len(self.embeddings)
+                
+            def __getitem__(self, idx):
+                return self.embeddings[idx], self.labels[idx]
+
+        class FailureSignatureProcessor:
+            def __init__(self, config):
+                self.config = config
+                self.signature_patterns = {
+                    'error_codes': r'ERROR\s*[:\-]?\s*(\d+|[A-Z_]+)',
+                    'stack_traces': r'at\s+[\w\.]+\([\w\.]+:\d+\)',
+                    'memory_issues': r'(OutOfMemory|MemoryError|heap\s+space)',
+                    'timeout_errors': r'(timeout|timed\s+out|connection\s+reset)',
+                    'null_pointer': r'(NullPointer|null\s+reference|undefined)',
+                    'database_errors': r'(SQLException|connection\s+failed|deadlock)',
+                    'network_errors': r'(ConnectionError|socket\s+timeout|DNS\s+resolution)',
+                    'permission_errors': r'(AccessDenied|permission\s+denied|unauthorized)'
+                }
+                self.vectorizer = TfidfVectorizer(
+                    max_features=self.config.get('max_features', 1000),
+                    ngram_range=(1, 2),
+                    stop_words='english'
+                )
+                self.scaler = StandardScaler()
+                
+            def extract_signatures(self, failure_logs: List[str]) -> List[Dict]:
+                signatures = []
+                
+                for i, log_entry in enumerate(failure_logs):
+                    signature = {
+                        'id': i,
+                        'raw_log': log_entry,
+                        'features': {},
+                        'signature_hash': '',
+                        'failure_type': 'unknown'
+                    }
+                    
+                    # Extract pattern-based features
+                    for pattern_name, pattern_regex in self.signature_patterns.items():
+                        matches = re.findall(pattern_regex, log_entry, re.IGNORECASE)
+                        signature['features'][pattern_name] = len(matches)
+                        if matches:
+                            signature['failure_type'] = pattern_name
+                    
+                    # Extract additional features
+                    signature['features']['log_length'] = len(log_entry)
+                    signature['features']['word_count'] = len(log_entry.split())
+                    signature['features']['uppercase_ratio'] = sum(1 for c in log_entry if c.isupper()) / max(len(log_entry), 1)
+                    signature['features']['digit_ratio'] = sum(1 for c in log_entry if c.isdigit()) / max(len(log_entry), 1)
+                    
+                    # Create signature hash for deduplication
+                    feature_string = '|'.join([f"{k}:{v}" for k, v in sorted(signature['features'].items())])
+                    signature['signature_hash'] = hashlib.md5(feature_string.encode()).hexdigest()[:16]
+                    
+                    signatures.append(signature)
+                
+                return signatures
+            
+            def create_embeddings(self, signatures: List[Dict]) -> Tuple[np.ndarray, np.ndarray, List[str]]:
+                print(f"Creating embeddings for {len(signatures)} failure signatures...")
+                
+                # Prepare text data for TF-IDF
+                texts = [sig['raw_log'] for sig in signatures]
+                
+                # Create TF-IDF embeddings
+                tfidf_features = self.vectorizer.fit_transform(texts).toarray()
+                
+                # Extract numerical features
+                numerical_features = []
+                for sig in signatures:
+                    features = list(sig['features'].values())
+                    numerical_features.append(features)
+                
+                numerical_features = np.array(numerical_features)
+                
+                # Normalize numerical features
+                numerical_features = self.scaler.fit_transform(numerical_features)
+                
+                # Combine TF-IDF and numerical features
+                combined_embeddings = np.concatenate([tfidf_features, numerical_features], axis=1)
+                
+                # Create labels based on failure types
+                failure_types = [sig['failure_type'] for sig in signatures]
+                unique_types = list(set(failure_types))
+                type_to_label = {ftype: i for i, ftype in enumerate(unique_types)}
+                labels = np.array([type_to_label[ftype] for ftype in failure_types])
+                
+                print(f"Created embeddings with shape: {combined_embeddings.shape}")
+                print(f"Found {len(unique_types)} unique failure types: {unique_types}")
+                
+                return combined_embeddings, labels, unique_types
+            
+            def deduplicate_signatures(self, signatures: List[Dict], similarity_threshold: float = 0.95) -> List[Dict]:
+                print(f"Deduplicating {len(signatures)} signatures...")
+                
+                hash_groups = defaultdict(list)
+                for sig in signatures:
+                    hash_groups[sig['signature_hash']].append(sig)
+                
+                deduplicated = []
+                for hash_key, group in hash_groups.items():
+                    if len(group) == 1:
+                        deduplicated.extend(group)
+                    else:
+                        # Keep the most informative signature from duplicates
+                        best_sig = max(group, key=lambda x: x['features']['log_length'])
+                        best_sig['duplicate_count'] = len(group)
+                        deduplicated.append(best_sig)
+                
+                print(f"After deduplication: {len(deduplicated)} unique signatures")
+                return deduplicated
+            
+            def create_continual_tasks(self, embeddings: np.ndarray, labels: np.ndarray, 
+                                     unique_types: List[str], signatures: List[Dict]) -> List[Dict]:
+                print("Creating continual learning tasks...")
+                
+                tasks = []
+                
+                # Group data by failure type for continual learning
+                type_to_label = {ftype: i for i, ftype in enumerate(unique_types)}
+                
+                for task_id, failure_type in enumerate(unique_types):
+                    # Get indices for this failure type
+                    type_indices = np.where(labels == type_to_label[failure_type])[0]
+                    
+                    if len(type_indices) < 2:
+                        print(f"Skipping {failure_type}: insufficient samples ({len(type_indices)})")
+                        continue
+                    
+                    # Split into train/val
+                    np.random.shuffle(type_indices)
+                    split_point = int(0.8 * len(type_indices))
+                    train_indices = type_indices[:split_point]
+                    val_indices = type_indices[split_point:]
+                    
+                    # Create datasets
+                    train_embeddings = embeddings[train_indices]
+                    train_labels = labels[train_indices]
+                    val_embeddings = embeddings[val_indices]
+                    val_labels = labels[val_indices]
+                    
+                    # Create DataLoaders
+                    train_dataset = FailureSignatureDataset(train_embeddings, train_labels, 
+                                                          [signatures[i] for i in train_indices])
+                    val_dataset = FailureSignatureDataset(val_embeddings, val_labels,
+                                                        [signatures[i] for i in val_indices])
+                    
+                    batch_size = self.config.get('batch_size', 32)
+                    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+                    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+                    
+                    task = {
+                        'task_id': task_id,
+                        'description': f"Failure Type: {failure_type}",
+                        'failure_type': failure_type,
+                        'train_loader': train_loader,
+                        'val_loader': val_loader,
+                        'num_samples': len(type_indices),
+                        'train_samples': len(train_indices),
+                        'val_samples': len(val_indices)
+                    }
+                    
+                    tasks.append(task)
+                    print(f"Task {task_id}: {failure_type} - {len(train_indices)} train, {len(val_indices)} val")
+                
+                return tasks
+
+        def load_failure_logs(data_path: str) -> List[str]:
+            print(f"Loading failure logs from: {data_path}")
+            
+            if not os.path.exists(data_path):
+                print(f"Data path not found: {data_path}")
+                print("Generating synthetic failure log data...")
+                return generate_synthetic_failure_logs()
+            
+            if data_path.endswith('.json'):
+                with open(data_path, 'r') as f:
+                    data = json.load(f)
+                    if isinstance(data, list):
+                        return [str(entry) for entry in data]
+                    elif isinstance(data, dict) and 'logs' in data:
+                        return [str(entry) for entry in data['logs']]
+                    else:
+                        return [str(data)]
+            
+            elif data_path.endswith('.csv'):
+                df = pd.read_csv(data_path)
+                # Look for common log column names
+                log_columns = ['log', 'message', 'error', 'failure', 'description']
+                for col in log_columns:
+                    if col in df.columns:
+                        return df[col].astype(str).tolist()
+                # If no specific column found, use the first column
+                return df.iloc[:, 0].astype(str).tolist()
+            
+            elif data_path.endswith('.txt'):
+                with open(data_path, 'r') as f:
+                    return [line.strip() for line in f if line.strip()]
+            
+            else:
+                print(f"Unsupported format for {data_path}, generating synthetic data...")
+                return generate_synthetic_failure_logs()
+
+        def generate_synthetic_failure_logs() -> List[str]:
+            synthetic_logs = [
+                # Database errors
+                "ERROR 1045: Access denied for user 'app'@'localhost' (using password: YES)",
+                "SQLException: Connection to database failed - timeout after 30 seconds",
+                "FATAL: database connection deadlock detected at transaction 12345",
+                "ERROR: duplicate key value violates unique constraint users_email_key",
+                
+                # Memory issues
+                "java.lang.OutOfMemoryError: Java heap space at com.app.DataProcessor.process(DataProcessor.java:45)",
+                "MemoryError: Unable to allocate 2.5GB for array with shape (1000000, 320)",
+                "OutOfMemoryError: GC overhead limit exceeded in thread pool-2-thread-1",
+                
+                # Network errors
+                "ConnectionError: HTTPSConnectionPool(host='api.service.com', port=443): Max retries exceeded",
+                "SocketTimeoutException: Read timed out at java.net.SocketInputStream.socketRead0",
+                "DNS resolution failed for hostname: internal-service.cluster.local",
+                "ERROR: Connection reset by peer at socket level",
+                
+                # Permission errors
+                "AccessDenied: User does not have permission to access resource /admin/users",
+                "PermissionError: [Errno 13] Permission denied: '/var/log/application.log'",
+                "HTTP 403 Forbidden: Insufficient privileges to perform this operation",
+                
+                # Null pointer errors
+                "NullPointerException at com.app.UserService.getUserById(UserService.java:78)",
+                "TypeError: Cannot read property 'id' of undefined in user-controller.js:42",
+                "AttributeError: 'NoneType' object has no attribute 'name'",
+                
+                # Timeout errors
+                "TimeoutError: Request timed out after 60 seconds waiting for response",
+                "HTTPTimeoutError: Request to /api/v1/data timed out after 30.0 seconds",
+                "Connection timeout: No response from server within 45 seconds",
+                
+                # Application-specific errors
+                "ValidationError: Email format is invalid for user registration",
+                "BusinessLogicError: Insufficient funds for transaction $1000.00",
+                "ConfigurationError: Missing required environment variable DATABASE_URL",
+                "AuthenticationError: Invalid JWT token signature",
+            ]
+            
+            # Generate variations and more samples
+            extended_logs = []
+            for _ in range(3):  # Create 3x variations
+                for log in synthetic_logs:
+                    # Add some randomization to make samples more diverse
+                    if 'ERROR' in log:
+                        # Randomize error codes
+                        import random
+                        error_code = random.randint(1000, 9999)
+                        modified_log = re.sub(r'ERROR\s+\d+', f'ERROR {error_code}', log)
+                        extended_logs.append(modified_log)
+                    elif 'timeout' in log.lower():
+                        # Randomize timeout values
+                        timeout_val = random.randint(10, 120)
+                        modified_log = re.sub(r'\d+\s*seconds?', f'{timeout_val} seconds', log)
+                        extended_logs.append(modified_log)
+                    else:
+                        extended_logs.append(log)
+            
+            print(f"Generated {len(extended_logs)} synthetic failure log entries")
+            return extended_logs
+
+        def main():
+            parser = argparse.ArgumentParser()
+            parser.add_argument('--raw_failure_logs', type=str, required=True)
+            parser.add_argument('--config', type=str, required=True)
+            parser.add_argument('--signature_types', type=str, required=True)
+            parser.add_argument('--processed_dataset', type=str, required=True)
+            parser.add_argument('--continual_tasks', type=str, required=True)
+            parser.add_argument('--embedding_config', type=str, required=True)
+            args = parser.parse_args()
+
+            # Load configuration
+            with open(args.config, 'r') as f:
+                config = json.load(f)
+            
+            with open(args.signature_types, 'r') as f:
+                signature_config = json.load(f)
+            
+            print("Starting Failure Signature Dataset Processing...")
+            
+            # Initialize processor
+            processor = FailureSignatureProcessor(config)
+            
+            # Load raw failure logs
+            failure_logs = load_failure_logs(args.raw_failure_logs)
+            print(f"Loaded {len(failure_logs)} failure log entries")
+            
+            # Extract signatures
+            signatures = processor.extract_signatures(failure_logs)
+            print(f"Extracted {len(signatures)} failure signatures")
+            
+            # Deduplicate signatures
+            unique_signatures = processor.deduplicate_signatures(signatures)
+            print(f"After deduplication: {len(unique_signatures)} unique signatures")
+            
+            # Create embeddings
+            embeddings, labels, unique_types = processor.create_embeddings(unique_signatures)
+            
+            # Create continual learning tasks
+            continual_tasks = processor.create_continual_tasks(embeddings, labels, unique_types, unique_signatures)
+            
+            # Prepare processed dataset
+            processed_data = {
+                'embeddings': embeddings.tolist(),
+                'labels': labels.tolist(),
+                'signatures': unique_signatures,
+                'unique_types': unique_types,
+                'feature_names': [f'tfidf_{i}' for i in range(processor.vectorizer.transform(['test']).shape[1])] + 
+                                list(processor.signature_patterns.keys()) + 
+                                ['log_length', 'word_count', 'uppercase_ratio', 'digit_ratio'],
+                'embedding_dim': embeddings.shape[1],
+                'num_samples': len(unique_signatures),
+                'num_classes': len(unique_types)
+            }
+            
+            # Create embedding configuration for VAE
+            embedding_config = {
+                'input_dim': embeddings.shape[1],
+                'latent_dim': config.get('latent_dim', 128),
+                'num_classes': len(unique_types),
+                'failure_types': unique_types,
+                'vae_type': config.get('vae_type', 'standard_vae'),
+                'beta': config.get('beta', 1.0),
+                'learning_rate': config.get('learning_rate', 0.001),
+                'epochs': config.get('epochs', 50),
+                'batch_size': config.get('batch_size', 32)
+            }
+            
+            # Save outputs
+            print("Saving processed dataset...")
+            os.makedirs(os.path.dirname(args.processed_dataset), exist_ok=True)
+            with open(args.processed_dataset, 'wb') as f:
+                pickle.dump(processed_data, f)
+            
+            print("Saving continual tasks...")
+            os.makedirs(os.path.dirname(args.continual_tasks), exist_ok=True)
+            with open(args.continual_tasks, 'wb') as f:
+                pickle.dump(continual_tasks, f)
+            
+            print("Saving embedding configuration...")
+            os.makedirs(os.path.dirname(args.embedding_config), exist_ok=True)
+            with open(args.embedding_config, 'w') as f:
+                json.dump(embedding_config, f, indent=4)
+            
+            print("Failure Signature Dataset Processing Complete!")
+            print(f"- Processed {len(unique_signatures)} unique failure signatures")
+            print(f"- Created embeddings with dimension {embeddings.shape[1]}")
+            print(f"- Generated {len(continual_tasks)} continual learning tasks")
+            print(f"- Found {len(unique_types)} failure types: {unique_types}")
+
+        if __name__ == '__main__':
+            main()
+    args:
+      - --raw_failure_logs
+      - {inputPath: raw_failure_logs}
+      - --config
+      - {inputPath: config}
+      - --signature_types
+      - {inputPath: signature_types}
+      - --processed_dataset
+      - {outputPath: processed_dataset}
+      - --continual_tasks
+      - {outputPath: continual_tasks}
+      - --embedding_config
+      - {outputPath: embedding_config}
