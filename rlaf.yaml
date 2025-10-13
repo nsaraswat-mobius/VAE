@@ -557,16 +557,16 @@ implementation:
                 except requests.exceptions.Timeout:
                     print(f"Request timeout after {timeout} seconds on attempt {attempt + 1}")
                     if attempt < max_retries - 1:
-                        wait_time = (attempt + 1) * 15  # Longer wait for timeouts
+                        wait_time = (attempt + 1) * 20  # Increased wait time for timeouts
                         print(f"Retrying with longer timeout in {wait_time} seconds...")
                         time.sleep(wait_time)
-                        timeout = min(timeout + 60, 300)  # Increase timeout each retry, max 5 minutes
+                        timeout = min(timeout + 120, 600)  # Increase timeout by 2 minutes each retry, max 10 minutes
                         continue
                     return None
                 except requests.exceptions.ConnectionError:
                     print(f"Connection error on attempt {attempt + 1} - API service may be unreachable")
                     if attempt < max_retries - 1:
-                        wait_time = (attempt + 1) * 10
+                        wait_time = (attempt + 1) * 15
                         print(f"Retrying in {wait_time} seconds...")
                         time.sleep(wait_time)
                         continue
@@ -574,7 +574,7 @@ implementation:
                 except requests.exceptions.RequestException as e:
                     print(f"Request failed on attempt {attempt + 1}: {e}")
                     if attempt < max_retries - 1:
-                        wait_time = (attempt + 1) * 10
+                        wait_time = (attempt + 1) * 15
                         print(f"Retrying in {wait_time} seconds...")
                         time.sleep(wait_time)
                         continue
@@ -582,7 +582,7 @@ implementation:
                 except Exception as e:
                     print(f"Unexpected error during API request on attempt {attempt + 1}: {e}")
                     if attempt < max_retries - 1:
-                        wait_time = (attempt + 1) * 10
+                        wait_time = (attempt + 1) * 15
                         print(f"Retrying in {wait_time} seconds...")
                         time.sleep(wait_time)
                         continue
@@ -626,9 +626,9 @@ implementation:
             print(f"Attempting to trigger DQN pipeline at: {url}")
             print(f"Pipeline ID: {config['pipeline_id']}")
             print(f"Experiment ID: {config['experiment_id']}")
-            print("Using extended timeout and retry logic for pipeline triggering...")
+            print("Using MAXIMUM timeout and retry logic for pipeline triggering (up to 10 minutes per attempt)...")
             
-            response = safe_api_request(url, method='POST', headers=headers, data=payload, timeout=120, max_retries=3)
+            response = safe_api_request(url, method='POST', headers=headers, data=payload, timeout=300, max_retries=5)
             
             if response is None:
                 print("Pipeline trigger failed, entering simulation mode")
@@ -654,7 +654,7 @@ implementation:
             }
             
             # Use safe API request with retry logic for status checks
-            response = safe_api_request(url, method='GET', headers=headers, timeout=60, max_retries=2)
+            response = safe_api_request(url, method='GET', headers=headers, timeout=90, max_retries=3)
             
             if response is None:
                 print("Failed to get pipeline status, assuming still running...")
@@ -718,7 +718,7 @@ implementation:
             }
             
             # Use safe API request with retry logic
-            response = safe_api_request(url, method='POST', headers=headers, json_data=payload, timeout=60, max_retries=2)
+            response = safe_api_request(url, method='POST', headers=headers, json_data=payload, timeout=120, max_retries=3)
             
             if response is None:
                 print("Failed to get instance data, using fallback")
@@ -758,7 +758,7 @@ implementation:
             }
             
             # Use safe API request with retry logic
-            response = safe_api_request(url, method='PATCH', headers=headers, json_data=payload, timeout=60, max_retries=2)
+            response = safe_api_request(url, method='PATCH', headers=headers, json_data=payload, timeout=90, max_retries=3)
             
             if response is None:
                 print(f"Failed to update field '{field}' - API request failed")
