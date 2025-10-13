@@ -98,18 +98,22 @@ implementation:
                 val_loader = pickle.load(f)
             print("Validation data loaded successfully")
             
-            processed_train = ProcessedVAEDataset(train_loader, args.vae_type)
-            processed_val = ProcessedVAEDataset(val_loader, args.vae_type)
+            processed_train = ProcessedVAEDataset(train_loader, vae_type_clean)
+            processed_val = ProcessedVAEDataset(val_loader, vae_type_clean)
             
             batch_size = train_loader.batch_size
             new_train_loader = DataLoader(processed_train, batch_size=batch_size, shuffle=True, num_workers=0)
             new_val_loader = DataLoader(processed_val, batch_size=batch_size, shuffle=False, num_workers=0)
             
-            h, w, c = map(int, args.data_shape.split(','))
+            # Strip quotes from data_shape and vae_type if present
+            data_shape_clean = args.data_shape.strip('"')
+            vae_type_clean = args.vae_type.strip('"')
+            
+            h, w, c = map(int, data_shape_clean.split(','))
             flattened_dim = h * w * c
             
             metadata = {
-                'vae_type': args.vae_type,
+                'vae_type': vae_type_clean,
                 'flattened_input_dim': flattened_dim,
                 'num_train_samples': len(processed_train),
                 'num_val_samples': len(processed_val)
