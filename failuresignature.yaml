@@ -7,8 +7,8 @@ outputs:
   - {name: train_data, type: Dataset, description: "Training data loader pickle file from data loader component"}
   - {name: val_data, type: Dataset, description: "Validation data loader pickle file from data loader component"}
   - {name: data_shape, type: String, description: "Data shape from data loader component (height,width,channels)"}
-  - {name: vae_type, type: String, default: "standard", description: "Type of VAE: standard, beta, conditional, vqvae"}
-  - {name: preprocessing_config, type: String, default: "{}", description: "JSON string with preprocessing configuration"}
+  - {name: vae_type, type: String, description: "Type of VAE: standard, beta, conditional, vqvae"}
+  - {name: preprocessing_config, type: String, description: "JSON string with preprocessing configuration"}
 implementation:
   container:
     image: nikhilv215/nesy-factory:v22
@@ -149,7 +149,7 @@ implementation:
                     
                 except requests.exceptions.RequestException as e:
                     logger.error(f"API request failed after retries: {e}")
-                    logger.info("Generating synthetic failure log data")
+                    logger.info("Generating synthetic failure log data...")
                     return self.generate_synthetic_failure_logs()
                     
             def generate_synthetic_failure_logs(self) -> List[str]:
@@ -209,6 +209,7 @@ implementation:
                 return extended_logs
                 
             def extract_signatures(self, failure_logs: List[str]) -> List[Dict]:
+                """Extract structured failure signatures from raw log data"""
                 signatures = []
                 
                 for i, log_entry in enumerate(failure_logs):
@@ -242,7 +243,7 @@ implementation:
                 return signatures
             
             def create_embeddings(self, signatures: List[Dict]) -> Tuple[np.ndarray, np.ndarray, List[str]]:
-                print(f"Creating embeddings for {len(signatures)} failure signatures")
+                print(f"Creating embeddings for {len(signatures)} failure signatures...")
                 
                 # Prepare text data for TF-IDF
                 texts = [sig['raw_log'] for sig in signatures]
@@ -297,8 +298,7 @@ implementation:
             
             def create_continual_tasks(self, embeddings: np.ndarray, labels: np.ndarray, 
                                      unique_types: List[str], signatures: List[Dict]) -> List[Dict]:
-                """Create continual learning tasks based on failure types"""
-                print("Creating continual learning tasks...")
+                print("Creating continual learning tasks")
                 
                 tasks = []
                 
