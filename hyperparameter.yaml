@@ -1,0 +1,482 @@
+name: VAE Failure Signature Katib Tuner
+description: Launches a Katib experiment to tune hyperparameters for VAE models on failure signature data.
+
+inputs:
+  - name: model_name
+    type: String
+    default: "vae_failure_signature"
+    description: Name of the VAE model to train
+
+  - name: model_type
+    type: String
+    default: "standard_vae"
+    description: Type of VAE model (standard_vae, beta_vae, conditional_vae, vq_vae)
+
+  - name: projectid
+    type: String
+    default: "failure_analysis"
+    description: Project ID for this experiment
+
+  - name: parameters_to_tune
+    type: String
+    default: '[{"name": "learning_rate", "parameter_type": "double", "feasible_space": {"min": "0.0001", "max": "0.01"}}, {"name": "hidden_dim", "parameter_type": "int", "feasible_space": {"min": "256", "max": "1024"}}, {"name": "latent_dim", "parameter_type": "int", "feasible_space": {"min": "64", "max": "256"}}, {"name": "beta", "parameter_type": "double", "feasible_space": {"min": "0.5", "max": "3.0"}}, {"name": "epochs", "parameter_type": "int", "feasible_space": {"min": "20", "max": "100"}}]'
+    description: List of VAE hyperparameters to tune (Katib format)
+
+  - name: objective_metric_name
+    type: String
+    default: "final_loss"
+    description: Metric Katib should optimize (final_loss, reconstruction_loss, kl_loss)
+
+  - name: objective_type
+    type: String
+    default: "minimize"
+    description: Optimization type (maximize/minimize)
+
+  - name: objective_goal
+    type: String
+    default: "0.1"
+    description: Target goal value for the metric
+
+  - name: algorithm_name
+    type: String
+    default: "bayesianoptimization"
+    description: Katib search algorithm (bayesianoptimization, random, grid)
+
+  - name: early_stopping_algorithm
+    type: String
+    default: "medianstop"
+    description: Early stopping algorithm
+
+  - name: max_trial_count
+    type: String
+    default: '6'
+    description: Maximum trials
+
+  - name: parallel_trial_count
+    type: String
+    default: '2'
+    description: Number of trials to run in parallel
+
+  - name: max_failed_trial_count
+    type: String
+    default: '2'
+    description: Maximum failed trials
+
+  - name: data_path
+    type: Dataset
+    description: Training data path for VAE
+
+  - name: val_data_path
+    type: Dataset
+    description: Validation data path for VAE
+
+  - name: processed_data_shape
+    type: String
+    description: Input dimension from preprocessing
+
+outputs:
+  - name: best_hyperparams
+    type: JsonArray
+    description: Best VAE hyperparameters found by Katib
+
+  - name: payload
+    type: string
+    description: All trial results with VAE metrics
+
+  - name: tuning_report
+    type: String
+    description: Summary report of hyperparameter tuning
+
+implementation:
+  container:
+    image: nikhilv215/nesy-factory:v22
+    command:
+      - python3
+      - -u
+      - -c
+      - |
+        import argparse
+        import json
+        import os
+        import uuid
+        import time
+        from kubernetes import client, config
+        import kubeflow.katib as katib
+        from kubeflow.katib import (
+            V1beta1AlgorithmSpec,
+            V1beta1Experiment,
+            V1beta1ExperimentSpec,
+            V1beta1ObjectiveSpec,
+            V1beta1ParameterSpec,
+            V1beta1EarlyStoppingSpec,
+            V1beta1TrialTemplate,
+            V1beta1MetricsCollectorSpec
+        )
+
+        try:
+            config.load_incluster_config()
+        except:
+            config.load_kube_config()
+
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--best_hyperparams", type=str, required=True)
+        parser.add_argument("--parameters_to_tune", type=str, required=True)
+        parser.add_argument("--objective_metric_name", type=str, required=True)
+        parser.add_argument("--objective_type", type=str, required=True)
+        parser.add_argument("--objective_goal", type=float, required=True)
+        parser.add_argument("--algorithm_name", type=str, required=True)
+        parser.add_argument("--early_stopping_algorithm", type=str, required=True)
+        parser.add_argument("--max_trial_count", type=int, required=True)
+        parser.add_argument("--parallel_trial_count", type=int, required=True)
+        parser.add_argument("--max_failed_trial_count", type=int, required=True)
+        parser.add_argument("--model_name", type=str, required=True)
+        parser.add_argument("--model_type", type=str, required=True)
+        parser.add_argument("--projectid", type=str, required=True)
+        parser.add_argument("--data_path", type=str, required=True)
+        parser.add_argument("--val_data_path", type=str, required=True)
+        parser.add_argument("--processed_data_shape", type=str, required=True)
+        parser.add_argument("--payload", type=str, required=True)
+        parser.add_argument("--tuning_report", type=str, required=True)
+        
+        args = parser.parse_args()
+
+        print("=== VAE FAILURE SIGNATURE KATIB EXPERIMENT SETUP ===")
+        print("Model: " + args.model_name)
+        print("VAE Type: " + args.model_type)
+        print("Max trials: " + str(args.max_trial_count))
+        print("Parallel trials: " + str(args.parallel_trial_count))
+        print("Objective: " + args.objective_type + " " + args.objective_metric_name)
+
+        # Read input dimension
+        with open(args.processed_data_shape, 'r') as f:
+            input_dim = int(f.read().strip())
+        print(f"Input dimension: {input_dim}")
+
+        params_input = json.loads(args.parameters_to_tune)
+        print("Parameters to tune: " + str([p["name"] for p in params_input]))
+
+        parameters = [
+            V1beta1ParameterSpec(
+                name=p["name"],
+                parameter_type=p["parameter_type"],
+                feasible_space=p["feasible_space"]
+            )
+            for p in params_input
+        ]
+
+        experiment_name = "vae-failure-" + str(uuid.uuid4())[:8]
+        namespace = "admin"
+        print("Experiment name: " + experiment_name)
+
+        objective_spec = V1beta1ObjectiveSpec(
+            type=args.objective_type,
+            goal=args.objective_goal,
+            objective_metric_name=args.objective_metric_name
+        )
+
+        algorithm_spec = V1beta1AlgorithmSpec(algorithm_name=args.algorithm_name)
+        early_stopping_spec = V1beta1EarlyStoppingSpec(algorithm_name=args.early_stopping_algorithm)
+
+        trial_template = V1beta1TrialTemplate(
+            retain=True,
+            primary_container_name="vae-training-container",
+            trial_parameters=[{"name": p["name"], "description": p["name"], "reference": p["name"]} for p in params_input],
+            trial_spec={
+                "apiVersion": "batch/v1",
+                "kind": "Job",
+                "spec": {
+                    "ttlSecondsAfterFinished": 86400,
+                    "template": {
+                        "metadata": {
+                            "annotations": {"sidecar.istio.io/inject": "false"}
+                        },
+                        "spec": {
+                            "restartPolicy": "Never",
+                            "containers": [
+                                {
+                                    "name": "vae-training-container",
+                                    "image": "nikhilv215/nesy-factory:v22",
+                                    "command": ["python3", "-c"],
+                                    "args": ['''
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import pickle
+import argparse
+import sys
+import os
+
+class StandardVAE(nn.Module):
+    def __init__(self, input_dim, hidden_dim, latent_dim):
+        super(StandardVAE, self).__init__()
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim
+        self.latent_dim = latent_dim
+        
+        # Encoder
+        self.encoder = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.ReLU()
+        )
+        self.mu_layer = nn.Linear(hidden_dim // 2, latent_dim)
+        self.logvar_layer = nn.Linear(hidden_dim // 2, latent_dim)
+        
+        # Decoder
+        self.decoder = nn.Sequential(
+            nn.Linear(latent_dim, hidden_dim // 2),
+            nn.ReLU(),
+            nn.Linear(hidden_dim // 2, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, input_dim),
+            nn.Sigmoid()
+        )
+    
+    def encode(self, x):
+        h = self.encoder(x)
+        mu = self.mu_layer(h)
+        logvar = self.logvar_layer(h)
+        return mu, logvar
+    
+    def reparameterize(self, mu, logvar):
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return mu + eps * std
+    
+    def decode(self, z):
+        return self.decoder(z)
+    
+    def forward(self, x):
+        mu, logvar = self.encode(x)
+        z = self.reparameterize(mu, logvar)
+        return self.decode(z), mu, logvar
+
+# Parse trial parameters
+parser = argparse.ArgumentParser()
+for param in ''' + str([p["name"] for p in params_input]) + ''':
+    parser.add_argument('--' + param, type=float, required=True)
+args = parser.parse_args()
+
+# Load data
+with open("''' + args.data_path + '''", "rb") as f:
+    train_loader = pickle.load(f)
+with open("''' + args.val_data_path + '''", "rb") as f:
+    val_loader = pickle.load(f)
+
+# Create model
+model = StandardVAE(''' + str(input_dim) + ''', int(args.hidden_dim), int(args.latent_dim))
+optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
+
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+model = model.to(device)
+
+# Training
+total_epochs = int(args.epochs)
+final_loss = 0
+
+for epoch in range(total_epochs):
+    model.train()
+    total_loss = 0
+    num_batches = 0
+    
+    for batch_data, _ in train_loader:
+        batch_data = batch_data.to(device)
+        optimizer.zero_grad()
+        
+        recon_batch, mu, logvar = model(batch_data)
+        recon_loss = nn.functional.mse_loss(recon_batch, batch_data, reduction='sum')
+        kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
+        
+        loss = recon_loss + args.beta * kl_loss
+        loss.backward()
+        optimizer.step()
+        
+        total_loss += loss.item()
+        num_batches += 1
+    
+    avg_loss = total_loss / num_batches
+    final_loss = avg_loss
+    
+    if epoch % 10 == 0:
+        print(f"Epoch {epoch}: Loss = {avg_loss}")
+
+print(f"final_loss={final_loss}")
+print(f"reconstruction_loss={recon_loss.item()/len(batch_data)}")
+print(f"kl_loss={kl_loss.item()/len(batch_data)}")
+                                    '''] + sum([
+                                        ["--" + p["name"], "${trialParameters." + p["name"] + "}"]
+                                        for p in params_input
+                                    ], []),
+                                    "resources": {
+                                        "limits": {"cpu": "2", "memory": "4Gi"},
+                                        "requests": {"cpu": "1", "memory": "2Gi"}
+                                    },
+                                    "volumeMounts": [
+                                        {
+                                            "name": "data-volume",
+                                            "mountPath": "/data"
+                                        }
+                                    ]
+                                }
+                            ],
+                            "volumes": [
+                                {
+                                    "name": "data-volume",
+                                    "persistentVolumeClaim": {
+                                        "claimName": "katib-pvc"
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        )
+
+        metrics_collector_spec = V1beta1MetricsCollectorSpec(
+            collector={"kind": "StdOut"}
+        )
+
+        experiment_spec = V1beta1ExperimentSpec(
+            objective=objective_spec,
+            algorithm=algorithm_spec,
+            parameters=parameters,
+            trial_template=trial_template,
+            metrics_collector_spec=metrics_collector_spec,
+            max_trial_count=args.max_trial_count,
+            parallel_trial_count=args.parallel_trial_count,
+            max_failed_trial_count=args.max_failed_trial_count,
+            early_stopping=early_stopping_spec
+        )
+
+        katib_client = katib.KatibClient(namespace=namespace)
+        experiment = V1beta1Experiment(
+            api_version="kubeflow.org/v1beta1",
+            kind="Experiment",
+            metadata=client.V1ObjectMeta(name=experiment_name, namespace=namespace),
+            spec=experiment_spec
+        )
+
+        def auto_cast(value):
+            if value.lower() in ["true", "false"]:
+                return value.lower() == "true"
+            if value.isdigit() or (value.startswith('-') and value[1:].isdigit()):
+                return int(value)
+            try:
+                return float(value)
+            except ValueError:
+                return value
+
+        print("=== CREATING VAE KATIB EXPERIMENT ===")
+        katib_client.create_experiment(experiment)
+        print("Created experiment: " + experiment_name)
+        
+        print("=== WAITING FOR EXPERIMENT COMPLETION ===")
+        katib_client.wait_for_experiment_condition(name=experiment_name, namespace=namespace, timeout=7200)
+        print("VAE experiment completed")
+
+        trials = katib_client.list_trials(experiment_name, namespace)
+        print("Found " + str(len(trials)) + " trials")
+        payload_data = []
+
+        for idx, trial in enumerate(trials, start=1):
+            paramss = {}
+            paramss['project_id'] = args.projectid
+            paramss['model_name'] = args.model_name + "_trial" + str(idx)
+            paramss['model_type'] = args.model_type
+            paramss['input_dim'] = input_dim
+            
+            timestamp = int(time.strftime("%Y%m%d%H%M%S"))
+            paramss["timestamp"] = timestamp
+            
+            for param in trial.spec.parameter_assignments:
+                paramss[param.name] = auto_cast(param.value)
+                
+            if trial.status.observation and trial.status.observation.metrics:
+                metrics_list = []
+                for metric in trial.status.observation.metrics:
+                    metrics_list.append({metric.name: auto_cast(metric.latest)})
+                paramss["metrics_value"] = metrics_list
+            else:
+                paramss["metrics_value"] = []
+
+            payload_data.append(paramss)
+
+        payload = {"data": payload_data, "experiment_type": "vae_failure_signature"}
+        
+        os.makedirs(os.path.dirname(args.payload), exist_ok=True)
+        with open(args.payload, "w") as f:
+            json.dump(payload, f, indent=2)
+
+        best = katib_client.get_optimal_hyperparameters(name=experiment_name, namespace=namespace)
+        params = best.parameter_assignments
+        hp_dict = {p.name: auto_cast(p.value) for p in params}
+        hp_dict['input_dim'] = input_dim
+        hp_dict['model_type'] = args.model_type
+        
+        print("Best VAE Hyperparameters Found: " + str(hp_dict))
+        
+        os.makedirs(os.path.dirname(args.best_hyperparams), exist_ok=True)
+        with open(args.best_hyperparams, "w") as f:
+            json.dump(hp_dict, f, indent=2)
+
+        # Generate tuning report
+        report = {
+            "experiment_name": experiment_name,
+            "model_type": args.model_type,
+            "input_dim": input_dim,
+            "total_trials": len(trials),
+            "best_hyperparams": hp_dict,
+            "objective_metric": args.objective_metric_name,
+            "objective_goal": args.objective_goal,
+            "algorithm": args.algorithm_name,
+            "summary": f"Completed VAE hyperparameter tuning with {len(trials)} trials. Best {args.objective_metric_name}: {best.observation.metrics[0].latest if best.observation and best.observation.metrics else 'N/A'}"
+        }
+        
+        os.makedirs(os.path.dirname(args.tuning_report), exist_ok=True)
+        with open(args.tuning_report, "w") as f:
+            json.dump(report, f, indent=2)
+
+        print("=== VAE FAILURE SIGNATURE KATIB EXPERIMENT COMPLETED ===")
+        print(f"Best parameters saved to: {args.best_hyperparams}")
+        print(f"Full results saved to: {args.payload}")
+        print(f"Tuning report saved to: {args.tuning_report}")
+
+    args:
+      - --model_name
+      - {inputValue: model_name}
+      - --model_type
+      - {inputValue: model_type}
+      - --parameters_to_tune
+      - {inputValue: parameters_to_tune}
+      - --objective_metric_name
+      - {inputValue: objective_metric_name}
+      - --objective_type
+      - {inputValue: objective_type}
+      - --objective_goal
+      - {inputValue: objective_goal}
+      - --algorithm_name
+      - {inputValue: algorithm_name}
+      - --early_stopping_algorithm
+      - {inputValue: early_stopping_algorithm}
+      - --max_trial_count
+      - {inputValue: max_trial_count}
+      - --parallel_trial_count
+      - {inputValue: parallel_trial_count}
+      - --max_failed_trial_count
+      - {inputValue: max_failed_trial_count}
+      - --projectid
+      - {inputValue: projectid}
+      - --data_path
+      - {inputPath: data_path}
+      - --val_data_path
+      - {inputPath: val_data_path}
+      - --processed_data_shape
+      - {inputPath: processed_data_shape}
+      - --best_hyperparams
+      - {outputPath: best_hyperparams}
+      - --payload
+      - {outputPath: payload}
+      - --tuning_report
+      - {outputPath: tuning_report}
