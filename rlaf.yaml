@@ -581,13 +581,18 @@ implementation:
             token_length = len(config['access_token'])
             print(f"Authorization token length: {token_length} characters")
             
-            if token_length > 10000:
-                print("CRITICAL ERROR: Token exceeds 10KB - entering simulation mode")
+            # Increased token size limit to accommodate larger JWT tokens with many roles
+            if token_length > 50000:  # Increased from 10KB to 50KB
+                print("CRITICAL ERROR: Token exceeds 50KB - entering simulation mode")
                 fake_run_id = f"SIMULATED_RUN_{int(time.time())}"
                 print(f"Generated simulation run_id: {fake_run_id}")
                 return fake_run_id
             
             # Use safe API request with timeout and error handling
+            print(f"Attempting to trigger DQN pipeline at: {url}")
+            print(f"Pipeline ID: {config['pipeline_id']}")
+            print(f"Experiment ID: {config['experiment_id']}")
+            
             response = safe_api_request(url, method='POST', headers=headers, data=payload, timeout=30)
             
             if response is None:
@@ -598,8 +603,10 @@ implementation:
             
             try:
                 response_json = response.json()
-                print(f"Triggered pipeline. Response: {response_json}")
-                return response_json.get('runId', f"FALLBACK_RUN_{int(time.time())}")
+                print(f"Triggered pipeline successfully. Response: {response_json}")
+                run_id = response_json.get('runId', f"FALLBACK_RUN_{int(time.time())}")
+                print(f"DQN Pipeline triggered with run_id: {run_id}")
+                return run_id
             except Exception as e:
                 print(f"Error parsing pipeline response: {e}")
                 return f"FALLBACK_RUN_{int(time.time())}"
