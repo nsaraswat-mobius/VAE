@@ -1,28 +1,14 @@
 name: Failure Signature Dataset Loader 
 description: Optimized dataset loader for failure signature data with enhanced synthetic data generation
 inputs:
-  - name: api_url
-    type: String
-    description: API URL to fetch failure signature dataset
-  - name: access_token
-    type: String
-    description: Bearer access token for API auth
+  - {name: api_url, type: String, description: 'API URL to fetch failure signature dataset'}
+  - {name: access_token, type: string, description: 'Bearer access token for API auth'}
 outputs:
-  - name: train_data
-    type: Dataset
-    description: Training data pickle file
-  - name: val_data
-    type: Dataset
-    description: Validation data pickle file
-  - name: data_shape
-    type: String
-    description: Data shape
-  - name: vae_type
-    type: String
-    description: VAE type
-  - name: preprocessing_config
-    type: String
-    description: Preprocessing configuration JSON
+  - {name: train_data, type: Dataset}
+  - {name: val_data, type: Dataset}
+  - {name: data_shape, type: Dataset}
+  - {name: vae_type, type: Dataset}
+  - {name: preprocessing_config, type: Dataset}
 implementation:
   container:
     image: nesy-factory:local
@@ -50,8 +36,8 @@ implementation:
             parser.add_argument('--preprocessing_config', type=str, required=True)
             args = parser.parse_args()
 
-            # Use access token directly
-            access_token = args.access_token
+            with open(args.access_token, 'r') as f:
+                access_token = f.read().strip()
             
             print("Loading failure signature dataset...")
             
@@ -164,7 +150,7 @@ implementation:
       - --api_url
       - {inputValue: api_url}
       - --access_token
-      - {inputValue: access_token}
+      - {inputPath: access_token}
       - --train_data
       - {outputPath: train_data}
       - --val_data
