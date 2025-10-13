@@ -83,12 +83,12 @@ implementation:
         parser.add_argument('--class_mapping', required=True, help='Output class mapping')
         args = parser.parse_args()
 
-        # Read string values from files
+        # Read string values from files and strip any quotes
         with open(args.data_shape, 'r') as f:
-            data_shape = f.read().strip()
+            data_shape = f.read().strip().strip('"')
         
         with open(args.vae_type, 'r') as f:
-            vae_type = f.read().strip()
+            vae_type = f.read().strip().strip('"')
             
         with open(args.preprocessing_config, 'r') as f:
             preprocessing_config = f.read().strip()
