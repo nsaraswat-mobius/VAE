@@ -32,7 +32,6 @@ implementation:
         from torch.utils.data import DataLoader, Dataset
 
         def upload_file_to_cdn(file_path, cdn_base_url, file_prefix):
-            """Upload file to CDN and return the URL"""
             try:
                 filename = f"{file_prefix}_{uuid.uuid4()}.pkl"
                 
