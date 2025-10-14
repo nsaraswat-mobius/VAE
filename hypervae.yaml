@@ -1,0 +1,471 @@
+name: saayI CNN Hyperparameter Tuner
+description: Launches a Katib experiment for CNN using a predefined objective function.
+
+inputs:
+  - name: model_name
+    type: String
+    default: resnet
+    description: Name of the GNN model to train (e.g., simple_cnn, resnet etc.)
+
+  - name: projectid
+    type: String
+    default: ui_analysis
+    description: Name or ID of the use case (e.g., ui_analysis)
+    
+  - name: model_type
+    type: String
+    default: cnn
+    description: Type of model(e.g., gnn, cnn, etc)
+
+  - name: config_json
+    type: String
+    description: Configuration of the model
+
+  - name: process_data_url
+    type: String
+    description: cdn url of processed dataset
+    
+  - name: parameters_to_tune
+    type: String
+    description: List of parameter specs to tune (Katib V1beta1ParameterSpec format)
+
+  - name: objective_metric_name
+    type: String
+    description: Metric name Katib will optimize (e.g., val_loss, accuracy, f1_score, roc_auc)
+
+  - name: objective_type
+    type: String
+    description: Objective type for Katib optimization (e.g., maximize, minimize)
+
+  - name: objective_goal
+    type: String
+    description: Target goal value for the metric (e.g., 0.99)
+    
+  - name: algorithm_name
+    type: String
+    default: bayesianoptimization
+    description: Search algorithm for Katib ( e.g., random, grid, tpe, bayesianoptimization, hyperband)
+
+  - name: early_stopping_algorithm
+    type: String
+    default: medianstop
+    description: Early stopping algorithm for Katib (e.g., medianstop, truncation, none)
+
+  - name: max_trial_count 
+    type: Integer
+    default: '4'
+    description: Maximum number of trials
+
+  - name: parallel_trial_count
+    type: String
+    default: '2'
+    description: Number of trials to run in parallel
+
+  - name: max_failed_trial_count
+    type: String
+    default: '2'
+    description: Maximum number of failed trials
+
+outputs:
+  - name: best_hyperparams
+    type: JsonArray
+    description: Best parameter set found by Katib
+
+  - name: payload
+    type: string
+    description: Parameters tuning
+  
+implementation:
+  container:
+    image: sanram00/vae-image:v1
+    command:
+      - python3
+      - -u
+      - -c
+      - |
+        import argparse
+        import json
+        import os
+        import time 
+        import uuid
+        import base64
+        import traceback
+        from kubernetes import client, config
+        import kubeflow.katib as katib
+        from kubeflow.katib import (
+            V1beta1AlgorithmSpec,
+            V1beta1Experiment,
+            V1beta1ExperimentSpec,
+            V1beta1ObjectiveSpec,
+            V1beta1ParameterSpec,
+            V1beta1EarlyStoppingSpec,
+            V1beta1TrialTemplate,
+            V1beta1MetricsCollectorSpec,
+            V1beta1FileSystemPath,
+        )
+
+        print("=== KATIB DEBUG: STARTING COMPONENT ===")
+        
+        # Load K8s config
+        try:
+            print("DEBUG: Loading Kubernetes config...")
+            config.load_incluster_config()
+            print("DEBUG: Successfully loaded in-cluster config")
+        except Exception as e:
+            print(f"DEBUG: In-cluster config failed: {e}")
+            try:
+                config.load_kube_config()
+                print("DEBUG: Successfully loaded kube config")
+            except Exception as e2:
+                print(f"DEBUG: Kube config also failed: {e2}")
+                raise
+
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--best_hyperparams", type=str, required=True)
+        parser.add_argument("--parameters_to_tune", type=str, required=True)
+        parser.add_argument("--objective_metric_name", type=str, required=True)
+        parser.add_argument("--objective_type", type=str, required=True)
+        parser.add_argument("--process_data_url", type=str, required=True)
+        parser.add_argument("--objective_goal", type=float, required=True)
+        parser.add_argument("--algorithm_name", type=str, required=True)
+        parser.add_argument("--early_stopping_algorithm", type=str, required=True)
+        parser.add_argument("--max_trial_count", type=int, required=True)
+        parser.add_argument("--parallel_trial_count", type=int, required=True)
+        parser.add_argument("--max_failed_trial_count", type=int, required=True)
+        parser.add_argument("--model_name", type=str, required=True)
+        parser.add_argument("--projectid", type=str, required=True)
+        parser.add_argument("--payload", type=str, required=True)
+        parser.add_argument("--model_type", type=str, required=True)
+        parser.add_argument("--config_json", type=str, required=True)
+        
+        args = parser.parse_args()
+
+        print("=== DEBUG: PARSED ARGUMENTS ===")
+        print(f"DEBUG: model_name: {args.model_name}")
+        print(f"DEBUG: projectid: {args.projectid}")
+        print(f"DEBUG: model_type: {args.model_type}")
+        print(f"DEBUG: objective_metric_name: {args.objective_metric_name}")
+        print(f"DEBUG: objective_type: {args.objective_type}")
+        print(f"DEBUG: objective_goal: {args.objective_goal}")
+        print(f"DEBUG: algorithm_name: {args.algorithm_name}")
+        print(f"DEBUG: max_trial_count: {args.max_trial_count}")
+        print(f"DEBUG: parallel_trial_count: {args.parallel_trial_count}")
+        print(f"DEBUG: config_json length: {len(args.config_json)}")
+        print(f"DEBUG: parameters_to_tune length: {len(args.parameters_to_tune)}")
+        print(f"DEBUG: process_data_url: {args.process_data_url}")
+
+        # HARDCODED NAMESPACE - admin only
+        namespace = "admin"
+        print(f"DEBUG: Using hardcoded namespace: {namespace}")
+
+        try:
+            # Parse and validate parameters_to_tune
+            print("=== DEBUG: PARSING PARAMETERS_TO_TUNE ===")
+            params_input = json.loads(args.parameters_to_tune)
+            print(f"DEBUG: Parsed {len(params_input)} parameters:")
+            for i, param in enumerate(params_input):
+                print(f"  {i+1}. {param.get('name', 'NO_NAME')} - {param.get('parameter_type', 'NO_TYPE')}")
+                if 'feasible_space' in param:
+                    print(f"     feasible_space: {param['feasible_space']}")
+            
+        except Exception as e:
+            print(f"DEBUG: Failed to parse parameters_to_tune: {e}")
+            print(f"DEBUG: parameters_to_tune content: {args.parameters_to_tune}")
+            raise
+
+        try:
+            # Parse and validate config_json
+            print("=== DEBUG: PARSING CONFIG_JSON ===")
+            config_dict = json.loads(args.config_json)
+            print(f"DEBUG: Config keys: {list(config_dict.keys())}")
+            cfg_b64 = base64.b64encode(args.config_json.encode("utf-8")).decode("utf-8")
+            print(f"DEBUG: Base64 config length: {len(cfg_b64)}")
+        except Exception as e:
+            print(f"✗ DEBUG: Failed to parse config_json: {e}")
+            print(f"DEBUG: config_json content: {args.config_json}")
+            raise
+
+        # Create parameter specs
+        print("=== DEBUG: CREATING PARAMETER SPECS ===")
+        parameters = []
+        for p in params_input:
+            try:
+                param_spec = V1beta1ParameterSpec(
+                    name=p["name"],
+                    parameter_type=p["parameter_type"],
+                    feasible_space=p["feasible_space"]
+                )
+                parameters.append(param_spec)
+                print(f"✓ DEBUG: Created parameter: {p['name']}")
+            except Exception as e:
+                print(f"✗ DEBUG: Failed to create parameter {p.get('name', 'UNKNOWN')}: {e}")
+                raise
+
+        print("=== DEBUG: CREATING METRICS COLLECTOR ===")
+        metrics_collector = V1beta1MetricsCollectorSpec(
+            source={
+                "fileSystemPath": V1beta1FileSystemPath(
+                    path="/katib/mnist.json",
+                    kind="File",
+                    format="JSON"
+                )
+            },
+            collector={"kind": "File"}
+        )
+
+        experiment_name = f"{args.model_name}-{str(uuid.uuid4())[:8]}"
+        print(f"DEBUG: Experiment name: {experiment_name}")
+
+        print("=== DEBUG: CREATING OBJECTIVE SPEC ===")
+        objective_spec = V1beta1ObjectiveSpec(
+            type=args.objective_type,
+            goal=args.objective_goal,
+            objective_metric_name=args.objective_metric_name
+        )
+        print(f"DEBUG: Objective - type: {args.objective_type}, goal: {args.objective_goal}, metric: {args.objective_metric_name}")
+
+        print("=== DEBUG: CREATING ALGORITHM SPEC ===")
+        algorithm_spec = V1beta1AlgorithmSpec(algorithm_name=args.algorithm_name)
+        print(f"DEBUG: Algorithm: {args.algorithm_name}")
+
+        print("=== DEBUG: CREATING EARLY STOPPING SPEC ===")
+        early_stopping_spec = V1beta1EarlyStoppingSpec(algorithm_name=args.early_stopping_algorithm)
+        print(f"DEBUG: Early stopping: {args.early_stopping_algorithm}")
+
+        print("=== DEBUG: CREATING TRIAL TEMPLATE ===")
+        # Build trial parameters
+        trial_parameters = []
+        trial_args = []
+        
+        for p in params_input:
+            param_name = p["name"]
+            trial_parameters.append({
+                "name": param_name,
+                "description": param_name,
+                "reference": param_name
+            })
+            trial_args.extend(["--" + param_name, "${trialParameters." + param_name + "}"])
+            print(f"DEBUG: Added trial parameter: {param_name}")
+        
+        # Add fixed arguments
+        trial_args.extend([
+            "--model_name", args.model_name,
+            "--model_type", args.model_type,
+            "--process_data_url", args.process_data_url,
+            "--config", cfg_b64
+        ])
+        
+        print(f"DEBUG: Final trial args: {trial_args}")
+        print(f"DEBUG: Trial parameters: {trial_parameters}")
+        
+        trial_template = V1beta1TrialTemplate(
+            retain=True,
+            primary_container_name="training-container",
+            trial_parameters=trial_parameters,
+            trial_spec={
+                "apiVersion": "batch/v1",
+                "kind": "Job",
+                "spec": {
+                    "ttlSecondsAfterFinished": 86400,
+                    "template": {
+                        "metadata": {
+                            "annotations": {
+                                "sidecar.istio.io/inject": "false"
+                            }
+                        },
+                        "spec": {
+                            "containers": [
+                                {
+                                    "name": "training-container",
+                                    "image": "sanram00/vae-image:v1",
+                                    "command": ["python", "train_vae.py"],
+                                    "args": trial_args,
+                                    "resources": {
+                                        "limits": {"cpu": "2", "memory": "4Gi"}
+                                    }
+                                }
+                            ],
+                            "restartPolicy": "Never"
+                        }
+                    }
+                }
+            }
+        )
+        print("=== DEBUG: CREATING EXPERIMENT SPEC ===")
+        experiment_spec = V1beta1ExperimentSpec(
+            objective=objective_spec,
+            algorithm=algorithm_spec,
+            parameters=parameters,
+            trial_template=trial_template,
+            metrics_collector_spec=metrics_collector,
+            max_trial_count=args.max_trial_count,
+            parallel_trial_count=args.parallel_trial_count,
+            max_failed_trial_count=args.max_failed_trial_count,
+            early_stopping=early_stopping_spec
+        )
+
+        print("=== DEBUG: CREATING KATIB CLIENT ===")
+        katib_client = katib.KatibClient(namespace=namespace)
+        
+        print("=== DEBUG: CREATING EXPERIMENT OBJECT ===")
+        experiment = V1beta1Experiment(
+            api_version="kubeflow.org/v1beta1",
+            kind="Experiment",
+            metadata=client.V1ObjectMeta(name=experiment_name, namespace=namespace),
+            spec=experiment_spec
+        )
+
+        print("=== DEBUG: CREATING EXPERIMENT IN KUBERNETES ===")
+        try:
+            katib_client.create_experiment(experiment)
+            print("DEBUG: Experiment created successfully!")
+        except Exception as e:
+            print(f"DEBUG: Failed to create experiment: {e}")
+            print("DEBUG: Experiment spec:")
+            print(json.dumps(experiment.to_dict(), indent=2, default=str))
+            raise
+
+        print("=== DEBUG: WAITING FOR EXPERIMENT COMPLETION ===")
+        try:
+            katib_client.wait_for_experiment_condition(name=experiment_name, namespace=namespace, timeout=10800)
+            print("DEBUG: Experiment completed!")
+        except Exception as e:
+            print(f"DEBUG: Experiment wait failed: {e}")
+            # Continue to try to get trials anyway
+
+        print("=== DEBUG: FETCHING TRIALS ===")
+        try:
+            trials = katib_client.list_trials(experiment_name, namespace)
+            print(f"DEBUG: Found {len(trials)} trials")
+            
+            if len(trials) == 0:
+                print("DEBUG: WARNING - 0 TRIALS FOUND!")
+                print("DEBUG: Checking experiment status...")
+                exp_status = katib_client.get_experiment_status(experiment_name, namespace)
+                print(f"DEBUG: Experiment status: {exp_status}")
+                
+                # List all experiments to see if ours exists
+                all_exps = katib_client.list_experiments(namespace)
+                print(f"DEBUG: Total experiments in namespace: {len(all_exps)}")
+                for exp in all_exps:
+                    print(f"DEBUG: - {exp.metadata.name}: {exp.status.conditions if exp.status else 'NO_STATUS'}")
+        except Exception as e:
+            print(f"✗ DEBUG: Failed to list trials: {e}")
+            trials = []
+
+        def auto_cast(value: str):
+            if value.lower() in ["true", "false"]:
+                return value.lower() == "true"
+            if value.isdigit() or (value.startswith('-') and value[1:].isdigit()):
+                return int(value)
+            try:
+                return float(value)
+            except ValueError:
+                return value
+
+        payload_data = []
+        
+        for idx, trial in enumerate(trials, start=1):
+            print(f"DEBUG: Processing trial {idx}")
+            paramss = {}
+            paramss['project_id'] = f"{args.projectid}"
+            paramss['model_name'] = f"{args.model_name}_trial{idx}"
+            paramss['model_type'] = args.model_type
+            # Add timestamp (epoch milliseconds)
+            timestamp = time.strftime("%Y%m%d%H%M%S")
+            paramss["timestamp"] = timestamp
+            
+            # Add hyperparameters
+            if hasattr(trial, 'spec') and hasattr(trial.spec, 'parameter_assignments'):
+                for param in trial.spec.parameter_assignments:
+                    paramss[param.name] = auto_cast(param.value)
+                    print(f"DEBUG: Trial {idx} param {param.name} = {param.value}")
+            else:
+                print(f"DEBUG: Trial {idx} has no parameter_assignments")
+            
+            # Add metrics
+            if (hasattr(trial, 'status') and 
+                hasattr(trial.status, 'observation') and 
+                trial.status.observation and 
+                hasattr(trial.status.observation, 'metrics') and 
+                trial.status.observation.metrics):
+                
+                metrics_list = []
+                for metric in trial.status.observation.metrics:
+                    metrics_list.append({metric.name: auto_cast(metric.latest)})
+                    print(f"DEBUG: Trial {idx} metric {metric.name} = {metric.latest}")
+                paramss["metrics_value"] = metrics_list
+            else:
+                paramss["metrics_value"] = []
+                print(f"DEBUG: Trial {idx} has no metrics")
+        
+            payload_data.append(paramss)
+              
+        payload = {
+            "data": payload_data
+        }
+
+        print(f"DEBUG: Final payload has {len(payload_data)} trials")
+
+        # Save for next brick
+        os.makedirs(os.path.dirname(args.payload), exist_ok=True)
+        with open(args.payload, "w") as f:
+            json.dump(payload, f)
+
+        print("=== DEBUG: GETTING BEST HYPERPARAMETERS ===")
+        try:
+            best = katib_client.get_optimal_hyperparameters(name=experiment_name, namespace=namespace)
+            if best and hasattr(best, 'parameter_assignments'):
+                params = best.parameter_assignments
+                hp_dict = {p.name: float(p.value) for p in params}
+                print("✓ DEBUG: Best Hyperparameters Found:", hp_dict)
+            else:
+                hp_dict = {}
+                print("DEBUG: No optimal hyperparameters found")
+        except Exception as e:
+            print(f"DEBUG: Failed to get optimal hyperparameters: {e}")
+            hp_dict = {}
+
+        dir_path = os.path.dirname(args.best_hyperparams)
+        if dir_path:
+            os.makedirs(dir_path, exist_ok=True)
+
+        with open(args.best_hyperparams, "w") as f:
+            json.dump(hp_dict, f, indent=2)
+
+        print("=== DEBUG: COMPONENT COMPLETED SUCCESSFULLY ===")
+        print(f"DEBUG: Results - Trials: {len(trials)}, Best params: {len(hp_dict)}")
+
+    args:
+      - --model_name
+      - {inputValue: model_name}
+      - --model_type
+      - {inputValue: model_type}
+      - --config_json
+      - {inputValue: config_json}
+      - --process_data_url
+      - {inputValue: process_data_url}
+      - --parameters_to_tune
+      - {inputValue: parameters_to_tune}
+      - --objective_metric_name
+      - {inputValue: objective_metric_name}
+      - --objective_type
+      - {inputValue: objective_type}
+      - --objective_goal
+      - {inputValue: objective_goal}
+      - --algorithm_name
+      - {inputValue: algorithm_name}
+      - --early_stopping_algorithm
+      - {inputValue: early_stopping_algorithm}
+      - --max_trial_count
+      - {inputValue: max_trial_count}
+      - --parallel_trial_count
+      - {inputValue: parallel_trial_count}
+      - --max_failed_trial_count
+      - {inputValue: max_failed_trial_count}
+      - --projectid
+      - {inputValue: projectid}
+      - --best_hyperparams
+      - {outputPath: best_hyperparams}
+      - --payload
+      - {outputPath: payload}
