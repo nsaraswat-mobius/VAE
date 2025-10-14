@@ -23,7 +23,34 @@ inputs:
 
   - name: parameters_to_tune
     type: String
-    default: '[{"name": "learning_rate", "parameter_type": "double", "feasible_space": {"min": "0.0001", "max": "0.01"}}, {"name": "hidden_dim", "parameter_type": "int", "feasible_space": {"min": "256", "max": "1024"}}, {"name": "latent_dim", "parameter_type": "int", "feasible_space": {"min": "64", "max": "256"}}, {"name": "beta", "parameter_type": "double", "feasible_space": {"min": "0.5", "max": "3.0"}}, {"name": "epochs", "parameter_type": "int", "feasible_space": {"min": "20", "max": "100"}}]'
+    default: |
+      [
+        {
+          "name": "learning_rate",
+          "parameter_type": "double",
+          "feasible_space": {"min": "0.0001", "max": "0.01"}
+        },
+        {
+          "name": "hidden_dim",
+          "parameter_type": "int",
+          "feasible_space": {"min": "256", "max": "1024"}
+        },
+        {
+          "name": "latent_dim",
+          "parameter_type": "int",
+          "feasible_space": {"min": "64", "max": "256"}
+        },
+        {
+          "name": "beta",
+          "parameter_type": "double",
+          "feasible_space": {"min": "0.5", "max": "3.0"}
+        },
+        {
+          "name": "epochs",
+          "parameter_type": "int",
+          "feasible_space": {"min": "20", "max": "100"}
+        }
+      ]
     description: List of VAE hyperparameters to tune (Katib format)
 
   - name: objective_metric_name
