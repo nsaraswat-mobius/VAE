@@ -3,7 +3,7 @@ description: Uploads processed VAE data files to a CDN using curl and outputs th
 inputs:
   - {name: processed_data_pickle, type: Dataset, description: "Pickled processed VAE data from preprocessing component"}
   - {name: config_string, type: String,  description: "Configuration string (e.g., JSON)"}
-  - {name: bearer_token, type: String, description: "Bearer token for CDN authentication"}
+  - {name: bearer_token, type: string, description: "Bearer token for CDN authentication"}
   - {name: domain, type: String, description: "CDN domain URL"}
   - {name: get_cdn, type: String, description: "CDN get domain"}
 outputs:
