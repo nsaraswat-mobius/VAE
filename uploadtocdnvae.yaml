@@ -2,10 +2,10 @@ name: Upload to CDN
 description: Uploads processed VAE data files to a CDN using curl and outputs the public URLs.
 inputs:
   - {name: processed_data_pickle, type: Dataset, description: "Pickled processed VAE data from preprocessing component"}
-  - {name: config_string, type: String, default: "{}", description: "Configuration string (e.g., JSON)"}
+  - {name: config_string, type: String,  description: "Configuration string (e.g., JSON)"}
   - {name: bearer_token, type: String, description: "Bearer token for CDN authentication"}
-  - {name: domain, type: String, default: "https://api.example.com", description: "CDN domain URL"}
-  - {name: get_cdn, type: String, default: "https://cdn.example.com", description: "CDN get domain"}
+  - {name: domain, type: String, description: "CDN domain URL"}
+  - {name: get_cdn, type: String, description: "CDN get domain"}
 outputs:
   - {name: pickle_cdn_url, type: String, description: "URL to the uploaded pickle file"}
   - {name: config_cdn_url, type: String, description: "URL to the uploaded config string"}
@@ -164,13 +164,13 @@ implementation:
       - --processed_data_pickle
       - {inputPath: processed_data_pickle}
       - --config_string
-      - {inputPath: config_string}
+      - {inputValue: config_string}
       - --bearer_token
       - {inputPath: bearer_token}
-      - --domain
-      - {inputPath: domain}
       - --get_cdn
-      - {inputPath: get_cdn}
+      - {inputValue: get_cdn}
+      - --domain
+      - {inputValue: domain}
       - --pickle_cdn_url
       - {outputPath: pickle_cdn_url}
       - --config_cdn_url
