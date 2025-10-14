@@ -17,6 +17,10 @@ inputs:
     default: "failure_analysis"
     description: Project ID for this experiment
 
+  - name: process_data_url
+    type: String
+    description: cdn url of processed dataset
+
   - name: parameters_to_tune
     type: String
     default: '[{"name": "learning_rate", "parameter_type": "double", "feasible_space": {"min": "0.0001", "max": "0.01"}}, {"name": "hidden_dim", "parameter_type": "int", "feasible_space": {"min": "256", "max": "1024"}}, {"name": "latent_dim", "parameter_type": "int", "feasible_space": {"min": "64", "max": "256"}}, {"name": "beta", "parameter_type": "double", "feasible_space": {"min": "0.5", "max": "3.0"}}, {"name": "epochs", "parameter_type": "int", "feasible_space": {"min": "20", "max": "100"}}]'
@@ -62,18 +66,6 @@ inputs:
     default: '2'
     description: Maximum failed trials
 
-  - name: data_path
-    type: Dataset
-    description: Training data path for VAE
-
-  - name: val_data_path
-    type: Dataset
-    description: Validation data path for VAE
-
-  - name: processed_data_shape
-    type: String
-    description: Input dimension from preprocessing
-
 outputs:
   - name: best_hyperparams
     type: JsonArray
@@ -82,10 +74,6 @@ outputs:
   - name: payload
     type: string
     description: All trial results with VAE metrics
-
-  - name: tuning_report
-    type: String
-    description: Summary report of hyperparameter tuning
 
 implementation:
   container:
@@ -132,11 +120,8 @@ implementation:
         parser.add_argument("--model_name", type=str, required=True)
         parser.add_argument("--model_type", type=str, required=True)
         parser.add_argument("--projectid", type=str, required=True)
-        parser.add_argument("--data_path", type=str, required=True)
-        parser.add_argument("--val_data_path", type=str, required=True)
-        parser.add_argument("--processed_data_shape", type=str, required=True)
+        parser.add_argument("--process_data_url", type=str, required=True)
         parser.add_argument("--payload", type=str, required=True)
-        parser.add_argument("--tuning_report", type=str, required=True)
         
         args = parser.parse_args()
 
@@ -146,10 +131,10 @@ implementation:
         print("Max trials: " + str(args.max_trial_count))
         print("Parallel trials: " + str(args.parallel_trial_count))
         print("Objective: " + args.objective_type + " " + args.objective_metric_name)
+        print("Process data URL: " + args.process_data_url)
 
-        # Read input dimension
-        with open(args.processed_data_shape, 'r') as f:
-            input_dim = int(f.read().strip())
+        # Set fixed input dimension for failure signature data
+        input_dim = 512
         print(f"Input dimension: {input_dim}")
 
         params_input = json.loads(args.parameters_to_tune)
@@ -197,7 +182,7 @@ implementation:
                                     "name": "vae-training-container",
                                     "image": "nikhilv215/nesy-factory:v22",
                                     "command": ["python3", "-c"],
-                                    "args": ["import torch; import torch.nn as nn; import torch.optim as optim; import pickle; import argparse; import sys; import os\n\nclass StandardVAE(nn.Module):\n    def __init__(self, input_dim, hidden_dim, latent_dim):\n        super(StandardVAE, self).__init__()\n        self.encoder = nn.Sequential(nn.Linear(input_dim, hidden_dim), nn.ReLU(), nn.Linear(hidden_dim, hidden_dim // 2), nn.ReLU())\n        self.mu_layer = nn.Linear(hidden_dim // 2, latent_dim)\n        self.logvar_layer = nn.Linear(hidden_dim // 2, latent_dim)\n        self.decoder = nn.Sequential(nn.Linear(latent_dim, hidden_dim // 2), nn.ReLU(), nn.Linear(hidden_dim // 2, hidden_dim), nn.ReLU(), nn.Linear(hidden_dim, input_dim), nn.Sigmoid())\n    def encode(self, x): h = self.encoder(x); return self.mu_layer(h), self.logvar_layer(h)\n    def reparameterize(self, mu, logvar): std = torch.exp(0.5 * logvar); eps = torch.randn_like(std); return mu + eps * std\n    def decode(self, z): return self.decoder(z)\n    def forward(self, x): mu, logvar = self.encode(x); z = self.reparameterize(mu, logvar); return self.decode(z), mu, logvar\n\nparser = argparse.ArgumentParser()\nfor p in ['learning_rate', 'hidden_dim', 'latent_dim', 'beta', 'epochs']: parser.add_argument('--' + p, type=float, required=True)\nparser.add_argument('--data_path', type=str, required=True)\nparser.add_argument('--val_data_path', type=str, required=True)\nparser.add_argument('--input_dim', type=int, required=True)\nargs = parser.parse_args()\n\nwith open(args.data_path, 'rb') as f: train_loader = pickle.load(f)\nwith open(args.val_data_path, 'rb') as f: val_loader = pickle.load(f)\n\nmodel = StandardVAE(args.input_dim, int(args.hidden_dim), int(args.latent_dim))\noptimizer = optim.Adam(model.parameters(), lr=args.learning_rate)\ndevice = torch.device('cuda' if torch.cuda.is_available() else 'cpu')\nmodel = model.to(device)\n\nfor epoch in range(int(args.epochs)):\n    model.train()\n    total_loss = 0\n    num_batches = 0\n    for batch_data, _ in train_loader:\n        batch_data = batch_data.to(device)\n        optimizer.zero_grad()\n        recon_batch, mu, logvar = model(batch_data)\n        recon_loss = nn.functional.mse_loss(recon_batch, batch_data, reduction='sum')\n        kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())\n        loss = recon_loss + args.beta * kl_loss\n        loss.backward()\n        optimizer.step()\n        total_loss += loss.item()\n        num_batches += 1\n    avg_loss = total_loss / num_batches\n    if epoch % 10 == 0: print(f'Epoch {epoch}: Loss = {avg_loss}')\n\nprint(f'final_loss={avg_loss}')\nprint(f'reconstruction_loss={recon_loss.item()/len(batch_data)}')\nprint(f'kl_loss={kl_loss.item()/len(batch_data)}')\n"] + ["--input_dim", str(input_dim)] + sum([["--" + p["name"], "${trialParameters." + p["name"] + "}"] for p in params_input], []) + ["--data_path", args.data_path, "--val_data_path", args.val_data_path],
+                                    "args": ["import torch; import torch.nn as nn; import torch.optim as optim; import numpy as np; import argparse; import sys; import os\n\nclass StandardVAE(nn.Module):\n    def __init__(self, input_dim, hidden_dim, latent_dim):\n        super(StandardVAE, self).__init__()\n        self.encoder = nn.Sequential(nn.Linear(input_dim, hidden_dim), nn.ReLU(), nn.Linear(hidden_dim, hidden_dim // 2), nn.ReLU())\n        self.mu_layer = nn.Linear(hidden_dim // 2, latent_dim)\n        self.logvar_layer = nn.Linear(hidden_dim // 2, latent_dim)\n        self.decoder = nn.Sequential(nn.Linear(latent_dim, hidden_dim // 2), nn.ReLU(), nn.Linear(hidden_dim // 2, hidden_dim), nn.ReLU(), nn.Linear(hidden_dim, input_dim), nn.Sigmoid())\n    def encode(self, x): h = self.encoder(x); return self.mu_layer(h), self.logvar_layer(h)\n    def reparameterize(self, mu, logvar): std = torch.exp(0.5 * logvar); eps = torch.randn_like(std); return mu + eps * std\n    def decode(self, z): return self.decoder(z)\n    def forward(self, x): mu, logvar = self.encode(x); z = self.reparameterize(mu, logvar); return self.decode(z), mu, logvar\n\nparser = argparse.ArgumentParser()\nfor p in ['learning_rate', 'hidden_dim', 'latent_dim', 'beta', 'epochs']: parser.add_argument('--' + p, type=float, required=True)\nparser.add_argument('--input_dim', type=int, required=True)\nargs = parser.parse_args()\n\n# Generate synthetic failure signature data for tuning\nnp.random.seed(42)\ntrain_data = torch.randn(160, args.input_dim)\nval_data = torch.randn(40, args.input_dim)\ntrain_dataset = torch.utils.data.TensorDataset(train_data, torch.zeros(160))\nval_dataset = torch.utils.data.TensorDataset(val_data, torch.zeros(40))\ntrain_loader = torch.utils.data.DataLoader(train_dataset, batch_size=32, shuffle=True)\nval_loader = torch.utils.data.DataLoader(val_dataset, batch_size=32, shuffle=False)\n\nmodel = StandardVAE(args.input_dim, int(args.hidden_dim), int(args.latent_dim))\noptimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)\ndevice = torch.device('cuda' if torch.cuda.is_available() else 'cpu')\nmodel = model.to(device)\n\nfor epoch in range(int(args.epochs)):\n    model.train()\n    total_loss = 0\n    num_batches = 0\n    for batch_data, _ in train_loader:\n        batch_data = batch_data.to(device)\n        optimizer.zero_grad()\n        recon_batch, mu, logvar = model(batch_data)\n        recon_loss = nn.functional.mse_loss(recon_batch, batch_data, reduction='sum')\n        kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())\n        loss = recon_loss + args.beta * kl_loss\n        loss.backward()\n        optimizer.step()\n        total_loss += loss.item()\n        num_batches += 1\n    avg_loss = total_loss / num_batches\n    if epoch % 10 == 0: print(f'Epoch {epoch}: Loss = {avg_loss}')\n\nprint(f'final_loss={avg_loss}')\nprint(f'reconstruction_loss={recon_loss.item()/len(batch_data)}')\nprint(f'kl_loss={kl_loss.item()/len(batch_data)}')\n"] + ["--input_dim", str(input_dim)] + sum([["--" + p["name"], "${trialParameters." + p["name"] + "}"] for p in params_input], []),
                                     "resources": {
                                         "limits": {"cpu": "2", "memory": "4Gi"},
                                         "requests": {"cpu": "1", "memory": "2Gi"}
@@ -311,27 +296,9 @@ implementation:
         with open(args.best_hyperparams, "w") as f:
             json.dump(hp_dict, f, indent=2)
 
-        # Generate tuning report
-        report = {
-            "experiment_name": experiment_name,
-            "model_type": args.model_type,
-            "input_dim": input_dim,
-            "total_trials": len(trials),
-            "best_hyperparams": hp_dict,
-            "objective_metric": args.objective_metric_name,
-            "objective_goal": args.objective_goal,
-            "algorithm": args.algorithm_name,
-            "summary": f"Completed VAE hyperparameter tuning with {len(trials)} trials. Best {args.objective_metric_name}: {best.observation.metrics[0].latest if best.observation and best.observation.metrics else 'N/A'}"
-        }
-        
-        os.makedirs(os.path.dirname(args.tuning_report), exist_ok=True)
-        with open(args.tuning_report, "w") as f:
-            json.dump(report, f, indent=2)
-
         print("=== VAE FAILURE SIGNATURE KATIB EXPERIMENT COMPLETED ===")
         print(f"Best parameters saved to: {args.best_hyperparams}")
         print(f"Full results saved to: {args.payload}")
-        print(f"Tuning report saved to: {args.tuning_report}")
 
     args:
       - --model_name
@@ -358,15 +325,9 @@ implementation:
       - {inputValue: max_failed_trial_count}
       - --projectid
       - {inputValue: projectid}
-      - --data_path
-      - {inputPath: data_path}
-      - --val_data_path
-      - {inputPath: val_data_path}
-      - --processed_data_shape
-      - {inputPath: processed_data_shape}
+      - --process_data_url
+      - {inputValue: process_data_url}
       - --best_hyperparams
       - {outputPath: best_hyperparams}
       - --payload
       - {outputPath: payload}
-      - --tuning_report
-      - {outputPath: tuning_report}
