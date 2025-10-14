@@ -508,13 +508,69 @@ implementation:
                     print(f"Successfully triggered pipeline. Response: {response_data}")
                     return response_data['runId']
                 else:
-                    print(f"Pipeline trigger failed with status {response.status_code}")
-                    print(f"Response text: {response.text}")
+                    print(f"PIPELINE TRIGGER FAILED")
+                    print(f"Status Code: {response.status_code}")
+                    print(f"Response Headers: {dict(response.headers)}")
+                    print(f"Raw Response: {response.text}")
+                    
+                    # Provide specific error analysis based on status code
+                    if response.status_code == 401:
+                        print("AUTHENTICATION ERROR:")
+                        print("   - Check if your access token is valid and not expired")
+                        print("   - Verify token has permission to trigger ML pipelines")
+                        print(f"   - Token length: {len(config['access_token'])} characters")
+                    elif response.status_code == 403:
+                        print("AUTHORIZATION ERROR:")
+                        print("   - Token is valid but lacks permission to trigger this pipeline")
+                        print(f"   - Check access rights for pipeline ID: {config['pipeline_id']}")
+                        print(f"   - Verify experiment ID permissions: {config['experiment_id']}")
+                    elif response.status_code == 404:
+                        print("RESOURCE NOT FOUND:")
+                        print(f"   - Pipeline ID '{config['pipeline_id']}' does not exist")
+                        print(f"   - Experiment ID '{config['experiment_id']}' may be invalid")
+                        print("   - Check if pipeline was deleted or moved")
+                    elif response.status_code == 400:
+                        print("BAD REQUEST:")
+                        print("   - Request format or parameters are invalid")
+                        print("   - Check pipeline parameters and payload structure")
+                        try:
+                            error_data = response.json()
+                            if 'message' in error_data:
+                                print(f"   - Server message: {error_data['message']}")
+                            if 'errors' in error_data:
+                                print(f"   - Validation errors: {error_data['errors']}")
+                        except:
+                            print("   - Could not parse detailed error information")
+                    elif response.status_code == 500:
+                        print("SERVER ERROR:")
+                        print("   - Internal server error on pipeline service")
+                        print("   - This is likely a temporary issue")
+                        print("   - Try again in a few minutes")
+                    elif response.status_code == 503:
+                        print("SERVICE UNAVAILABLE:")
+                        print("   - Pipeline service is temporarily unavailable")
+                        print("   - May be under maintenance or overloaded")
+                        print("   - Retry after some time")
+                    else:
+                        print(f"UNEXPECTED ERROR (Status {response.status_code}):")
+                        print("   - Unknown error occurred")
+                    
+                    # Try to parse and display structured error details
                     try:
                         error_data = response.json()
-                        print(f"Error details: {error_data}")
+                        print("\nDETAILED ERROR RESPONSE:")
+                        print(json.dumps(error_data, indent=4))
                     except:
-                        print("Could not parse error response as JSON")
+                        print("\nRAW ERROR RESPONSE (not JSON):")
+                        print(f"{response.text}")
+                    
+                    print(f"\nTROUBLESHOOTING CHECKLIST:")
+                    print(f"   - Pipeline ID: {config['pipeline_id']}")
+                    print(f"   - Experiment ID: {config['experiment_id']}")
+                    print(f"   - API Endpoint: {url}")
+                    print(f"   - Request Method: POST")
+                    print(f"   - Content-Type: application/json")
+                    print(f"   - Token Available: {'Yes' if config['access_token'] else 'No'}")
                     
                     # Raise exception with detailed error information
                     raise requests.exceptions.HTTPError(
@@ -522,17 +578,36 @@ implementation:
                     )
                     
             except requests.exceptions.Timeout:
-                print("ERROR: Request timed out after 30 seconds")
+                print("TIMEOUT ERROR:")
+                print("   - Request timed out after 30 seconds")
+                print("   - Pipeline service may be slow or unresponsive")
+                print("   - Check network connectivity")
+                print("   - Try increasing timeout or retry later")
                 raise RuntimeError("Pipeline trigger request timed out")
             except requests.exceptions.ConnectionError as e:
-                print(f"ERROR: Connection failed - {e}")
+                print("CONNECTION ERROR:")
+                print(f"   - Failed to connect to pipeline service: {e}")
+                print("   - Check internet connectivity")
+                print("   - Verify API endpoint is accessible")
+                print(f"   - Target URL: {url}")
+                print("   - Check firewall/proxy settings")
                 raise RuntimeError(f"Failed to connect to pipeline service: {e}")
             except requests.exceptions.HTTPError as e:
-                print(f"ERROR: HTTP error occurred - {e}")
+                print(f"HTTP ERROR:")
+                print(f"   - HTTP error occurred: {e}")
+                print("   - See detailed error analysis above")
                 raise RuntimeError(f"Pipeline trigger HTTP error: {e}")
+            except json.JSONDecodeError as e:
+                print("JSON PARSING ERROR:")
+                print(f"   - Could not parse server response as JSON: {e}")
+                print("   - Server may have returned malformed response")
+                print("   - Check API endpoint and response format")
+                raise RuntimeError(f"Invalid JSON response from pipeline service: {e}")
             except Exception as e:
-                print(f"ERROR: Unexpected error during pipeline trigger - {e}")
-                print(f"Error type: {type(e).__name__}")
+                print(f"UNEXPECTED ERROR:")
+                print(f"   - Error type: {type(e).__name__}")
+                print(f"   - Error message: {str(e)}")
+                print("   - This may indicate a code bug or unexpected server behavior")
                 raise RuntimeError(f"Unexpected error triggering pipeline: {e}")
 
         def get_pipeline_status(config):
@@ -663,7 +738,7 @@ implementation:
                     print(f"Failed to update field '{field}': {response.text}")
             except Exception as e:
                 print(f"Error updating instance field '{field}': {e}")
-                print("Continuing with simulation mode...")
+                print("Continuing without database update...")
 
         # Core Logic
         def trigger_and_wait_for_dqn_pipeline(config, dqn_params):
@@ -682,10 +757,10 @@ implementation:
                         print(f"Status check #{status_check_count} - Current DQN pipeline status: {status}")
                         
                         if status == 'SUCCEEDED':
-                            print("✅ DQN Pipeline execution completed successfully.")
+                            print("DQN Pipeline execution completed successfully.")
                             break
                         elif status in ['FAILED', 'ERROR']:
-                            print(f"❌ DQN Pipeline failed with status: {status}")
+                            print(f"DQN Pipeline failed with status: {status}")
                             # Try to get more detailed error information
                             try:
                                 error_details_url = f"https://ig.mobiusdtaas.ai/bob-service-test/v1.0/pipeline/{config['pipeline_id']}/details/ml/{config['run_id']}"
@@ -1003,7 +1078,7 @@ implementation:
                     update_instance_field(access_token, args.domain, args.schema_id, args.model_id, "pierce2rlaf", pierce2rlaf_history)
                 except Exception as e:
                     print(f"Failed to update pierce2rlaf field: {e}")
-                    print("Continuing with local simulation...")
+                    print("Continuing without database update...")
 
                 dqn_config = {
                     "pipeline_id": args.dqn_pipeline_id, 
@@ -1033,12 +1108,32 @@ implementation:
                         raise RuntimeError(f"Cannot access DQN pipeline results: {api_error}")
                         
                 except Exception as e:
-                    print(f"=== DQN PIPELINE EXECUTION FAILED ===")
-                    print(f"Error type: {type(e).__name__}")
-                    print(f"Error details: {str(e)}")
-                    print(f"Iteration: {i+1}")
-                    print(f"Current metrics: {json.dumps(cleaned_metrics, indent=2)}")
-                    print("=== TERMINATING VAE RLAF LOOP ===")
+                    print(f"\n" + "="*60)
+                    print(f"DQN PIPELINE EXECUTION FAILED")
+                    print(f"="*60)
+                    print(f"Context:")
+                    print(f"   - Iteration: {i+1} of 2")
+                    print(f"   - Pipeline ID: {args.dqn_pipeline_id}")
+                    print(f"   - Experiment ID: {args.dqn_experiment_id}")
+                    print(f"   - Model ID: {args.model_id}")
+                    
+                    print(f"\nError Details:")
+                    print(f"   - Error Type: {type(e).__name__}")
+                    print(f"   - Error Message: {str(e)}")
+                    
+                    print(f"\nCurrent VAE Metrics at Failure:")
+                    for key, value in cleaned_metrics.items():
+                        print(f"   - {key}: {value}")
+                    
+                    print(f"\nNext Steps:")
+                    print(f"   1. Check the detailed error messages above")
+                    print(f"   2. Verify your access token permissions")
+                    print(f"   3. Confirm pipeline and experiment IDs are correct")
+                    print(f"   4. Check network connectivity to the API endpoint")
+                    print(f"   5. Review the DQN pipeline configuration")
+                    
+                    print(f"\nTERMINATING VAE RLAF LOOP")
+                    print(f"="*60)
                     
                     # Create error output for debugging
                     error_output = {
