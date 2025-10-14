@@ -1,5 +1,5 @@
 name: VAE RLAF Loop
-description: Triggers the DQN RLAF pipeline in a loop to optimize VAE model hyperparameters using continual learning, controlled by a pierce_or_not flag.
+description: Triggers the DQN RLAF pipeline in a loop to optimize model hyperparameters, controlled by a pierce_or_not flag.
 inputs:
   - {name: trained_model, type: Model}
   - {name: init_metrics, type: Metrics}
@@ -28,697 +28,95 @@ implementation:
       - -c
       - |
         import torch
-        import torch.nn as nn
-        import torch.optim as optim
-        import torch.nn.functional as F
         import os
         import json
         import argparse
         import requests
-        from requests.adapters import HTTPAdapter
-        from urllib3.util.retry import Retry
         import time
         import pickle
-        from typing import List, Dict, Any
         import numpy as np
-        from torch.utils.data import DataLoader, Dataset, Subset
-        import random
-        import copy
-
-        class ProcessedVAEDataset(Dataset):
-            def __init__(self, data, labels, vae_type):
-                self.data = data
-                self.labels = labels
-                self.vae_type = vae_type
-                self.class_mapping = {}
-
-            def __len__(self):
-                return len(self.data)
-
-            def __getitem__(self, idx):
-                return self.data[idx], self.labels[idx]
+        from nesy_factory.GNNs import create_model
 
         class DataWrapper:
             def __init__(self, data_dict):
                 self.__dict__.update(data_dict)
 
-        class ContinualVAETrainer:
-            def __init__(self, config):
-                self.config = config
-                self.results = {}
-                self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        class StandardScaler():
+            def __init__(self, mean, std):
+                self.mean = mean
+                self.std = std
+            def transform(self, data):
+                return (data - self.mean) / self.std
+            def inverse_transform(self, data):
+                return (data * self.std) + self.mean
+        
+        class DataLoaderM(object):
+            def __init__(self, xs, ys, batch_size, pad_with_last_sample=True):
+                self.batch_size = batch_size
+                self.current_ind = 0
+                if pad_with_last_sample:
+                    num_padding = (batch_size - (len(xs) % batch_size)) % batch_size
+                    x_padding = np.repeat(xs[-1:], num_padding, axis=0)
+                    y_padding = np.repeat(ys[-1:], num_padding, axis=0)
+                    xs = np.concatenate([xs, x_padding], axis=0)
+                    ys = np.concatenate([ys, y_padding], axis=0)
+                self.size = len(xs)
+                self.num_batch = int(self.size // self.batch_size)
+                self.xs = xs
+                self.ys = ys
+        
+            def shuffle(self):
+                permutation = np.random.permutation(self.size)
+                xs, ys = self.xs[permutation], self.ys[permutation]
+                self.xs = xs
+                self.ys = ys
+        
+            def get_iterator(self):
+                self.current_ind = 0
+                def _wrapper():
+                    while self.current_ind < self.num_batch:
+                        start_ind = self.batch_size * self.current_ind
+                        end_ind = min(self.size, self.batch_size * (self.current_ind + 1))
+                        x_i = self.xs[start_ind: end_ind, ...]
+                        y_i = self.ys[start_ind: end_ind, ...]
+                        yield (x_i, y_i)
+                        self.current_ind += 1
+                return _wrapper()
 
-            def train_continual_vae(self, tasks, model, strategies=['naive', 'replay', 'regularized']):
-                results = {}
-                
-                for strategy_name in strategies:
-                    print(f'Training VAE with {strategy_name.upper()} strategy')
-                    strategy_results = self._train_single_strategy(tasks, strategy_name, model)
-                    results[strategy_name] = strategy_results
-                    
-                return results
-
-            def _train_single_strategy(self, tasks, strategy_name, model):
-                # Create fresh model copy for each strategy
-                model_copy = copy.deepcopy(model).to(self.device)
-                optimizer = optim.Adam(model_copy.parameters(), lr=self.config.get('learning_rate', 0.001))
-                
-                # Track metrics across tasks
-                task_metrics = []
-                all_task_performance = []
-                previous_task_data = []
-                
-                print(f"Learning {len(tasks)} sequential VAE tasks")
-                
-                for task_idx, task_data in enumerate(tasks):
-                    print(f"Learning Task {task_idx + 1}: {task_data['description']}")
-                    
-                    # Get data loaders for current task
-                    train_loader = task_data['train_loader']
-                    val_loader = task_data['val_loader']
-                    
-                    # Apply strategy-specific training
-                    if strategy_name == 'naive':
-                        training_loader = train_loader
-                    elif strategy_name == 'replay':
-                        if previous_task_data:
-                            training_loader = self._create_replay_loader(train_loader, previous_task_data)
-                        else:
-                            training_loader = train_loader
-                    elif strategy_name == 'regularized':
-                        training_loader = train_loader
-                        if task_idx > 0:
-                            self._store_important_params(model_copy)
-                    else:
-                        training_loader = train_loader
-                    
-                    # Train VAE on current task
-                    print(f"  Training VAE on Task {task_idx + 1}")
-                    for epoch in range(self.config.get('epochs', 50)):
-                        if strategy_name == 'regularized' and task_idx > 0:
-                            loss = self._train_epoch_with_regularization(model_copy, optimizer, training_loader)
-                        else:
-                            loss = self._train_epoch(model_copy, optimizer, training_loader)
-                        
-                        if epoch % 10 == 0:
-                            print(f"    Epoch {epoch:03d} | Loss: {loss:.4f}")
-                    
-                    # Store task data for potential replay
-                    if strategy_name == 'replay':
-                        previous_task_data.append(task_data)
-                        if len(previous_task_data) > 3:
-                            previous_task_data = previous_task_data[-3:]
-                    
-                    # Evaluate on current task
-                    current_task_metrics = self._evaluate_vae(model_copy, val_loader)
-                    task_metrics.append(current_task_metrics)
-                    
-                    print(f"    Task {task_idx + 1} VAE Loss: {current_task_metrics['vae_loss']:.4f}")
-                    
-                    # Evaluate on all previous tasks
-                    task_performance = []
-                    for eval_task_idx in range(task_idx + 1):
-                        eval_val_loader = tasks[eval_task_idx]['val_loader']
-                        eval_metrics = self._evaluate_vae(model_copy, eval_val_loader)
-                        task_performance.append({
-                            'task_id': int(eval_task_idx),
-                            'vae_loss': float(eval_metrics['vae_loss']),
-                            'reconstruction_loss': float(eval_metrics['reconstruction_loss']),
-                            'kl_loss': float(eval_metrics['kl_loss']),
-                            'description': str(tasks[eval_task_idx]['description'])
-                        })
-                    
-                    all_task_performance.append(task_performance)
-                    
-                    if task_idx > 0:
-                        print(f"Performance on previous tasks:")
-                        for prev_task in task_performance[:-1]:
-                            print(f"    Task {prev_task['task_id'] + 1}: Loss {prev_task['vae_loss']:.4f}")
-                
-                # Calculate continual learning metrics
-                cl_metrics = self._calculate_continual_metrics(all_task_performance)
-                
-                # Calculate average metrics
-                final_eval_metrics = []
-                for i in range(len(tasks)):
-                    metrics = self._evaluate_vae(model_copy, tasks[i]['val_loader'])
-                    final_eval_metrics.append(metrics)
-                
-                avg_metrics = {}
-                if final_eval_metrics:
-                    for key in final_eval_metrics[0]:
-                        # Ensure numeric values for averaging
-                        numeric_values = []
-                        for m in final_eval_metrics:
-                            try:
-                                if isinstance(m[key], (int, float)):
-                                    numeric_values.append(float(m[key]))
-                                else:
-                                    # Try to convert string to float
-                                    numeric_values.append(float(str(m[key])))
-                            except (ValueError, TypeError):
-                                print(f"Warning: Could not convert metric '{key}' value '{m[key]}' to numeric. Skipping.")
-                                continue
-                        
-                        if numeric_values:
-                            avg_metrics[key] = float(np.mean(numeric_values))
-                        else:
-                            avg_metrics[key] = 0.0
-
-                results = {
-                    'strategy': strategy_name,
-                    'task_metrics': task_metrics,
-                    'all_task_performance': all_task_performance,
-                    'continual_metrics': cl_metrics,
-                    'final_model': model_copy,
-                    'average_eval_metrics': avg_metrics
-                }
-                
-                return results
-
-            def _train_epoch(self, model, optimizer, train_loader):
-                model.train()
-                total_loss = 0
-                num_batches = 0
-                
-                for batch_data, batch_labels in train_loader:
-                    batch_data = batch_data.to(self.device)
-                    
-                    optimizer.zero_grad()
-                    
-                    # VAE forward pass
-                    if hasattr(model, 'vae_type') and model.vae_type == 'conditional_vae':
-                        batch_labels = batch_labels.to(self.device)
-                        outputs = model(batch_data, batch_labels)
-                    elif hasattr(model, 'vae_type') and model.vae_type == 'vq_vae':
-                        outputs = model(batch_data)
-                        if isinstance(outputs, (tuple, list)) and len(outputs) >= 2:
-                            recon_batch, vq_loss = outputs[0], outputs[1]
-                            loss = F.mse_loss(recon_batch, batch_data) + vq_loss
-                            loss.backward()
-                            optimizer.step()
-                            total_loss += loss.item()
-                            num_batches += 1
-                            continue
-                    else:
-                        outputs = model(batch_data)
-                    
-                    # Handle different output formats
-                    if isinstance(outputs, dict):
-                        # Handle dictionary output format
-                        recon_batch = outputs.get('reconstruction', outputs.get('recon', outputs.get('x_recon', None)))
-                        mu = outputs.get('mu', outputs.get('z_mean', outputs.get('mean', None)))
-                        logvar = outputs.get('logvar', outputs.get('z_logvar', outputs.get('log_var', None)))
-                        
-                        if recon_batch is None:
-                            print("Could not find reconstruction in dict output, skipping batch")
-                            continue
-                        if mu is None:
-                            latent_dim = self.config.get('latent_dim', 128)
-                            mu = torch.zeros(batch_data.size(0), latent_dim).to(self.device)
-                        if logvar is None:
-                            logvar = torch.zeros_like(mu)
-                            
-                    elif isinstance(outputs, (tuple, list)):
-                        # Handle tuple/list output format
-                        if len(outputs) == 3:
-                            recon_batch, mu, logvar = outputs
-                        elif len(outputs) == 2:
-                            recon_batch, mu = outputs
-                            logvar = torch.zeros_like(mu)
-                        elif len(outputs) == 1:
-                            recon_batch = outputs[0]
-                            latent_dim = self.config.get('latent_dim', 128)
-                            mu = torch.zeros(batch_data.size(0), latent_dim).to(self.device)
-                            logvar = torch.zeros_like(mu)
-                        else:
-                            print(f"Unexpected tuple output format: {len(outputs)} outputs")
-                            continue
-                    else:
-                        print(f"Unexpected output type: {type(outputs)}")
-                        continue
-                    
-                    # VAE loss calculation
-                    recon_loss = F.mse_loss(recon_batch, batch_data, reduction='sum')
-                    kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
-                    
-                    # Total VAE loss
-                    beta = self.config.get('beta', 1.0)
-                    loss = recon_loss + beta * kl_loss
-                    
-                    loss.backward()
-                    optimizer.step()
-                    
-                    total_loss += loss.item()
-                    num_batches += 1
-                
-                return float(total_loss / num_batches) if num_batches > 0 else 0.0
-
-            def _train_epoch_with_regularization(self, model, optimizer, train_loader):
-                base_loss = self._train_epoch(model, optimizer, train_loader)
-                
-                # Add regularization penalty
-                reg_loss = 0.0
-                reg_lambda = 0.1
-                
-                if hasattr(self, 'important_params'):
-                    for name, param in model.named_parameters():
-                        if name in self.important_params and param.requires_grad:
-                            reg_loss += torch.sum((param - self.important_params[name]).pow(2)).item()
-                
-                total_loss = float(base_loss) + reg_lambda * float(reg_loss)
-                return total_loss
-
-            def _evaluate_vae(self, model, val_loader):
-                model.eval()
-                total_loss = 0
-                total_recon_loss = 0
-                total_kl_loss = 0
-                num_samples = 0
-                
-                vae_type = getattr(model, 'vae_type', self.config.get('vae_type', 'standard_vae'))
-                beta = self.config.get('beta', 1.0)
-                
-                print(f"Evaluating {vae_type} model...")
-                with torch.no_grad():
-                    for batch_idx, (batch_data, batch_labels) in enumerate(val_loader):
-                        batch_data = batch_data.to(self.device)
-                        batch_size = batch_data.size(0)
-                        
-                        try:
-                            if vae_type == 'conditional_vae':
-                                batch_labels = batch_labels.to(self.device)
-                                outputs = model(batch_data, batch_labels)
-                            elif vae_type == 'vq_vae':
-                                outputs = model(batch_data)
-                            else:
-                                outputs = model(batch_data)
-                            
-                            # Handle different output formats (like evalve component)
-                            if isinstance(outputs, dict):
-                                # Handle dictionary output format
-                                recon_batch = outputs.get('reconstruction', outputs.get('recon', outputs.get('x_recon', None)))
-                                mu = outputs.get('mu', outputs.get('z_mean', outputs.get('mean', None)))
-                                logvar = outputs.get('logvar', outputs.get('z_logvar', outputs.get('log_var', None)))
-                                
-                                if recon_batch is None:
-                                    print("Could not find reconstruction in dict output, skipping batch")
-                                    continue
-                                if mu is None:
-                                    latent_dim = self.config.get('latent_dim', 128)
-                                    mu = torch.zeros(batch_size, latent_dim).to(self.device)
-                                if logvar is None:
-                                    logvar = torch.zeros_like(mu)
-                                    
-                            elif isinstance(outputs, (tuple, list)):
-                                # Handle tuple/list output format
-                                if vae_type == 'vq_vae':
-                                    if len(outputs) >= 2:
-                                        recon_batch, vq_loss = outputs[0], outputs[1]
-                                        recon_loss = F.mse_loss(recon_batch, batch_data, reduction='sum')
-                                        total_loss += (recon_loss + vq_loss).item()
-                                        total_recon_loss += recon_loss.item()
-                                        total_kl_loss += vq_loss.item()
-                                        num_samples += batch_size
-                                        continue
-                                    else:
-                                        print(f"Unexpected VQ-VAE output format: {len(outputs)} outputs")
-                                        continue
-                                else:
-                                    if len(outputs) == 3:
-                                        recon_batch, mu, logvar = outputs
-                                    elif len(outputs) == 2:
-                                        recon_batch, mu = outputs
-                                        logvar = torch.zeros_like(mu)
-                                    else:
-                                        print(f"Unexpected tuple output format: {len(outputs)} outputs")
-                                        recon_batch = outputs[0]
-                                        latent_dim = self.config.get('latent_dim', 128)
-                                        mu = torch.zeros(batch_size, latent_dim).to(self.device)
-                                        logvar = torch.zeros_like(mu)
-                            else:
-                                print(f"Unexpected output type: {type(outputs)}")
-                                continue
-                            
-                            # Compute VAE losses (same as evalve component)
-                            if vae_type != 'vq_vae':
-                                recon_loss = F.mse_loss(recon_batch, batch_data, reduction='sum')
-                                kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
-                                
-                                if vae_type == 'beta_vae':
-                                    loss = recon_loss + beta * kl_loss
-                                else:
-                                    loss = recon_loss + kl_loss
-                                
-                                total_loss += loss.item()
-                                total_recon_loss += recon_loss.item()
-                                total_kl_loss += kl_loss.item()
-                                num_samples += batch_size
-                                
-                        except Exception as e:
-                            print(f"Error in batch {batch_idx}: {e}")
-                            continue
-                
-                # Calculate average metrics (same as evalve component)
-                avg_loss = float(total_loss / num_samples) if num_samples > 0 else 0.0
-                avg_recon_loss = float(total_recon_loss / num_samples) if num_samples > 0 else 0.0
-                avg_kl_loss = float(total_kl_loss / num_samples) if num_samples > 0 else 0.0
-                
-                return {
-                    'vae_loss': avg_loss,
-                    'reconstruction_loss': avg_recon_loss,
-                    'kl_loss': avg_kl_loss,
-                    'num_samples': int(num_samples),
-                    'model_type': str(vae_type)
-                }
-
-            def _create_replay_loader(self, current_loader, previous_task_data):
-                # Simplified replay implementation
-                return current_loader
-
-            def _store_important_params(self, model):
-                if not hasattr(self, 'important_params'):
-                    self.important_params = {}
-                
-                for name, param in model.named_parameters():
-                    if param.requires_grad:
-                        self.important_params[name] = param.clone().detach()
-
-            def _calculate_continual_metrics(self, all_task_performance):
-                final_performance = all_task_performance[-1]
-                
-                # Safely extract numeric values for loss calculations
-                loss_values = []
-                for task in final_performance:
-                    try:
-                        loss_val = task['vae_loss']
-                        if isinstance(loss_val, (int, float)):
-                            loss_values.append(float(loss_val))
-                        elif isinstance(loss_val, str):
-                            loss_values.append(float(loss_val))
-                        else:
-                            loss_values.append(float(str(loss_val)))
-                    except (ValueError, TypeError):
-                        print(f"Warning: Could not convert loss value '{task['vae_loss']}' to float")
-                        loss_values.append(0.0)
-                
-                average_loss = float(np.mean(loss_values)) if loss_values else 0.0
-                
-                # Backward transfer - safely handle numeric conversions
-                backward_transfers = []
-                if len(all_task_performance) > 1:
-                    for task_idx in range(len(all_task_performance) - 1):
-                        try:
-                            initial_loss_val = all_task_performance[task_idx][task_idx]['vae_loss']
-                            final_loss_val = all_task_performance[-1][task_idx]['vae_loss']
-                            
-                            # Convert to float safely
-                            initial_loss = float(initial_loss_val) if isinstance(initial_loss_val, (int, float)) else float(str(initial_loss_val))
-                            final_loss = float(final_loss_val) if isinstance(final_loss_val, (int, float)) else float(str(final_loss_val))
-                            
-                            backward_transfer = initial_loss - final_loss  # Lower loss is better
-                            backward_transfers.append(backward_transfer)
-                        except (ValueError, TypeError, KeyError) as e:
-                            print(f"Warning: Could not calculate backward transfer for task {task_idx}: {e}")
-                            backward_transfers.append(0.0)
-                
-                avg_backward_transfer = float(np.mean(backward_transfers)) if backward_transfers else 0.0
-                
-                # Forgetting - safely handle numeric conversions
-                forgetting_scores = []
-                for task_idx in range(len(all_task_performance) - 1):
-                    try:
-                        min_loss_val = all_task_performance[task_idx][task_idx]['vae_loss']
-                        final_loss_val = all_task_performance[-1][task_idx]['vae_loss']
-                        
-                        # Convert to float safely
-                        min_loss = float(min_loss_val) if isinstance(min_loss_val, (int, float)) else float(str(min_loss_val))
-                        final_loss = float(final_loss_val) if isinstance(final_loss_val, (int, float)) else float(str(final_loss_val))
-                        
-                        forgetting = final_loss - min_loss  # Increase in loss is forgetting
-                        forgetting_scores.append(max(0.0, forgetting))
-                    except (ValueError, TypeError, KeyError) as e:
-                        print(f"Warning: Could not calculate forgetting for task {task_idx}: {e}")
-                        forgetting_scores.append(0.0)
-                
-                avg_forgetting = float(np.mean(forgetting_scores)) if forgetting_scores else 0.0
-                
-                return {
-                    'average_loss': average_loss,
-                    'backward_transfer': avg_backward_transfer,
-                    'forgetting': avg_forgetting,
-                    'num_tasks': len(all_task_performance)
-                }
-
-        # API/DB Helper Functions
-        def get_retry_session():
-            return requests.Session()
-
+        # --- API/DB Helper Functions ---
         def trigger_pipeline(config, dqn_params=None):
             url = f"https://ig.mobiusdtaas.ai/bob-service-test/v1.0/pipeline/trigger/ml?pipelineId={config['pipeline_id']}"
             pipeline_params = {"param_json": json.dumps(dqn_params)} if dqn_params else {}
             payload = json.dumps({
-                "pipelineType": "ML", 
-                "containerResources": {}, 
-                "experimentId": config['experiment_id'],
-                "enableCaching": True, 
-                "parameters": pipeline_params, 
-                "version": 1
+                "pipelineType": "ML", "containerResources": {}, "experimentId": config['experiment_id'],
+                "enableCaching": True, "parameters": pipeline_params, "version": 1
             })
-            print(f"Pipeline trigger URL: {url}")
-            print(f"Payload: {payload}")
+            print(f"{payload}")
             headers = {
-                'accept': 'application/json', 
-                'Authorization': f"Bearer {config['access_token']}",
+                'accept': 'application/json', 'Authorization': f"Bearer {config['access_token']}",
                 'Content-Type': 'application/json'
             }
-            
-            token_length = len(config['access_token'])
-            print(f"Authorization token length: {token_length} characters")
-            
-            try:
-                print("Attempting to trigger DQN pipeline...")
-                response = requests.post(url, headers=headers, data=payload, timeout=30)
-                
-                print(f"Response status code: {response.status_code}")
-                print(f"Response headers: {dict(response.headers)}")
-                
-                if response.status_code == 200:
-                    response_data = response.json()
-                    print(f"Successfully triggered pipeline. Response: {response_data}")
-                    return response_data['runId']
-                else:
-                    print(f"PIPELINE TRIGGER FAILED")
-                    print(f"Status Code: {response.status_code}")
-                    print(f"Response Headers: {dict(response.headers)}")
-                    print(f"Raw Response: {response.text}")
-                    
-                    # Provide specific error analysis based on status code
-                    if response.status_code == 401:
-                        print("AUTHENTICATION ERROR:")
-                        print("   - Check if your access token is valid and not expired")
-                        print("   - Verify token has permission to trigger ML pipelines")
-                        print(f"   - Token length: {len(config['access_token'])} characters")
-                    elif response.status_code == 403:
-                        print("AUTHORIZATION ERROR:")
-                        print("   - Token is valid but lacks permission to trigger this pipeline")
-                        print(f"   - Check access rights for pipeline ID: {config['pipeline_id']}")
-                        print(f"   - Verify experiment ID permissions: {config['experiment_id']}")
-                    elif response.status_code == 404:
-                        print("RESOURCE NOT FOUND:")
-                        print(f"   - Pipeline ID '{config['pipeline_id']}' does not exist")
-                        print(f"   - Experiment ID '{config['experiment_id']}' may be invalid")
-                        print("   - Check if pipeline was deleted or moved")
-                    elif response.status_code == 400:
-                        print("BAD REQUEST:")
-                        print("   - Request format or parameters are invalid")
-                        print("   - Check pipeline parameters and payload structure")
-                        try:
-                            error_data = response.json()
-                            if 'message' in error_data:
-                                print(f"   - Server message: {error_data['message']}")
-                            if 'errors' in error_data:
-                                print(f"   - Validation errors: {error_data['errors']}")
-                        except:
-                            print("   - Could not parse detailed error information")
-                    elif response.status_code == 500:
-                        print("SERVER ERROR:")
-                        print("   - Internal server error on pipeline service")
-                        print("   - This is likely a temporary issue")
-                        print("   - Try again in a few minutes")
-                    elif response.status_code == 503:
-                        print("SERVICE UNAVAILABLE:")
-                        print("   - Pipeline service is temporarily unavailable")
-                        print("   - May be under maintenance or overloaded")
-                        print("   - Retry after some time")
-                    else:
-                        print(f"UNEXPECTED ERROR (Status {response.status_code}):")
-                        print("   - Unknown error occurred")
-                    
-                    # Try to parse and display structured error details
-                    try:
-                        error_data = response.json()
-                        print("\nDETAILED ERROR RESPONSE:")
-                        print(json.dumps(error_data, indent=4))
-                    except:
-                        print("\nRAW ERROR RESPONSE (not JSON):")
-                        print(f"{response.text}")
-                    
-                    print(f"\nTROUBLESHOOTING CHECKLIST:")
-                    print(f"   - Pipeline ID: {config['pipeline_id']}")
-                    print(f"   - Experiment ID: {config['experiment_id']}")
-                    print(f"   - API Endpoint: {url}")
-                    print(f"   - Request Method: POST")
-                    print(f"   - Content-Type: application/json")
-                    print(f"   - Token Available: {'Yes' if config['access_token'] else 'No'}")
-                    
-                    # Raise exception with detailed error information
-                    raise requests.exceptions.HTTPError(
-                        f"Pipeline trigger failed: {response.status_code} - {response.text}"
-                    )
-                    
-            except requests.exceptions.Timeout:
-                print("TIMEOUT ERROR:")
-                print("   - Request timed out after 30 seconds")
-                print("   - Pipeline service may be slow or unresponsive")
-                print("   - Check network connectivity")
-                print("   - Try increasing timeout or retry later")
-                raise RuntimeError("Pipeline trigger request timed out")
-            except requests.exceptions.ConnectionError as e:
-                print("CONNECTION ERROR:")
-                print(f"   - Failed to connect to pipeline service: {e}")
-                print("   - Check internet connectivity")
-                print("   - Verify API endpoint is accessible")
-                print(f"   - Target URL: {url}")
-                print("   - Check firewall/proxy settings")
-                raise RuntimeError(f"Failed to connect to pipeline service: {e}")
-            except requests.exceptions.HTTPError as e:
-                print(f"HTTP ERROR:")
-                print(f"   - HTTP error occurred: {e}")
-                print("   - See detailed error analysis above")
-                raise RuntimeError(f"Pipeline trigger HTTP error: {e}")
-            except json.JSONDecodeError as e:
-                print("JSON PARSING ERROR:")
-                print(f"   - Could not parse server response as JSON: {e}")
-                print("   - Server may have returned malformed response")
-                print("   - Check API endpoint and response format")
-                raise RuntimeError(f"Invalid JSON response from pipeline service: {e}")
-            except Exception as e:
-                print(f"UNEXPECTED ERROR:")
-                print(f"   - Error type: {type(e).__name__}")
-                print(f"   - Error message: {str(e)}")
-                print("   - This may indicate a code bug or unexpected server behavior")
-                raise RuntimeError(f"Unexpected error triggering pipeline: {e}")
+            response = requests.post(url, headers=headers, data=payload)
+            response.raise_for_status()
+            print(f"Triggered pipeline. Response: {response.json()}")
+            return response.json()['runId']
 
         def get_pipeline_status(config):
             url = f"https://ig.mobiusdtaas.ai/bob-service-test/v1.0/pipeline/{config['pipeline_id']}/status/ml/{config['run_id']}"
-            headers = {
-                'accept': 'application/json', 
-                'Authorization': f"Bearer {config['access_token']}"
-            }
-            
-            try:
-                print(f"Checking pipeline status: {url}")
-                response = requests.get(url, headers=headers, timeout=30)
-                
-                if response.status_code == 200:
-                    pipeline_status = response.json()
-                    print(f"Status response: {json.dumps(pipeline_status, indent=2)}")
-                    
-                    if 'run_details' in pipeline_status and 'state_history' in pipeline_status['run_details']:
-                        latest_state = pipeline_status['run_details']['state_history'][-1]
-                        return latest_state['state']
-                    else:
-                        print(f"Unexpected status response format: {pipeline_status}")
-                        return 'UNKNOWN'
-                else:
-                    print(f"Status check failed: {response.status_code} - {response.text}")
-                    raise requests.exceptions.HTTPError(f"Status check failed: {response.status_code}")
-                    
-            except requests.exceptions.Timeout:
-                print("Status check timed out")
-                raise RuntimeError("Pipeline status check timed out")
-            except requests.exceptions.ConnectionError as e:
-                print(f"Connection error during status check: {e}")
-                raise RuntimeError(f"Failed to connect for status check: {e}")
-            except Exception as e:
-                print(f"Error checking pipeline status: {e}")
-                raise RuntimeError(f"Status check error: {e}")
+            headers = {'accept': 'application/json', 'Authorization': f"Bearer {config['access_token']}"}
+            response = requests.get(url, headers=headers)
+            response.raise_for_status()
+            pipeline_status = response.json()
+            latest_state = pipeline_status['run_details']['state_history'][-1]
+            return latest_state['state']
 
         def get_instance(access_token, domain, schema_id, model_id):
             url = f"{domain}/pi-entity-instances-service/v3.0/schemas/{schema_id}/instances/list"
             headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
             payload = {"dbType": "TIDB", "ownedOnly": True, "filter": {"model_id": model_id}}
-            
-            print(f"Making request to: {url}")
-            print(f"Payload: {payload}")
-            
-            try:
-                response = requests.post(url, headers=headers, json=payload)
-                print(f"Response status: {response.status_code}")
-                print(f"Response text: {response.text}")
-                response.raise_for_status()
-                
-                response_data = response.json()
-                if 'content' not in response_data or not response_data['content']:
-                    print("No content found in response, creating default instance data")
-                    return {
-                        'pierce2rlaf': [],
-                        'rlaf2pierce': [],
-                        'rlaf_actions': {
-                            'actions': [
-                                {
-                                    "id": 0,
-                                    "name": "Default_VAE_Action",
-                                    "params": {"epochs": 5, "learning_rate": 0.001, "beta": 1.0}
-                                },
-                                {
-                                    "id": 1,
-                                    "name": "High_Beta_VAE",
-                                    "params": {"epochs": 3, "learning_rate": 0.0005, "beta": 2.0}
-                                }
-                            ]
-                        }
-                    }
-                return response_data['content'][0]
-                
-            except requests.exceptions.HTTPError as e:
-                print(f"HTTP Error: {e}")
-                print(f"Creating fallback instance data due to API error")
-                return {
-                    'pierce2rlaf': [],
-                    'rlaf2pierce': [],
-                    'rlaf_actions': {
-                        'actions': [
-                            {
-                                "id": 0,
-                                "name": "Default_VAE_Action",
-                                "params": {"epochs": 5, "learning_rate": 0.001, "beta": 1.0}
-                            },
-                            {
-                                "id": 1,
-                                "name": "High_Beta_VAE",
-                                "params": {"epochs": 3, "learning_rate": 0.0005, "beta": 2.0}
-                            }
-                        ]
-                    }
-                }
-            except Exception as e:
-                print(f"Unexpected error: {e}")
-                print(f"Creating fallback instance data due to unexpected error")
-                return {
-                    'pierce2rlaf': [],
-                    'rlaf2pierce': [],
-                    'rlaf_actions': {
-                        'actions': [
-                            {
-                                "id": 0,
-                                "name": "Default_VAE_Action",
-                                "params": {"epochs": 5, "learning_rate": 0.001, "beta": 1.0}
-                            }
-                        ]
-                    }
-                }
+            response = requests.post(url, headers=headers, json=payload)
+            response.raise_for_status()
+            return response.json()['content'][0]
 
         def update_instance_field(access_token, domain, schema_id, model_id, field, value):
             url = f"{domain}/pi-entity-instances-service/v2.0/schemas/{schema_id}/instances"
@@ -728,254 +126,47 @@ implementation:
                 "conditionalFilter": {"conditions": [{"field": "model_id", "operator": "EQUAL", "value": model_id}]},
                 "partialUpdateRequests": [{"patch": [{"operation": "REPLACE", "path": field, "value": value}]}]
             }
-            
-            try:
-                response = requests.patch(url, headers=headers, json=payload)
-                print(f"Update response status: {response.status_code}")
-                if response.status_code in [200, 201, 204]:
-                    print(f"Successfully updated field '{field}' for model_id '{model_id}'")
-                else:
-                    print(f"Failed to update field '{field}': {response.text}")
-            except Exception as e:
-                print(f"Error updating instance field '{field}': {e}")
-                print("Continuing without database update...")
+            response = requests.patch(url, headers=headers, json=payload)
+            response.raise_for_status()
+            print(f"Successfully updated field '{field}' for model_id '{model_id}'")
 
         # Core Logic
         def trigger_and_wait_for_dqn_pipeline(config, dqn_params):
-            print("=== DQN Pipeline Execution Starting ===")
-            try:
-                run_id = trigger_pipeline(config, dqn_params)
-                config["run_id"] = run_id
-                print(f"DQN pipeline triggered successfully with run_id: {run_id}")
-                
-                print("Monitoring pipeline execution status...")
-                status_check_count = 0
-                while True:
-                    try:
-                        status = get_pipeline_status(config)
-                        status_check_count += 1
-                        print(f"Status check #{status_check_count} - Current DQN pipeline status: {status}")
-                        
-                        if status == 'SUCCEEDED':
-                            print("DQN Pipeline execution completed successfully.")
-                            break
-                        elif status in ['FAILED', 'ERROR']:
-                            print(f"DQN Pipeline failed with status: {status}")
-                            # Try to get more detailed error information
-                            try:
-                                error_details_url = f"https://ig.mobiusdtaas.ai/bob-service-test/v1.0/pipeline/{config['pipeline_id']}/details/ml/{config['run_id']}"
-                                headers = {'Authorization': f"Bearer {config['access_token']}"}
-                                error_response = requests.get(error_details_url, headers=headers)
-                                if error_response.status_code == 200:
-                                    error_data = error_response.json()
-                                    print(f"Pipeline error details: {json.dumps(error_data, indent=2)}")
-                                else:
-                                    print(f"Could not retrieve error details: {error_response.status_code}")
-                            except Exception as detail_error:
-                                print(f"Failed to get detailed error info: {detail_error}")
-                            
-                            raise RuntimeError(f"DQN Pipeline failed with status {status}")
-                        elif status in ['RUNNING', 'PENDING', 'QUEUED']:
-                            print(f"Pipeline is {status.lower()}... waiting 60 seconds before next check")
-                            time.sleep(60)
-                        else:
-                            print(f"Unknown pipeline status: {status}. Continuing to monitor...")
-                            time.sleep(60)
-                            
-                    except Exception as status_error:
-                        print(f"Error checking pipeline status: {status_error}")
-                        if status_check_count > 10:  # Avoid infinite loops
-                            raise RuntimeError(f"Failed to monitor pipeline after {status_check_count} attempts: {status_error}")
-                        print("Retrying status check in 30 seconds...")
-                        time.sleep(30)
-                        
-            except Exception as e:
-                print(f"=== DQN Pipeline Execution Failed ===")
-                print(f"Error type: {type(e).__name__}")
-                print(f"Error message: {str(e)}")
-                print("This is a REAL ERROR - not entering simulation mode")
-                raise e
-            
-            print("=== DQN Pipeline Execution Completed ===")
-            return True
+            run_id = trigger_pipeline(config, dqn_params)
+            config["run_id"] = run_id
+            while True:
+                status = get_pipeline_status(config)
+                print(f"Current DQN pipeline status: {status}")
+                if status == 'SUCCEEDED':
+                    print("DQN Pipeline execution completed.")
+                    break
+                elif status in ['FAILED', 'ERROR']:
+                    raise RuntimeError(f"DQN Pipeline failed with status {status}")
+                time.sleep(60)
 
-        def model_retraining(action, model_path, data_path, config_path, tasks_path, output_model_path, previous_metrics, dqn_params):
-            # Load VAE model architecture
-            from nesy_factory.VAE import create_vae_model
-            
-            with open(config_path, 'r') as f: 
-                config = json.load(f)
-            with open(tasks_path, "rb") as f: 
-                tasks = pickle.load(f)
-            
+        def model_retraining(action, model_path, data_path, config_path):
+            print(f"Starting model retraining with action: {action}")
+            with open(data_path, "rb") as f: data = pickle.load(f)
+            with open(config_path, 'r') as f: config = json.load(f)
             config.update(action)
-            
-            # Create VAE model
-            vae_type = config.get('vae_type', 'standard_vae')
-            model = create_vae_model(vae_type, config)
-            
-            # Load trained weights with fallback architecture handling
-            state_dict = torch.load(model_path, map_location=torch.device('cpu'))
-            
-            try:
-                # Try loading directly first
-                model.load_state_dict(state_dict, strict=True)
-                print("Successfully loaded model with exact architecture match")
-            except RuntimeError as e:
-                print(f"Architecture mismatch, trying flexible loading: {e}")
+            print(f"Updated training config: {config}")
+            model_name = config.get('model_name', 'tgcn')
+            model = create_model(model_name, config)
+            model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
+            epochs = config.get('epochs', 10)
+            for epoch in range(epochs):
+                loss = model.train_step(data, data.train_mask)
+                if epoch % 10 == 0: print(f"Epoch {epoch:03d} | Loss: {loss:.4f}")
+            torch.save(model.state_dict(), model_path)
+            eval_metrics = model.eval_step(data, data.test_mask)
+            print(f"Retraining complete. Eval metrics: {eval_metrics}")
+            cleaned_metrics = {}
+            for key, value in eval_metrics.items():
                 try:
-                    # Try non-strict loading
-                    model.load_state_dict(state_dict, strict=False)
-                    print("Successfully loaded model with non-strict mode")
-                except Exception as e2:
-                    print(f"Non-strict loading failed: {e2}")
-                    # Create fallback model that matches the saved weights architecture
-                    print("Creating fallback model architecture to match saved weights")
-                    
-                    # Analyze the saved state dict to understand the architecture
-                    saved_keys = list(state_dict.keys())
-                    print(f"Saved model keys: {saved_keys}")
-                    
-                    # Create a simple StandardVAE that matches the saved architecture
-                    import torch.nn as nn
-                    
-                    class CompatibleStandardVAE(nn.Module):
-                        def __init__(self, input_dim, latent_dim, hidden_dims=None):
-                            super().__init__()
-                            self.vae_type = 'standard_vae'
-                            self.input_dim = input_dim
-                            self.latent_dim = latent_dim
-                            
-                            if hidden_dims is None:
-                                hidden_dims = [512, 256]
-                            
-                            # Build encoder matching saved architecture
-                            encoder_layers = []
-                            prev_dim = input_dim
-                            for hidden_dim in hidden_dims:
-                                encoder_layers.extend([
-                                    nn.Linear(prev_dim, hidden_dim),
-                                    nn.ReLU()
-                                ])
-                                prev_dim = hidden_dim
-                            
-                            self.encoder = nn.Sequential(*encoder_layers)
-                            
-                            # Latent layers - match saved naming
-                            if 'mu_layer.weight' in saved_keys:
-                                self.mu_layer = nn.Linear(prev_dim, latent_dim)
-                                self.logvar_layer = nn.Linear(prev_dim, latent_dim)
-                            else:
-                                self.fc_mu = nn.Linear(prev_dim, latent_dim) 
-                                self.fc_log_var = nn.Linear(prev_dim, latent_dim)
-                            
-                            # Build decoder
-                            decoder_layers = []
-                            prev_dim = latent_dim
-                            for hidden_dim in reversed(hidden_dims):
-                                decoder_layers.extend([
-                                    nn.Linear(prev_dim, hidden_dim),
-                                    nn.ReLU()
-                                ])
-                                prev_dim = hidden_dim
-                            
-                            decoder_layers.append(nn.Linear(prev_dim, input_dim))
-                            decoder_layers.append(nn.Sigmoid())
-                            
-                            self.decoder = nn.Sequential(*decoder_layers)
-                        
-                        def encode(self, x):
-                            h = self.encoder(x)
-                            if hasattr(self, 'mu_layer'):
-                                return self.mu_layer(h), self.logvar_layer(h)
-                            else:
-                                return self.fc_mu(h), self.fc_log_var(h)
-                        
-                        def reparameterize(self, mu, logvar):
-                            std = torch.exp(0.5 * logvar)
-                            eps = torch.randn_like(std)
-                            return mu + eps * std
-                        
-                        def decode(self, z):
-                            return self.decoder(z)
-                        
-                        def forward(self, x):
-                            mu, logvar = self.encode(x)
-                            z = self.reparameterize(mu, logvar)
-                            recon_x = self.decode(z)
-                            return recon_x, mu, logvar
-                    
-                    # Create compatible model
-                    input_dim = config.get('input_dim', 784)  # Default MNIST size
-                    latent_dim = config.get('latent_dim', 128)
-                    model = CompatibleStandardVAE(input_dim, latent_dim)
-                    
-                    # Try loading again
-                    try:
-                        model.load_state_dict(state_dict, strict=False)
-                        print("Successfully loaded model with compatible architecture")
-                    except Exception as e3:
-                        print(f"Even compatible loading failed: {e3}")
-                        print("Using randomly initialized model")
-                        # Keep the randomly initialized model
-            
-            print("Starting VAE continual learning experiments")
-            trainer = ContinualVAETrainer(config)
-            continual_strategies = ['naive']
-            
-            results = trainer.train_continual_vae(tasks=tasks, strategies=continual_strategies, model=model)
-            print(f"VAE continual learning results: {results}")
-            
-            average_eval_metrics = results['naive']['average_eval_metrics']
-            
-            # Compare with previous metrics (lower loss is better for VAE)
-            improvement_score = 0.0
-            for param in dqn_params:
-                key = param['key']
-                sign = 1 if param['sign'] == '+' else -1
-                if key in average_eval_metrics and key in previous_metrics:
-                    try:
-                        # Ensure both values are numeric
-                        current_val = float(average_eval_metrics[key])
-                        previous_val = float(previous_metrics[key])
-                        improvement = (current_val - previous_val) * sign
-                        improvement_score += improvement
-                        print(f"Metric {key}: {previous_val:.4f} -> {current_val:.4f}, improvement: {improvement:.4f}")
-                    except (ValueError, TypeError) as e:
-                        print(f"Warning: Could not compute improvement for metric '{key}': {e}")
-                        continue
-
-            if improvement_score > 0:
-                print(f"VAE metrics improved (score: {improvement_score:.4f}). Saving model.")
-                os.makedirs(os.path.dirname(output_model_path), exist_ok=True)
-                final_model = results['naive']['final_model']
-                torch.save(final_model.state_dict(), output_model_path)
-                print(f"Saved retrained VAE model to {output_model_path}")
-            else:
-                print(f"No improvement in VAE metrics (score: {improvement_score:.4f}). Model not saved.")
-                os.makedirs(os.path.dirname(output_model_path), exist_ok=True)
-                # Create a dummy file to satisfy Kubeflow output requirements
-                with open(output_model_path, 'w') as f:
-                    f.write("VAE model not saved due to lack of improvement.")
-
-            # Ensure all metrics are JSON serializable
-            serializable_metrics = {}
-            for key, value in average_eval_metrics.items():
-                try:
-                    if isinstance(value, (int, float, bool)):
-                        serializable_metrics[key] = float(value)
-                    elif isinstance(value, str):
-                        try:
-                            serializable_metrics[key] = float(value)
-                        except ValueError:
-                            serializable_metrics[key] = str(value)
-                    else:
-                        serializable_metrics[key] = str(value)
-                except Exception as e:
-                    print(f"Warning: Could not serialize metric '{key}': {e}")
-                    serializable_metrics[key] = 0.0
-
-            return {"metrics": serializable_metrics, "model_path": output_model_path}
+                    cleaned_metrics[key] = float(value)
+                except (ValueError, TypeError):
+                    print(f"Warning: Could not convert metric '{key}' with value '{value}' to float. Skipping.")
+            return cleaned_metrics
 
         # Main Execution
         def main():
@@ -1003,59 +194,23 @@ implementation:
             action_id_for_next_pierce = -1
  
             for i in range(2):
-                print(f"VAE RLAF Loop Iteration {i+1}")
+                print(f"--- RLAF Loop Iteration ---")
                 
                 cleaned_metrics = {}
                 dqn_params = []
                 for key, value in current_metrics.items():
                     try:
-                        # Handle different types of values
-                        if isinstance(value, (int, float)):
-                            numeric_value = float(value)
-                        elif isinstance(value, str):
-                            numeric_value = float(value)
-                        elif hasattr(value, 'item'):  # Handle numpy scalars
-                            numeric_value = float(value.item())
-                        else:
-                            # Try to convert to float
-                            numeric_value = float(str(value))
-                        
-                        cleaned_metrics[key] = numeric_value
-                        
-                        if "loss" in key.lower():
-                            dqn_params.append({"key": key, "sign": "-", "mul": 1.0})  # Lower loss is better
-                        elif "accuracy" in key.lower() or "f1" in key.lower():
-                            dqn_params.append({"key": key, "sign": "+", "mul": 1.0})  # Higher accuracy is better
-                    except (ValueError, TypeError) as e:
-                        print(f"Warning: Could not convert VAE metric '{key}' with value '{value}' (type: {type(value)}) to float: {e}. Skipping.")
+                        cleaned_metrics[key] = float(value)
+                        if "loss" in key.lower() or "accuracy" in key.lower():
+                            sign = "+" if "accuracy" in key.lower() or "f1" in key.lower() else "-"
+                            dqn_params.append({"key": key, "sign": sign, "mul": 1.0})
+                    except (ValueError, TypeError):
+                        print(f"Warning: Could not convert metric '{key}' with value '{value}' to float. Skipping.")
                 
-                print(f"Dynamically generated param_json for VAE DQN: {json.dumps(dqn_params)}")
+                print(f"Dynamically generated param_json for DQN: {json.dumps(dqn_params)}")
 
-                try:
-                    instance = get_instance(access_token, args.domain, args.schema_id, args.model_id)
-                    print(f"Instance data retrieved successfully")
-                except Exception as e:
-                    print(f"Failed to get instance data: {e}")
-                    print("Creating fallback instance data...")
-                    instance = {
-                        'pierce2rlaf': [],
-                        'rlaf2pierce': [],
-                        'rlaf_actions': {
-                            'actions': [
-                                {
-                                    "id": 0,
-                                    "name": "Default_VAE_Action",
-                                    "params": {"epochs": 5, "learning_rate": 0.001, "beta": 1.0}
-                                },
-                                {
-                                    "id": 1,
-                                    "name": "High_Beta_VAE",
-                                    "params": {"epochs": 3, "learning_rate": 0.0005, "beta": 2.0}
-                                }
-                            ]
-                        }
-                    }
-                
+                instance = get_instance(access_token, args.domain, args.schema_id, args.model_id)
+                print(f"{instance}")
                 if instance.get('pierce2rlaf'):
                     latest_pierce2rlaf = instance['pierce2rlaf'][-1]
                     previous_state = latest_pierce2rlaf['current_state']
@@ -1065,180 +220,44 @@ implementation:
                     episode = 0
  
                 new_pierce2rlaf_entry = {
-                    "action_id": action_id_for_next_pierce, 
-                    "previous_state": previous_state,
-                    "current_state": cleaned_metrics, 
-                    "episode": episode, 
-                    "timestamp": int(time.time())
+                    "action_id": action_id_for_next_pierce, "previous_state": previous_state,
+                    "current_state": cleaned_metrics, "episode": episode, "timestamp": int(time.time())
                 }
                 pierce2rlaf_history = instance.get("pierce2rlaf", [])
                 pierce2rlaf_history.append(new_pierce2rlaf_entry)
-                
-                try:
-                    update_instance_field(access_token, args.domain, args.schema_id, args.model_id, "pierce2rlaf", pierce2rlaf_history)
-                except Exception as e:
-                    print(f"Failed to update pierce2rlaf field: {e}")
-                    print("Continuing without database update...")
+                update_instance_field(access_token, args.domain, args.schema_id, args.model_id, "pierce2rlaf", pierce2rlaf_history)
 
                 dqn_config = {
-                    "pipeline_id": args.dqn_pipeline_id, 
-                    "experiment_id": args.dqn_experiment_id, 
-                    "access_token": access_token
+                    "pipeline_id": args.dqn_pipeline_id, "experiment_id": args.dqn_experiment_id, "access_token": access_token
                 }
-                print(f"DQN config: {dqn_config}")
-                
-                try:
-                    trigger_and_wait_for_dqn_pipeline(dqn_config, dqn_params)
-                    
-                    # Get updated instance with rlaf2pierce response
-                    try:
-                        updated_instance = get_instance(access_token, args.domain, args.schema_id, args.model_id)
-                        rlaf2pierce_history = updated_instance.get('rlaf2pierce', [])
-                        
-                        if rlaf2pierce_history:
-                            latest_rlaf2pierce = rlaf2pierce_history[-1]
-                            print(f"Received DQN pipeline response: {latest_rlaf2pierce}")
-                        else:
-                            print("WARNING: No rlaf2pierce response found after successful pipeline execution")
-                            print("This may indicate an issue with the DQN pipeline output or database update")
-                            raise RuntimeError("DQN pipeline completed but no response data found in rlaf2pierce")
-                    except Exception as api_error:
-                        print(f"CRITICAL: Failed to retrieve DQN pipeline results: {api_error}")
-                        print("Pipeline may have succeeded but results are not accessible")
-                        raise RuntimeError(f"Cannot access DQN pipeline results: {api_error}")
-                        
-                except Exception as e:
-                    print(f"\n" + "="*60)
-                    print(f"DQN PIPELINE EXECUTION FAILED")
-                    print(f"="*60)
-                    print(f"Context:")
-                    print(f"   - Iteration: {i+1} of 2")
-                    print(f"   - Pipeline ID: {args.dqn_pipeline_id}")
-                    print(f"   - Experiment ID: {args.dqn_experiment_id}")
-                    print(f"   - Model ID: {args.model_id}")
-                    
-                    print(f"\nError Details:")
-                    print(f"   - Error Type: {type(e).__name__}")
-                    print(f"   - Error Message: {str(e)}")
-                    
-                    print(f"\nCurrent VAE Metrics at Failure:")
-                    for key, value in cleaned_metrics.items():
-                        print(f"   - {key}: {value}")
-                    
-                    print(f"\nNext Steps:")
-                    print(f"   1. Check the detailed error messages above")
-                    print(f"   2. Verify your access token permissions")
-                    print(f"   3. Confirm pipeline and experiment IDs are correct")
-                    print(f"   4. Check network connectivity to the API endpoint")
-                    print(f"   5. Review the DQN pipeline configuration")
-                    
-                    print(f"\nTERMINATING VAE RLAF LOOP")
-                    print(f"="*60)
-                    
-                    # Create error output for debugging
-                    error_output = {
-                        "error": str(e),
-                        "error_type": type(e).__name__,
-                        "iteration": i + 1,
-                        "metrics_at_failure": cleaned_metrics,
-                        "timestamp": int(time.time()),
-                        "status": "failed"
-                    }
-                    
-                    # Still create output files for Kubeflow (but with error info)
-                    os.makedirs(os.path.dirname(args.rlaf_output), exist_ok=True)
-                    with open(args.rlaf_output, 'w') as f:
-                        json.dump(error_output, f, indent=4)
-                    
-                    os.makedirs(os.path.dirname(args.retrained_model), exist_ok=True)
-                    with open(args.retrained_model, 'w') as f:
-                        json.dump(error_output, f, indent=4)
-                    
-                    # Re-raise the exception to properly fail the component
-                    raise e
+                print(f"{dqn_config}")
+                trigger_and_wait_for_dqn_pipeline(dqn_config, dqn_params)
+
+                updated_instance = get_instance(access_token, args.domain, args.schema_id, args.model_id)
+                latest_rlaf2pierce = updated_instance['rlaf2pierce'][-1]
                 
                 if not latest_rlaf2pierce.get("pierce_or_not", True):
-                    print("pierce_or_not is false. Exiting VAE RLAF loop.")
+                    print("pierce_or_not is false. Exiting loop.")
                     break
-                    
-                print(f"RLAF2Pierce response: {latest_rlaf2pierce}")
-                rlaf_actions = instance.get('rlaf_actions', {}).get('actions', [])
+                print(f"{latest_rlaf2pierce}")
+                rlaf_actions = updated_instance.get('rlaf_actions', {}).get('actions', [])
                 action_id_for_next_pierce = latest_rlaf2pierce['action_id']
                 action_details = next((a for a in rlaf_actions if a["id"] == action_id_for_next_pierce), None)
                 if not action_details:
-                    # Fallback: use the first available action if the selected one doesn't exist
-                    if rlaf_actions:
-                        action_details = rlaf_actions[0]
-                        print(f"Action ID {action_id_for_next_pierce} not found, using fallback: {action_details}")
-                    else:
-                        print("No RLAF actions available, creating default action")
-                        action_details = {
-                            "id": 0,
-                            "name": "Default_Action",
-                            "params": {"epochs": 2, "error_absolute_threshold": 0.03}
-                        }
+                    raise ValueError(f"Action with ID {action_id_for_next_pierce} not found in rlaf_actions")
  
-                print(f"DQN pipeline recommended VAE action: {action_details}. Retraining VAE model.")
-                retraining_results = model_retraining(
-                    action_details['params'], args.trained_model, args.data_path, args.config, args.tasks,
-                    args.retrained_model, previous_state, dqn_params
-                )
-                current_metrics = retraining_results["metrics"]
+                print(f"DQN pipeline recommended action: {action_details['name']}. Retraining model.")
+                current_metrics = model_retraining(action_details['params'], args.trained_model, args.data_path, args.config)
 
-            # Ensure output directories exist and create proper output files
-            print(f"Creating output directory: {os.path.dirname(args.rlaf_output)}")
             os.makedirs(os.path.dirname(args.rlaf_output), exist_ok=True)
-            
-            print(f"Creating retrained model directory: {os.path.dirname(args.retrained_model)}")
-            os.makedirs(os.path.dirname(args.retrained_model), exist_ok=True)
-            
-            # Ensure all final metrics are properly serializable
-            final_output = {}
-            for key, value in current_metrics.items():
-                try:
-                    if isinstance(value, (int, float, bool)):
-                        final_output[key] = float(value)
-                    elif isinstance(value, str):
-                        try:
-                            final_output[key] = float(value)
-                        except ValueError:
-                            final_output[key] = str(value)
-                    elif hasattr(value, 'item'):  # Handle numpy scalars
-                        final_output[key] = float(value.item())
-                    else:
-                        final_output[key] = str(value)
-                except Exception as e:
-                    print(f"Warning: Could not serialize final metric '{key}': {e}")
-                    final_output[key] = 0.0
-            
-            # Write RLAF output file
-            rlaf_data = {
-                "final_metrics": final_output,
-                "iterations_completed": i + 1,
-                "status": "completed",
-                "timestamp": int(time.time())
-            }
-            
-            print(f"Writing RLAF output to: {args.rlaf_output}")
             with open(args.rlaf_output, 'w') as f:
-                json.dump(rlaf_data, f, indent=4)
-            print(f"VAE RLAF loop finished. Final parameters written to {args.rlaf_output}")
+                json.dump({"final_metrics": current_metrics}, f, indent=4)
+            print(f"RLAF loop finished. Final parameters written to {args.rlaf_output}")
             
-            # Ensure retrained model output exists (Kubeflow requirement)
-            print(f"Checking retrained model path: {args.retrained_model}")
-            if not os.path.exists(args.retrained_model):
-                print(f"Creating placeholder retrained model file: {args.retrained_model}")
-                with open(args.retrained_model, 'w') as f:
-                    json.dump({
-                        "model_status": "retrained" if i > 0 else "placeholder",
-                        "final_metrics": final_output,
-                        "iterations": i + 1,
-                        "timestamp": int(time.time())
-                    }, f, indent=4)
-            
-            print("All output files created successfully:")
-            print(f"  - RLAF output: {args.rlaf_output} (exists: {os.path.exists(args.rlaf_output)})")
-            print(f"  - Retrained model: {args.retrained_model} (exists: {os.path.exists(args.retrained_model)})")
+            # Save the retrained model
+            os.makedirs(os.path.dirname(args.retrained_model), exist_ok=True)
+            torch.save(model.state_dict(), args.retrained_model)
+            print(f"Saved retrained model to {args.retrained_model}")
 
         if __name__ == '__main__':
             main()
