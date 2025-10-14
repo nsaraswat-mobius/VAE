@@ -77,7 +77,7 @@ outputs:
 
 implementation:
   container:
-    image: nikhilv215/nesy-factory:v22
+    image: sanram00/vae-image:v1
     command:
       - python3
       - -u
@@ -144,7 +144,7 @@ implementation:
             else:
                 raise ValueError("Empty or default parameters")
         except:
-            print("Using default VAE hyperparameters...")
+            print("Using default VAE hyperparameters")
             params_input = [
                 {
                     "name": "learning_rate",
@@ -215,7 +215,7 @@ implementation:
                             "containers": [
                                 {
                                     "name": "vae-training-container",
-                                    "image": "nikhilv215/nesy-factory:v22",
+                                    "image": "sanram00/vae-image:v1",
                                     "command": ["python3", "-c"],
                                     "args": ["import torch; import torch.nn as nn; import torch.optim as optim; import numpy as np; import argparse; import sys; import os\n\nclass StandardVAE(nn.Module):\n    def __init__(self, input_dim, hidden_dim, latent_dim):\n        super(StandardVAE, self).__init__()\n        self.encoder = nn.Sequential(nn.Linear(input_dim, hidden_dim), nn.ReLU(), nn.Linear(hidden_dim, hidden_dim // 2), nn.ReLU())\n        self.mu_layer = nn.Linear(hidden_dim // 2, latent_dim)\n        self.logvar_layer = nn.Linear(hidden_dim // 2, latent_dim)\n        self.decoder = nn.Sequential(nn.Linear(latent_dim, hidden_dim // 2), nn.ReLU(), nn.Linear(hidden_dim // 2, hidden_dim), nn.ReLU(), nn.Linear(hidden_dim, input_dim), nn.Sigmoid())\n    def encode(self, x): h = self.encoder(x); return self.mu_layer(h), self.logvar_layer(h)\n    def reparameterize(self, mu, logvar): std = torch.exp(0.5 * logvar); eps = torch.randn_like(std); return mu + eps * std\n    def decode(self, z): return self.decoder(z)\n    def forward(self, x): mu, logvar = self.encode(x); z = self.reparameterize(mu, logvar); return self.decode(z), mu, logvar\n\nparser = argparse.ArgumentParser()\nfor p in ['learning_rate', 'hidden_dim', 'latent_dim', 'beta', 'epochs']: parser.add_argument('--' + p, type=float, required=True)\nparser.add_argument('--input_dim', type=int, required=True)\nargs = parser.parse_args()\n\n# Generate synthetic failure signature data for tuning\nnp.random.seed(42)\ntrain_data = torch.randn(160, args.input_dim)\nval_data = torch.randn(40, args.input_dim)\ntrain_dataset = torch.utils.data.TensorDataset(train_data, torch.zeros(160))\nval_dataset = torch.utils.data.TensorDataset(val_data, torch.zeros(40))\ntrain_loader = torch.utils.data.DataLoader(train_dataset, batch_size=32, shuffle=True)\nval_loader = torch.utils.data.DataLoader(val_dataset, batch_size=32, shuffle=False)\n\nmodel = StandardVAE(args.input_dim, int(args.hidden_dim), int(args.latent_dim))\noptimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)\ndevice = torch.device('cuda' if torch.cuda.is_available() else 'cpu')\nmodel = model.to(device)\n\nfor epoch in range(int(args.epochs)):\n    model.train()\n    total_loss = 0\n    num_batches = 0\n    for batch_data, _ in train_loader:\n        batch_data = batch_data.to(device)\n        optimizer.zero_grad()\n        recon_batch, mu, logvar = model(batch_data)\n        recon_loss = nn.functional.mse_loss(recon_batch, batch_data, reduction='sum')\n        kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())\n        loss = recon_loss + args.beta * kl_loss\n        loss.backward()\n        optimizer.step()\n        total_loss += loss.item()\n        num_batches += 1\n    avg_loss = total_loss / num_batches\n    if epoch % 10 == 0: print(f'Epoch {epoch}: Loss = {avg_loss}')\n\nprint(f'final_loss={avg_loss}')\nprint(f'reconstruction_loss={recon_loss.item()/len(batch_data)}')\nprint(f'kl_loss={kl_loss.item()/len(batch_data)}')\n"] + ["--input_dim", str(input_dim)] + sum([["--" + p["name"], "${trialParameters." + p["name"] + "}"] for p in params_input], []),
                                     "resources": {
