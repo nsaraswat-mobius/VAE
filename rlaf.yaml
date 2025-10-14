@@ -228,7 +228,7 @@ implementation:
                 current_metrics = json.load(f)
  
             action_id_for_next_pierce = -1
-            pipeline_domain = "https://ig.mobiusdtaas.ai"
+            pipeline_domain = "https://igs.gov-cloud.ai"
  
             for i in range(2):
                 print(f"--- RLAF Loop Iteration ---")
