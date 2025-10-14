@@ -247,7 +247,7 @@ implementation:
             trial_args.extend(["--" + param_name, "${trialParameters." + param_name + "}"])
             print(f"DEBUG: Added trial parameter: {param_name}")
         
-        # Add fixed arguments
+        # Add fixed arguments - escape special characters
         trial_args.extend([
             "--model_name", args.model_name,
             "--model_type", args.model_type,
@@ -278,8 +278,8 @@ implementation:
                                 {
                                     "name": "training-container",
                                     "image": "sanram00/vae-image:v1",
-                                    "command": ["python", "train_vae.py"],
-                                    "args": trial_args,
+                                    "command": ["python3"],
+                                    "args": ["train_vae.py"] + trial_args,
                                     "resources": {
                                         "limits": {"cpu": "2", "memory": "4Gi"}
                                     }
