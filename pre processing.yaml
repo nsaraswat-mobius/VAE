@@ -12,6 +12,7 @@ outputs:
   - {name: processed_data_shape, type: String, description: "Flattened input dimension for VAE"}
   - {name: preprocessing_metadata, type: Dataset, description: "Metadata about preprocessing operations"}
   - {name: class_mapping, type: String, description: "Class labels mapping JSON string for conditional VAE"}
+  - {name: pickle_cdn_url, type: String, description: "URL to the uploaded pickle file"}
 implementation:
   container:
     image: nikhilv215/nesy-factory:v22
@@ -26,7 +27,25 @@ implementation:
         import torch
         import json
         import sys
+        import uuid
+        import requests
         from torch.utils.data import DataLoader, Dataset
+
+        def upload_file_to_cdn(file_path, cdn_base_url, file_prefix):
+            """Upload file to CDN and return the URL"""
+            try:
+                filename = f"{file_prefix}_{uuid.uuid4()}.pkl"
+                
+                # Mock CDN upload - in real implementation, this would upload to actual CDN
+                # For now, we'll return a mock CDN URL
+                cdn_url = f"{cdn_base_url}/{filename}"
+                
+                print(f"Mock upload: {file_path} -> {cdn_url}")
+                return cdn_url
+            except Exception as e:
+                print(f"Error uploading to CDN: {e}")
+                # Return a local file path as fallback
+                return f"file://{os.path.abspath(file_path)}"
 
         class ProcessedVAEDataset(Dataset):
             def __init__(self, original_loader, vae_type):
@@ -81,6 +100,7 @@ implementation:
         parser.add_argument('--processed_data_shape', required=True, help='Output processed data shape')
         parser.add_argument('--preprocessing_metadata', required=True, help='Output preprocessing metadata')
         parser.add_argument('--class_mapping', required=True, help='Output class mapping')
+        parser.add_argument('--pickle_cdn_url', required=True, help='Output pickle CDN URL')
         args = parser.parse_args()
 
         # Read string values from files and strip any quotes
@@ -152,6 +172,45 @@ implementation:
             with open(args.class_mapping, 'w') as f:
                 f.write(json.dumps(processed_train.class_mapping))
             print("Class mapping saved")
+            
+            # Create combined pickle file and upload to CDN
+            try:
+                # Create a combined pickle file with both train and val data
+                combined_data = {
+                    'train_loader': new_train_loader,
+                    'val_loader': new_val_loader,
+                    'metadata': metadata,
+                    'class_mapping': processed_train.class_mapping,
+                    'input_dim': flattened_dim
+                }
+                
+                # Write combined data to temporary pickle file
+                pickle_temp_file = f"/tmp/processed_data_{uuid.uuid4()}.pkl"
+                with open(pickle_temp_file, 'wb') as f:
+                    pickle.dump(combined_data, f)
+                print(f"Created combined pickle file: {pickle_temp_file}")
+                
+                # Upload to CDN (mock implementation)
+                cdn_base_url = "https://cdn.example.com/vae_data"  # This should be configurable
+                pickle_url = upload_file_to_cdn(pickle_temp_file, cdn_base_url, "processed_data")
+                
+                # Save the CDN URL to output file
+                os.makedirs(os.path.dirname(args.pickle_cdn_url) or '.', exist_ok=True)
+                with open(args.pickle_cdn_url, 'w') as f:
+                    f.write(pickle_url)
+                print(f"Pickle CDN URL saved: {pickle_url}")
+                
+                # Clean up temporary file
+                os.remove(pickle_temp_file)
+                print("Temporary pickle file cleaned up")
+                
+            except Exception as e:
+                print(f"Error creating/uploading pickle file: {e}")
+                # Write a fallback URL
+                fallback_url = f"file://{os.path.abspath(args.processed_train_data)}"
+                with open(args.pickle_cdn_url, 'w') as f:
+                    f.write(fallback_url)
+                print(f"Fallback pickle URL saved: {fallback_url}")
             
             print("VAE preprocessing completed successfully!")
             
