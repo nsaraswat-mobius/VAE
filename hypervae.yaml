@@ -213,7 +213,7 @@ implementation:
             collector={"kind": "File"}
         )
 
-        experiment_name = f"{args.model_name}-{str(uuid.uuid4())[:8]}"
+        experiment_name = f"{args.model_name.replace('_', '-')}-{str(uuid.uuid4())[:8]}"
         print(f"DEBUG: Experiment name: {experiment_name}")
 
         print("=== DEBUG: CREATING OBJECTIVE SPEC ===")
