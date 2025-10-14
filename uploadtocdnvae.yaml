@@ -58,7 +58,6 @@ implementation:
         upload_url = f"{domain}/mobius-content-service/v1.0/content/upload?filePathAccess=private&filePath=%2Fvae%2Fprocessed%2Fdata%2F"
 
         def upload_file_to_cdn(file_path, output_cdn_url_path, filename_prefix):
-            """Upload file to CDN and save the URL to output path"""
             # Generate unique filename for CDN
             original_filename = os.path.basename(file_path)
             file_extension = os.path.splitext(original_filename)[1]
