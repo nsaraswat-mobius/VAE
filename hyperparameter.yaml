@@ -23,34 +23,7 @@ inputs:
 
   - name: parameters_to_tune
     type: String
-    default: |
-      [
-        {
-          "name": "learning_rate",
-          "parameter_type": "double",
-          "feasible_space": {"min": "0.0001", "max": "0.01"}
-        },
-        {
-          "name": "hidden_dim",
-          "parameter_type": "int",
-          "feasible_space": {"min": "256", "max": "1024"}
-        },
-        {
-          "name": "latent_dim",
-          "parameter_type": "int",
-          "feasible_space": {"min": "64", "max": "256"}
-        },
-        {
-          "name": "beta",
-          "parameter_type": "double",
-          "feasible_space": {"min": "0.5", "max": "3.0"}
-        },
-        {
-          "name": "epochs",
-          "parameter_type": "int",
-          "feasible_space": {"min": "20", "max": "100"}
-        }
-      ]
+    default: "[]"
     description: List of VAE hyperparameters to tune (Katib format)
 
   - name: objective_metric_name
@@ -164,7 +137,42 @@ implementation:
         input_dim = 512
         print(f"Input dimension: {input_dim}")
 
-        params_input = json.loads(args.parameters_to_tune)
+        # Handle parameters_to_tune - use default if empty or invalid
+        try:
+            if args.parameters_to_tune and args.parameters_to_tune.strip() != "[]":
+                params_input = json.loads(args.parameters_to_tune)
+            else:
+                raise ValueError("Empty or default parameters")
+        except:
+            print("Using default VAE hyperparameters...")
+            params_input = [
+                {
+                    "name": "learning_rate",
+                    "parameter_type": "double",
+                    "feasible_space": {"min": "0.0001", "max": "0.01"}
+                },
+                {
+                    "name": "hidden_dim", 
+                    "parameter_type": "int",
+                    "feasible_space": {"min": "256", "max": "1024"}
+                },
+                {
+                    "name": "latent_dim",
+                    "parameter_type": "int", 
+                    "feasible_space": {"min": "64", "max": "256"}
+                },
+                {
+                    "name": "beta",
+                    "parameter_type": "double",
+                    "feasible_space": {"min": "0.5", "max": "3.0"}
+                },
+                {
+                    "name": "epochs",
+                    "parameter_type": "int",
+                    "feasible_space": {"min": "20", "max": "100"}
+                }
+            ]
+        
         print("Parameters to tune: " + str([p["name"] for p in params_input]))
 
         parameters = [
