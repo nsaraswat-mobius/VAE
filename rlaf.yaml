@@ -32,10 +32,31 @@ implementation:
         import json
         import argparse
         import requests
+        from requests.adapters import HTTPAdapter
+        from urllib3.util.retry import Retry
         import time
         import pickle
         import numpy as np
         from nesy_factory.GNNs import create_model
+
+        def get_retry_session(
+            retries=3,
+            backoff_factor=0.3,
+            status_forcelist=(500, 502, 504),
+            session=None,
+        ):
+            session = session or requests.Session()
+            retry = Retry(
+                total=retries,
+                read=retries,
+                connect=retries,
+                backoff_factor=backoff_factor,
+                status_forcelist=status_forcelist,
+            )
+            adapter = HTTPAdapter(max_retries=retry)
+            session.mount('http://', adapter)
+            session.mount('https://', adapter)
+            return session
 
         class DataWrapper:
             def __init__(self, data_dict):
@@ -84,8 +105,9 @@ implementation:
                 return _wrapper()
 
         # --- API/DB Helper Functions ---
-        def trigger_pipeline(config, dqn_params=None):
-            url = f"https://ig.mobiusdtaas.ai/bob-service-test/v1.0/pipeline/trigger/ml?pipelineId={config['pipeline_id']}"
+        def trigger_pipeline(config, pipeline_domain, dqn_params=None):
+            http = get_retry_session()
+            url = f"{pipeline_domain}/bob-service-test/v1.0/pipeline/trigger/ml?pipelineId={config['pipeline_id']}"
             pipeline_params = {"param_json": json.dumps(dqn_params)} if dqn_params else {}
             payload = json.dumps({
                 "pipelineType": "ML", "containerResources": {}, "experimentId": config['experiment_id'],
@@ -96,46 +118,55 @@ implementation:
                 'accept': 'application/json', 'Authorization': f"Bearer {config['access_token']}",
                 'Content-Type': 'application/json'
             }
-            response = requests.post(url, headers=headers, data=payload)
+            response = http.post(url, headers=headers, data=payload, timeout=30)
             response.raise_for_status()
             print(f"Triggered pipeline. Response: {response.json()}")
             return response.json()['runId']
 
-        def get_pipeline_status(config):
-            url = f"https://ig.mobiusdtaas.ai/bob-service-test/v1.0/pipeline/{config['pipeline_id']}/status/ml/{config['run_id']}"
+        def get_pipeline_status(config, pipeline_domain):
+            http = get_retry_session()
+            url = f"{pipeline_domain}/bob-service-test/v1.0/pipeline/{config['pipeline_id']}/status/ml/{config['run_id']}"
             headers = {'accept': 'application/json', 'Authorization': f"Bearer {config['access_token']}"}
-            response = requests.get(url, headers=headers)
+            response = http.get(url, headers=headers, timeout=30)
             response.raise_for_status()
             pipeline_status = response.json()
+            print(f"Full response from get_pipeline_status: {pipeline_status}")
             latest_state = pipeline_status['run_details']['state_history'][-1]
             return latest_state['state']
 
         def get_instance(access_token, domain, schema_id, model_id):
+            http = get_retry_session()
             url = f"{domain}/pi-entity-instances-service/v3.0/schemas/{schema_id}/instances/list"
             headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
             payload = {"dbType": "TIDB", "ownedOnly": True, "filter": {"model_id": model_id}}
-            response = requests.post(url, headers=headers, json=payload)
+            response = http.post(url, headers=headers, json=payload, timeout=30)
             response.raise_for_status()
+            print(f"Full response from get_instance: {response.json()}")
             return response.json()['content'][0]
 
         def update_instance_field(access_token, domain, schema_id, model_id, field, value):
+            http = get_retry_session()
             url = f"{domain}/pi-entity-instances-service/v2.0/schemas/{schema_id}/instances"
             headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
             payload = {
                 "dbType": "TIDB",
                 "conditionalFilter": {"conditions": [{"field": "model_id", "operator": "EQUAL", "value": model_id}]},
-                "partialUpdateRequests": [{"patch": [{"operation": "REPLACE", "path": field, "value": value}]}]
+                "partialUpdateRequests": [{"patch": [{"operation": "REPLACE", "path": f"{field}", "value": value}]}]
             }
-            response = requests.patch(url, headers=headers, json=payload)
+            print("cURL command for update_instance_field")
+            headers_str = " ".join([f"-H '{k}: {v}'" for k, v in headers.items()])
+            print(f"curl -X PATCH '{url}' {headers_str} -d '{json.dumps(payload)}'")    
+            response = http.patch(url, headers=headers, data=json.dumps(payload), timeout=30)
             response.raise_for_status()
+            print(f"Full response from update_instance_field: {response.json()}")
             print(f"Successfully updated field '{field}' for model_id '{model_id}'")
 
         # Core Logic
-        def trigger_and_wait_for_dqn_pipeline(config, dqn_params):
-            run_id = trigger_pipeline(config, dqn_params)
+        def trigger_and_wait_for_dqn_pipeline(config, pipeline_domain, dqn_params):
+            run_id = trigger_pipeline(config, pipeline_domain, dqn_params)
             config["run_id"] = run_id
             while True:
-                status = get_pipeline_status(config)
+                status = get_pipeline_status(config, pipeline_domain)
                 print(f"Current DQN pipeline status: {status}")
                 if status == 'SUCCEEDED':
                     print("DQN Pipeline execution completed.")
@@ -144,22 +175,27 @@ implementation:
                     raise RuntimeError(f"DQN Pipeline failed with status {status}")
                 time.sleep(60)
 
-        def model_retraining(action, model_path, data_path, config_path):
+        def model_retraining(action, model_path, data_path, config_path, tasks_path, output_model_path, previous_metrics, dqn_params):
             print(f"Starting model retraining with action: {action}")
             with open(data_path, "rb") as f: data = pickle.load(f)
             with open(config_path, 'r') as f: config = json.load(f)
+            with open(tasks_path, "rb") as f: tasks = pickle.load(f)
+            
             config.update(action)
             print(f"Updated training config: {config}")
             model_name = config.get('model_name', 'tgcn')
             model = create_model(model_name, config)
             model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
             epochs = config.get('epochs', 10)
+            
             for epoch in range(epochs):
                 loss = model.train_step(data, data.train_mask)
                 if epoch % 10 == 0: print(f"Epoch {epoch:03d} | Loss: {loss:.4f}")
-            torch.save(model.state_dict(), model_path)
+            
+            torch.save(model.state_dict(), output_model_path)
             eval_metrics = model.eval_step(data, data.test_mask)
             print(f"Retraining complete. Eval metrics: {eval_metrics}")
+            
             cleaned_metrics = {}
             for key, value in eval_metrics.items():
                 try:
@@ -192,6 +228,7 @@ implementation:
                 current_metrics = json.load(f)
  
             action_id_for_next_pierce = -1
+            pipeline_domain = "https://ig.mobiusdtaas.ai"
  
             for i in range(2):
                 print(f"--- RLAF Loop Iteration ---")
@@ -209,45 +246,58 @@ implementation:
                 
                 print(f"Dynamically generated param_json for DQN: {json.dumps(dqn_params)}")
 
-                instance = get_instance(access_token, args.domain, args.schema_id, args.model_id)
-                print(f"{instance}")
-                if instance.get('pierce2rlaf'):
-                    latest_pierce2rlaf = instance['pierce2rlaf'][-1]
-                    previous_state = latest_pierce2rlaf['current_state']
-                    episode = latest_pierce2rlaf['episode']
-                else:
-                    previous_state = {key: 0.0 for key in cleaned_metrics.keys()}
-                    episode = 0
- 
-                new_pierce2rlaf_entry = {
-                    "action_id": action_id_for_next_pierce, "previous_state": previous_state,
-                    "current_state": cleaned_metrics, "episode": episode, "timestamp": int(time.time())
-                }
-                pierce2rlaf_history = instance.get("pierce2rlaf", [])
-                pierce2rlaf_history.append(new_pierce2rlaf_entry)
-                update_instance_field(access_token, args.domain, args.schema_id, args.model_id, "pierce2rlaf", pierce2rlaf_history)
+                try:
+                    instance = get_instance(access_token, args.domain, args.schema_id, args.model_id)
+                    print(f"Got instance: {instance}")
+                    if instance.get('pierce2rlaf'):
+                        latest_pierce2rlaf = instance['pierce2rlaf'][-1]
+                        previous_state = latest_pierce2rlaf['current_state']
+                        episode = latest_pierce2rlaf['episode']
+                    else:
+                        previous_state = {key: 0.0 for key in cleaned_metrics.keys()}
+                        episode = 0
+     
+                    new_pierce2rlaf_entry = {
+                        "action_id": action_id_for_next_pierce, "previous_state": previous_state,
+                        "current_state": cleaned_metrics, "episode": episode, "timestamp": int(time.time())
+                    }
+                    pierce2rlaf_history = instance.get("pierce2rlaf", [])
+                    pierce2rlaf_history.append(new_pierce2rlaf_entry)
+                    update_instance_field(access_token, args.domain, args.schema_id, args.model_id, "pierce2rlaf", pierce2rlaf_history)
 
-                dqn_config = {
-                    "pipeline_id": args.dqn_pipeline_id, "experiment_id": args.dqn_experiment_id, "access_token": access_token
-                }
-                print(f"{dqn_config}")
-                trigger_and_wait_for_dqn_pipeline(dqn_config, dqn_params)
+                    dqn_config = {
+                        "pipeline_id": args.dqn_pipeline_id, "experiment_id": args.dqn_experiment_id, "access_token": access_token
+                    }
+                    print(f"DQN Config: {dqn_config}")
+                    trigger_and_wait_for_dqn_pipeline(dqn_config, pipeline_domain, dqn_params)
 
-                updated_instance = get_instance(access_token, args.domain, args.schema_id, args.model_id)
-                latest_rlaf2pierce = updated_instance['rlaf2pierce'][-1]
-                
-                if not latest_rlaf2pierce.get("pierce_or_not", True):
-                    print("pierce_or_not is false. Exiting loop.")
-                    break
-                print(f"{latest_rlaf2pierce}")
-                rlaf_actions = updated_instance.get('rlaf_actions', {}).get('actions', [])
-                action_id_for_next_pierce = latest_rlaf2pierce['action_id']
-                action_details = next((a for a in rlaf_actions if a["id"] == action_id_for_next_pierce), None)
-                if not action_details:
-                    raise ValueError(f"Action with ID {action_id_for_next_pierce} not found in rlaf_actions")
- 
-                print(f"DQN pipeline recommended action: {action_details['name']}. Retraining model.")
-                current_metrics = model_retraining(action_details['params'], args.trained_model, args.data_path, args.config)
+                    updated_instance = get_instance(access_token, args.domain, args.schema_id, args.model_id)
+                    latest_rlaf2pierce = updated_instance['rlaf2pierce'][-1]
+                    
+                    if not latest_rlaf2pierce.get("pierce_or_not", True):
+                        print("pierce_or_not is false. Exiting loop.")
+                        break
+                    print(f"Latest RLAF2Pierce: {latest_rlaf2pierce}")
+                    rlaf_actions = updated_instance.get('rlaf_actions', {}).get('actions', [])
+                    action_id_for_next_pierce = latest_rlaf2pierce['action_id']
+                    action_details = next((a for a in rlaf_actions if a["id"] == action_id_for_next_pierce), None)
+                    if not action_details:
+                        raise ValueError(f"Action with ID {action_id_for_next_pierce} not found in rlaf_actions")
+     
+                    print(f"DQN pipeline recommended action: {action_details['name']}. Retraining model.")
+                    current_metrics = model_retraining(
+                        action_details['params'],
+                        args.trained_model,
+                        args.data_path,
+                        args.config,
+                        args.tasks,
+                        args.retrained_model,
+                        previous_state,
+                        dqn_params
+                    )
+                except Exception as e:
+                    print(f"Error during RLAF iteration {i+1}: {str(e)}")
+                    raise
 
             os.makedirs(os.path.dirname(args.rlaf_output), exist_ok=True)
             with open(args.rlaf_output, 'w') as f:
