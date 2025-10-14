@@ -2,16 +2,16 @@ name: Upload to CDN
 description: Uploads processed VAE data files to a CDN using curl and outputs the public URLs.
 inputs:
   - {name: processed_data_pickle, type: Dataset, description: "Pickled processed VAE data from preprocessing component"}
-  - {name: config_string, type: String,  description: "Configuration string (e.g., JSON)"}
+  - {name: config_string, type: String, default: "{}", description: "Configuration string (e.g., JSON)"}
   - {name: bearer_token, type: string, description: "Bearer token for CDN authentication"}
-  - {name: domain, type: String, description: "CDN domain URL"}
-  - {name: get_cdn, type: String, description: "CDN get domain"}
+  - {name: domain, type: String, default: "https://api.example.com", description: "CDN domain URL"}
+  - {name: get_cdn, type: String, default: "https://cdn.example.com", description: "CDN get domain"}
 outputs:
   - {name: pickle_cdn_url, type: String, description: "URL to the uploaded pickle file"}
   - {name: config_cdn_url, type: String, description: "URL to the uploaded config string"}
 implementation:
   container:
-    image: nikhilv215/nesy-factory:v22
+    image: python:3.8-slim
     command:
       - sh
       - -ec
@@ -43,21 +43,53 @@ implementation:
         parser.add_argument('--get_cdn', type=str, required=True, help='CDN domain for retrieval.')
         args = parser.parse_args()
 
+        print(f"DEBUG: bearer_token path: {args.bearer_token}")
+        print(f"DEBUG: domain path: {args.domain}")
+        print(f"DEBUG: get_cdn path: {args.get_cdn}")
+
         # Read bearer token from file
-        with open(args.bearer_token, 'r') as f:
-            bearer_token = f.read().strip()
+        try:
+            with open(args.bearer_token, 'r') as f:
+                bearer_token = f.read().strip().strip('"').strip("'")
+            print(f"DEBUG: bearer_token value: '{bearer_token}'")
+        except Exception as e:
+            print(f"ERROR reading bearer_token: {e}")
+            raise e
         
         # Read domain from file
-        with open(args.domain, 'r') as f:
-            domain = f.read().strip()
+        try:
+            with open(args.domain, 'r') as f:
+                domain = f.read().strip().strip('"').strip("'")
+            print(f"DEBUG: domain value: '{domain}'")
+        except Exception as e:
+            print(f"ERROR reading domain: {e}")
+            raise e
         
         # Read get_cdn from file
-        with open(args.get_cdn, 'r') as f:
-            get_cdn = f.read().strip()
+        try:
+            with open(args.get_cdn, 'r') as f:
+                get_cdn = f.read().strip().strip('"').strip("'")
+            print(f"DEBUG: get_cdn value: '{get_cdn}'")
+        except Exception as e:
+            print(f"ERROR reading get_cdn: {e}")
+            raise e
+        
+        # Validate URLs
+        if not domain.startswith(('http://', 'https://')):
+            print(f"WARNING: domain doesn't start with http/https: '{domain}'")
+            domain = f"https://{domain}" if not domain.startswith('//') else f"https:{domain}"
+            print(f"DEBUG: corrected domain: '{domain}'")
+        
+        if not get_cdn.startswith(('http://', 'https://')):
+            print(f"WARNING: get_cdn doesn't start with http/https: '{get_cdn}'")
+            get_cdn = f"https://{get_cdn}" if not get_cdn.startswith('//') else f"https:{get_cdn}"
+            print(f"DEBUG: corrected get_cdn: '{get_cdn}'")
         
         upload_url = f"{domain}/mobius-content-service/v1.0/content/upload?filePathAccess=private&filePath=%2Fvae%2Fprocessed%2Fdata%2F"
+        print(f"DEBUG: upload_url: '{upload_url}'")
 
         def upload_file_to_cdn(file_path, output_cdn_url_path, filename_prefix):
+            # Upload file to CDN and save the URL to output path
             # Generate unique filename for CDN
             original_filename = os.path.basename(file_path)
             file_extension = os.path.splitext(original_filename)[1]
@@ -98,9 +130,14 @@ implementation:
                     print(f"CDN URL: {cdn_url}")
                     
                     # Save CDN URL to output file
-                    os.makedirs(os.path.dirname(output_cdn_url_path) or '.', exist_ok=True)
+                    output_dir = os.path.dirname(output_cdn_url_path)
+                    if output_dir:
+                        os.makedirs(output_dir, exist_ok=True)
+                        print(f"DEBUG: Created output directory: {output_dir}")
+                    
                     with open(output_cdn_url_path, 'w') as f:
                         f.write(cdn_url)
+                    print(f"DEBUG: Saved CDN URL to: {output_cdn_url_path}")
                     
                     return cdn_url
                 else:
@@ -111,10 +148,14 @@ implementation:
                 print(f"Error uploading file: {e}")
                 # Create a fallback local file URL
                 fallback_url = f"file://{os.path.abspath(file_path)}"
-                os.makedirs(os.path.dirname(output_cdn_url_path) or '.', exist_ok=True)
+                output_dir = os.path.dirname(output_cdn_url_path)
+                if output_dir:
+                    os.makedirs(output_dir, exist_ok=True)
+                    print(f"DEBUG: Created fallback output directory: {output_dir}")
+                
                 with open(output_cdn_url_path, 'w') as f:
                     f.write(fallback_url)
-                print(f"Fallback URL saved: {fallback_url}")
+                print(f"Fallback URL saved to: {output_cdn_url_path}")
                 return fallback_url
 
         print("=== VAE CDN UPLOAD STARTING ===")
@@ -163,13 +204,13 @@ implementation:
       - --processed_data_pickle
       - {inputPath: processed_data_pickle}
       - --config_string
-      - {inputValue: config_string}
+      - {inputPath: config_string}
       - --bearer_token
       - {inputPath: bearer_token}
-      - --get_cdn
-      - {inputValue: get_cdn}
       - --domain
-      - {inputValue: domain}
+      - {inputPath: domain}
+      - --get_cdn
+      - {inputPath: get_cdn}
       - --pickle_cdn_url
       - {outputPath: pickle_cdn_url}
       - --config_cdn_url
