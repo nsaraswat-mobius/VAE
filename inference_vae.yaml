@@ -370,7 +370,7 @@ implementation:
       - --trained_model
       - {inputPath: trained_model}
       - --model_config
-      - {inputPath: model_config}
+      - {inputValue: model_config}
       - --test_data
       - {inputPath: test_data}
       - --inference_type
