@@ -6,7 +6,7 @@ inputs:
     description: Path to trained VAE model weights
   - name: model_config
     type: String
-    description: Path to VAE model configuration JSON file
+    description: VAE model configuration JSON string
   - name: test_data
     type: Data
     description: Path to test dataset for inference
@@ -165,8 +165,11 @@ implementation:
         print(f"Using device: {device}")
 
         # Load model configuration
-        with open(args.model_config, "r", encoding="utf-8") as f:
-            config = json.load(f)
+        try:
+            config = json.loads(args.model_config)
+        except json.JSONDecodeError:
+            with open(args.model_config, "r", encoding="utf-8") as f:
+                config = json.load(f)
         
         print(f"Model config loaded: {config}")
 
@@ -367,7 +370,7 @@ implementation:
       - --trained_model
       - {inputPath: trained_model}
       - --model_config
-      - {inputValue: model_config}
+      - {inputPath: model_config}
       - --test_data
       - {inputPath: test_data}
       - --inference_type
