@@ -1,45 +1,45 @@
-name: Run VAE Inference with Reconstruction Scoring
-description: Loads trained VAE model, performs encoding/decoding for input data, and calculates reconstruction metrics
+name: VAE Inference with Reconstruction Scoring
+description: Loads trained VAE model, performs encoding/decoding for input data, and calculates reconstruction metrics.
 inputs:
   - name: trained_model
     type: Model
-    description: Path to trained VAE model weights
+    description: Path to trained VAE model weights.
   - name: model_config
     type: String
-    description: VAE model configuration JSON string
+    description: VAE model configuration JSON string.
   - name: test_data
     type: Dataset
-    description: Path to test dataset for inference
+    description: Path to test dataset for inference.
   - name: inference_type
     type: String
     default: "reconstruction"
-    description: Type of inference - reconstruction, generation, or encoding
+    description: Type of inference (reconstruction, generation, or encoding).
   - name: num_samples
     type: Integer
     default: "100"
-    description: Number of samples to process for inference
+    description: Number of samples to process for inference.
   - name: batch_size
     type: Integer
     default: "32"
-    description: Batch size for inference processing
+    description: Batch size for inference processing.
   - name: latent_dim
     type: Integer
     default: "64"
-    description: Latent dimension size of the VAE model
+    description: Latent dimension size of the VAE model.
   - name: generate_samples
     type: Integer
     default: "10"
-    description: Number of new samples to generate (for generation mode)
+    description: Number of new samples to generate (for generation mode).
 outputs:
   - name: inference_results
     type: Data
-    description: JSON file with inference results and reconstruction metrics
+    description: JSON file with inference results and reconstruction metrics.
   - name: reconstructed_data
     type: Data
-    description: Reconstructed data outputs from VAE decoder
+    description: Reconstructed data outputs from VAE decoder.
   - name: latent_representations
     type: Data
-    description: Encoded latent space representations
+    description: Encoded latent space representations.
 implementation:
   container:
     image: nikhilv215/nesy-factory:v22
@@ -75,32 +75,18 @@ implementation:
                 return self.data[idx], self.labels[idx]
 
         def calculate_reconstruction_metrics(original, reconstructed):
-            # Calculate various reconstruction quality metrics
-            # Flatten arrays for metric calculation
             original_flat = original.flatten()
             reconstructed_flat = reconstructed.flatten()
-            
-            # MSE (Mean Squared Error)
             mse = mean_squared_error(original_flat, reconstructed_flat)
-            
-            # MAE (Mean Absolute Error) 
             mae = mean_absolute_error(original_flat, reconstructed_flat)
-            
-            # RMSE (Root Mean Squared Error)
             rmse = np.sqrt(mse)
-            
-            # PSNR (Peak Signal-to-Noise Ratio)
             if mse > 0:
                 max_pixel = np.max(original_flat)
                 psnr = 20 * np.log10(max_pixel / np.sqrt(mse))
             else:
                 psnr = float('inf')
-            
-            # Structural Similarity (simplified)
             correlation = np.corrcoef(original_flat, reconstructed_flat)[0, 1]
-            if np.isnan(correlation):
-                correlation = 0.0
-                
+            if np.isnan(correlation): correlation = 0.0
             return {
                 'mse': float(mse),
                 'mae': float(mae), 
@@ -110,7 +96,6 @@ implementation:
             }
 
         def vae_encode(model, x, device):
-            # Encode input data to latent space
             model.eval()
             with torch.no_grad():
                 x = x.to(device)
@@ -118,7 +103,6 @@ implementation:
                     mu, logvar = model.encode(x)
                     return mu, logvar
                 else:
-                    # For models without explicit encode method
                     output = model(x)
                     if isinstance(output, tuple) and len(output) >= 3:
                         _, mu, logvar = output
@@ -127,7 +111,6 @@ implementation:
                         raise ValueError("Model doesn't support encoding operation")
 
         def vae_decode(model, z, device):
-            # Decode latent representations to reconstructed data
             model.eval()
             with torch.no_grad():
                 z = z.to(device)
@@ -137,22 +120,19 @@ implementation:
                     raise ValueError("Model doesn't support decoding operation")
 
         def vae_reconstruct(model, x, device):
-            # Full VAE forward pass for reconstruction
             model.eval()
             with torch.no_grad():
                 x = x.to(device)
                 output = model(x)
                 if isinstance(output, tuple):
-                    reconstructed = output[0]  # First element is usually reconstruction
+                    reconstructed = output[0]
                     return reconstructed
                 else:
                     return output
 
         def generate_new_samples(model, num_samples, latent_dim, device):
-            # Generate new samples by sampling from latent space
             model.eval()
             with torch.no_grad():
-                # Sample from standard normal distribution
                 z = torch.randn(num_samples, latent_dim).to(device)
                 generated = vae_decode(model, z, device)
                 return generated
@@ -181,15 +161,11 @@ implementation:
 
         # Load model configuration
         print(f"Raw model_config: {args.model_config}")
-        
-        # args.model_config is always a string from command line
         try:
-            # Try parsing as JSON string first
             config = json.loads(args.model_config)
             print(f"Successfully parsed config from JSON string: {config}")
         except (json.JSONDecodeError, ValueError) as e:
             print(f"Failed to parse as JSON string: {e}")
-            # Try loading as file path
             try:
                 if os.path.exists(args.model_config):
                     with open(args.model_config, "r", encoding="utf-8") as f:
@@ -201,18 +177,14 @@ implementation:
             except Exception as file_error:
                 print(f"Failed to load config file: {file_error}, using default config")
                 config = {}
-        
-        # Ensure config is a dictionary
         if not isinstance(config, dict):
             print(f"Warning: config is not a dict (type: {type(config)}), using empty dict")
             config = {}
-        
         print(f"Final config: {config}")
 
         # Load test data
         with open(args.test_data, "rb") as f:
             test_data = pickle.load(f)
-        
         print(f"Test data type: {type(test_data)}")
         
         # Handle different data formats
@@ -233,31 +205,22 @@ implementation:
             print(f"Test data is torch tensor with shape: {test_data.shape}")
         else:
             raise ValueError(f"Unsupported test data type: {type(test_data)}")
-        
         print(f"Final test tensor shape: {test_tensor.shape}")
 
-        # Define VAE model class (matching the trained model architecture)
+        # Define VAE model class
         class VAE(nn.Module):
             def __init__(self, input_dim, hidden_dim, latent_dim):
                 super(VAE, self).__init__()
-                
-                # Encoder
                 self.encoder = nn.Sequential(
                     nn.Linear(input_dim, hidden_dim),
                     nn.ReLU(),
                     nn.Linear(hidden_dim, hidden_dim // 2),
                     nn.ReLU()
                 )
-                
-                # Latent space - use mu_layer and logvar_layer to match trained model
                 self.mu_layer = nn.Linear(hidden_dim // 2, latent_dim)
                 self.logvar_layer = nn.Linear(hidden_dim // 2, latent_dim)
-                
-                # Also create aliases for compatibility
                 self.fc_mu = self.mu_layer
                 self.fc_logvar = self.logvar_layer
-                
-                # Decoder
                 self.decoder = nn.Sequential(
                     nn.Linear(latent_dim, hidden_dim // 2),
                     nn.ReLU(),
@@ -287,46 +250,33 @@ implementation:
                 recon_x = self.decode(z)
                 return recon_x, mu, logvar
 
-        # Load trained weights first to inspect architecture
+        # Load trained weights and infer dimensions
         state_dict = torch.load(args.trained_model, map_location=torch_device)
-        
-        # Infer dimensions from state_dict if config is empty
         if not config or 'input_dim' not in config:
             print("Config is empty or missing dimensions, inferring from state_dict...")
-            # Get dimensions from the state dict
             encoder_weight_shape = state_dict['encoder.0.weight'].shape
-            hidden_dim = encoder_weight_shape[0]  # Output dim of first encoder layer
-            input_dim = encoder_weight_shape[1]   # Input dim
-            
-            # Get latent dim from mu_layer or fc_mu
+            hidden_dim = encoder_weight_shape[0]
+            input_dim = encoder_weight_shape[1]
             if 'mu_layer.weight' in state_dict:
                 latent_dim = state_dict['mu_layer.weight'].shape[0]
             elif 'fc_mu.weight' in state_dict:
                 latent_dim = state_dict['fc_mu.weight'].shape[0]
             else:
                 latent_dim = args.latent_dim
-            
             print(f"Inferred dimensions - input_dim: {input_dim}, hidden_dim: {hidden_dim}, latent_dim: {latent_dim}")
         else:
-            # Use config values
             input_dim = config.get('input_dim', 784)
             hidden_dim = config.get('hidden_dim', 256)
             latent_dim = config.get('latent_dim', args.latent_dim)
             print(f"Using config dimensions - input_dim: {input_dim}, hidden_dim: {hidden_dim}, latent_dim: {latent_dim}")
         
-        # Create model with correct dimensions
+        # Create and load model
         model = VAE(input_dim, hidden_dim, latent_dim)
-        
-        # Load the state dict with strict=False to ignore alias mismatches
         missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
-        if missing_keys:
-            print(f"Missing keys (ignored): {missing_keys}")
-        if unexpected_keys:
-            print(f"Unexpected keys (ignored): {unexpected_keys}")
-        
+        if missing_keys: print(f"Missing keys (ignored): {missing_keys}")
+        if unexpected_keys: print(f"Unexpected keys (ignored): {unexpected_keys}")
         model = model.to(torch_device)
         model.eval()
-
         print(f"Model loaded successfully and moved to {device}")
 
         # Limit samples if specified
@@ -340,28 +290,18 @@ implementation:
         all_latent_mu = []
         all_latent_logvar = []
         loss_metrics = []
-
         print(f"Starting {args.inference_type} inference on {len(test_tensor)} samples")
 
         # Process data in batches
         for i in range(0, len(test_tensor), args.batch_size):
             batch = test_tensor[i:i+args.batch_size]
-            
             if args.inference_type == "reconstruction":
-                # Full reconstruction
                 reconstructed = vae_reconstruct(model, batch, torch_device)
-                
-                # Calculate metrics for each sample in batch
                 for j in range(len(batch)):
                     original = batch[j].cpu().numpy()
                     recon = reconstructed[j].cpu().numpy()
-                    
-                    # Store ground truth and reconstructed
                     all_ground_truth.append(original)
-                    
                     metrics = calculate_reconstruction_metrics(original, recon)
-                    
-                    # Store only loss metrics without sample_id
                     loss_metrics.append({
                         "mse": metrics['mse'],
                         "mae": metrics['mae'], 
@@ -369,21 +309,14 @@ implementation:
                         "psnr": metrics['psnr'],
                         "correlation": metrics['correlation']
                     })
-                
                 all_reconstructed.extend(reconstructed.cpu().numpy())
-                
-                # Also get latent representations
                 mu, logvar = vae_encode(model, batch, torch_device)
                 all_latent_mu.extend(mu.cpu().numpy())
                 all_latent_logvar.extend(logvar.cpu().numpy())
-                
             elif args.inference_type == "encoding":
-                # Just encoding to latent space
                 mu, logvar = vae_encode(model, batch, torch_device)
-                
                 all_latent_mu.extend(mu.cpu().numpy())
                 all_latent_logvar.extend(logvar.cpu().numpy())
-            
             print(f"Processed batch {i//args.batch_size + 1}/{(len(test_tensor)-1)//args.batch_size + 1}")
 
         # Generate new samples if requested
@@ -392,38 +325,34 @@ implementation:
             generated_samples = generate_new_samples(model, args.generate_samples, latent_dim, torch_device)
             all_reconstructed.extend(generated_samples.cpu().numpy())
 
-        # Create final output structure
+        # Debug information
+        print(f"Collected {len(all_ground_truth)} ground truth samples")
+        print(f"Collected {len(all_reconstructed)} reconstructed samples")
+        print(f"Collected {len(loss_metrics)} loss metrics")
+        
+        # Create output structure matching GNN inference format
         output_data = {
-            "ground_truth": np.array(all_ground_truth).tolist() if all_ground_truth else [],
-            "reconstructed": np.array(all_reconstructed).tolist() if all_reconstructed else [],
-            "loss_function": {
-                "per_sample_losses": loss_metrics,
-                "summary": {
-                    "average_mse": float(np.mean([m['mse'] for m in loss_metrics])) if loss_metrics else 0.0,
-                    "average_mae": float(np.mean([m['mae'] for m in loss_metrics])) if loss_metrics else 0.0,
-                    "average_psnr": float(np.mean([m['psnr'] for m in loss_metrics if m['psnr'] != float('inf')])) if loss_metrics else 0.0,
-                    "total_samples": len(loss_metrics)
-                }
+            "inference": {
+                "true_value": np.array(all_ground_truth).tolist() if all_ground_truth else [],
+                "predicted_value": np.array(all_reconstructed).tolist() if all_reconstructed else []
             }
         }
+        
+        print(f"Final output structure keys: {list(output_data.keys())}")
+        print(f"Inference keys: {list(output_data['inference'].keys())}")
 
         # Save results
         with open(args.inference_results, "w", encoding="utf-8") as f:
             json.dump(output_data, f, indent=2, ensure_ascii=False)
-
-        # Save reconstructed data
         if all_reconstructed:
             with open(args.reconstructed_data, "wb") as f:
                 pickle.dump(np.array(all_reconstructed), f)
-
-        # Save latent representations
         latent_data = {
             "mu": np.array(all_latent_mu) if all_latent_mu else None,
             "logvar": np.array(all_latent_logvar) if all_latent_logvar else None
         }
         with open(args.latent_representations, "wb") as f:
             pickle.dump(latent_data, f)
-
         print(f"Inference completed. Results saved to {args.inference_results}")
         print(f"Reconstructed data saved to {args.reconstructed_data}")
         print(f"Latent representations saved to {args.latent_representations}")
