@@ -285,11 +285,8 @@ implementation:
             print(f"Limited to {args.num_samples} samples")
 
         results = []
-        all_reconstructed = []
-        all_ground_truth = []
         all_latent_mu = []
         all_latent_logvar = []
-        loss_metrics = []
         print(f"Starting {args.inference_type} inference on {len(test_tensor)} samples")
 
         # Process data in batches
@@ -300,16 +297,22 @@ implementation:
                 for j in range(len(batch)):
                     original = batch[j].cpu().numpy()
                     recon = reconstructed[j].cpu().numpy()
-                    all_ground_truth.append(original)
                     metrics = calculate_reconstruction_metrics(original, recon)
-                    loss_metrics.append({
-                        "mse": metrics['mse'],
-                        "mae": metrics['mae'], 
-                        "rmse": metrics['rmse'],
-                        "psnr": metrics['psnr'],
-                        "correlation": metrics['correlation']
-                    })
-                all_reconstructed.extend(reconstructed.cpu().numpy())
+                    
+                    # Create individual sample result
+                    sample_result = {
+                        "ground_truth": original.tolist(),
+                        "expected_truth": recon.tolist(),
+                        "loss_function": {
+                            "mse": metrics['mse'],
+                            "mae": metrics['mae'], 
+                            "rmse": metrics['rmse'],
+                            "psnr": metrics['psnr'],
+                            "correlation": metrics['correlation']
+                        }
+                    }
+                    results.append(sample_result)
+                
                 mu, logvar = vae_encode(model, batch, torch_device)
                 all_latent_mu.extend(mu.cpu().numpy())
                 all_latent_logvar.extend(logvar.cpu().numpy())
@@ -323,30 +326,26 @@ implementation:
         if args.inference_type == "generation" or args.generate_samples > 0:
             print(f"Generating {args.generate_samples} new samples with latent_dim={latent_dim}")
             generated_samples = generate_new_samples(model, args.generate_samples, latent_dim, torch_device)
-            all_reconstructed.extend(generated_samples.cpu().numpy())
+            for sample in generated_samples.cpu().numpy():
+                sample_result = {
+                    "ground_truth": [],  # No ground truth for generated samples
+                    "expected_truth": sample.tolist(),
+                    "loss_function": {}  # No loss function for generated samples
+                }
+                results.append(sample_result)
 
-        # Debug information
-        print(f"Collected {len(all_ground_truth)} ground truth samples")
-        print(f"Collected {len(all_reconstructed)} reconstructed samples")
-        print(f"Collected {len(loss_metrics)} loss metrics")
-        
-        # Create output structure matching GNN inference format
-        output_data = {
-            "inference": {
-                "true_value": np.array(all_ground_truth).tolist() if all_ground_truth else [],
-                "predicted_value": np.array(all_reconstructed).tolist() if all_reconstructed else []
-            }
-        }
-        
-        print(f"Final output structure keys: {list(output_data.keys())}")
-        print(f"Inference keys: {list(output_data['inference'].keys())}")
+        # Output data is now an array of individual sample results
+        output_data = results
 
         # Save results
         with open(args.inference_results, "w", encoding="utf-8") as f:
             json.dump(output_data, f, indent=2, ensure_ascii=False)
-        if all_reconstructed:
+        
+        # Extract reconstructed data for separate saving
+        reconstructed_data = [sample.get("expected_truth", []) for sample in results if sample.get("expected_truth")]
+        if reconstructed_data:
             with open(args.reconstructed_data, "wb") as f:
-                pickle.dump(np.array(all_reconstructed), f)
+                pickle.dump(np.array(reconstructed_data), f)
         latent_data = {
             "mu": np.array(all_latent_mu) if all_latent_mu else None,
             "logvar": np.array(all_latent_logvar) if all_latent_logvar else None
