@@ -5,7 +5,7 @@ inputs:
     type: Model
     description: Path to trained VAE model weights
   - name: model_config
-    type: Data
+    type: String
     description: Path to VAE model configuration JSON file
   - name: test_data
     type: Data
@@ -367,7 +367,7 @@ implementation:
       - --trained_model
       - {inputPath: trained_model}
       - --model_config
-      - {inputPath: model_config}
+      - {inputValue: model_config}
       - --test_data
       - {inputPath: test_data}
       - --inference_type
