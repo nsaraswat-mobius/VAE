@@ -8,7 +8,7 @@ inputs:
     type: String
     description: VAE model configuration JSON string
   - name: test_data
-    type: Dataset
+    type: Data
     description: Path to test dataset for inference
   - name: inference_type
     type: String
@@ -58,6 +58,21 @@ implementation:
         from sklearn.metrics import mean_squared_error, mean_absolute_error
         import torch.nn.functional as F
         import torch.nn as nn
+        from torch.utils.data import DataLoader, Dataset
+
+        # Define ProcessedVAEDataset class for unpickling
+        class ProcessedVAEDataset(Dataset):
+            def __init__(self, data, labels, vae_type='standard'):
+                self.data = data
+                self.labels = labels
+                self.vae_type = vae_type
+                self.class_mapping = {}
+            
+            def __len__(self):
+                return len(self.data)
+            
+            def __getitem__(self, idx):
+                return self.data[idx], self.labels[idx]
 
         def calculate_reconstruction_metrics(original, reconstructed):
             # Calculate various reconstruction quality metrics
