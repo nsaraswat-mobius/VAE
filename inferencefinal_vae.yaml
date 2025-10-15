@@ -336,8 +336,10 @@ implementation:
 
         results = []
         all_reconstructed = []
+        all_ground_truth = []
         all_latent_mu = []
         all_latent_logvar = []
+        loss_metrics = []
 
         print(f"Starting {args.inference_type} inference on {len(test_tensor)} samples")
 
@@ -354,18 +356,19 @@ implementation:
                     original = batch[j].cpu().numpy()
                     recon = reconstructed[j].cpu().numpy()
                     
+                    # Store ground truth and reconstructed
+                    all_ground_truth.append(original)
+                    
                     metrics = calculate_reconstruction_metrics(original, recon)
                     
-                    result = {
-                        "sample_id": i + j,
-                        "inference_type": "reconstruction",
-                        "reconstruction_mse": metrics['mse'],
-                        "reconstruction_mae": metrics['mae'], 
-                        "reconstruction_rmse": metrics['rmse'],
-                        "reconstruction_psnr": metrics['psnr'],
-                        "reconstruction_correlation": metrics['correlation']
-                    }
-                    results.append(result)
+                    # Store only loss metrics without sample_id
+                    loss_metrics.append({
+                        "mse": metrics['mse'],
+                        "mae": metrics['mae'], 
+                        "rmse": metrics['rmse'],
+                        "psnr": metrics['psnr'],
+                        "correlation": metrics['correlation']
+                    })
                 
                 all_reconstructed.extend(reconstructed.cpu().numpy())
                 
@@ -378,17 +381,6 @@ implementation:
                 # Just encoding to latent space
                 mu, logvar = vae_encode(model, batch, torch_device)
                 
-                for j in range(len(batch)):
-                    result = {
-                        "sample_id": i + j,
-                        "inference_type": "encoding",
-                        "latent_mu_mean": float(mu[j].mean().cpu()),
-                        "latent_mu_std": float(mu[j].std().cpu()),
-                        "latent_logvar_mean": float(logvar[j].mean().cpu()),
-                        "latent_logvar_std": float(logvar[j].std().cpu())
-                    }
-                    results.append(result)
-                
                 all_latent_mu.extend(mu.cpu().numpy())
                 all_latent_logvar.extend(logvar.cpu().numpy())
             
@@ -398,39 +390,26 @@ implementation:
         if args.inference_type == "generation" or args.generate_samples > 0:
             print(f"Generating {args.generate_samples} new samples with latent_dim={latent_dim}")
             generated_samples = generate_new_samples(model, args.generate_samples, latent_dim, torch_device)
-            
-            for i in range(args.generate_samples):
-                result = {
-                    "sample_id": f"generated_{i}",
-                    "inference_type": "generation",
-                    "generated_sample_mean": float(generated_samples[i].mean().cpu()),
-                    "generated_sample_std": float(generated_samples[i].std().cpu())
-                }
-                results.append(result)
-            
             all_reconstructed.extend(generated_samples.cpu().numpy())
 
-        # Calculate overall statistics
-        if results:
-            if args.inference_type == "reconstruction":
-                avg_mse = np.mean([r['reconstruction_mse'] for r in results if 'reconstruction_mse' in r])
-                avg_mae = np.mean([r['reconstruction_mae'] for r in results if 'reconstruction_mae' in r])
-                avg_psnr = np.mean([r['reconstruction_psnr'] for r in results if 'reconstruction_psnr' in r and r['reconstruction_psnr'] != float('inf')])
-                
-                summary = {
-                    "inference_summary": {
-                        "total_samples": len([r for r in results if 'reconstruction_mse' in r]),
-                        "average_mse": float(avg_mse),
-                        "average_mae": float(avg_mae),
-                        "average_psnr": float(avg_psnr),
-                        "inference_type": args.inference_type
-                    }
+        # Create final output structure
+        output_data = {
+            "ground_truth": np.array(all_ground_truth).tolist() if all_ground_truth else [],
+            "reconstructed": np.array(all_reconstructed).tolist() if all_reconstructed else [],
+            "loss_function": {
+                "per_sample_losses": loss_metrics,
+                "summary": {
+                    "average_mse": float(np.mean([m['mse'] for m in loss_metrics])) if loss_metrics else 0.0,
+                    "average_mae": float(np.mean([m['mae'] for m in loss_metrics])) if loss_metrics else 0.0,
+                    "average_psnr": float(np.mean([m['psnr'] for m in loss_metrics if m['psnr'] != float('inf')])) if loss_metrics else 0.0,
+                    "total_samples": len(loss_metrics)
                 }
-                results.append(summary)
+            }
+        }
 
         # Save results
         with open(args.inference_results, "w", encoding="utf-8") as f:
-            json.dump(results, f, indent=2, ensure_ascii=False)
+            json.dump(output_data, f, indent=2, ensure_ascii=False)
 
         # Save reconstructed data
         if all_reconstructed:
