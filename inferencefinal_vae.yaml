@@ -396,8 +396,8 @@ implementation:
 
         # Generate new samples if requested
         if args.inference_type == "generation" or args.generate_samples > 0:
-            print(f"Generating {args.generate_samples} new samples")
-            generated_samples = generate_new_samples(model, args.generate_samples, args.latent_dim, torch_device)
+            print(f"Generating {args.generate_samples} new samples with latent_dim={latent_dim}")
+            generated_samples = generate_new_samples(model, args.generate_samples, latent_dim, torch_device)
             
             for i in range(args.generate_samples):
                 result = {
