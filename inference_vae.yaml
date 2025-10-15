@@ -6,7 +6,7 @@ inputs:
     type: Dataset
     description: "Full dataset including test data"
   - name: model_weights
-    type: Model
+    type: Dataset
     description: "Trained VAE model weights for inference"
   - name: config_json
     type: String
@@ -161,10 +161,10 @@ implementation:
 
     args:
       - --dataset
-      - inputPath: dataset
+      - {inputPath: dataset}
       - --model_weights
-      - inputPath: model_weights
+      - {inputPath: model_weights}
       - --config_json
-      - inputValue: config_json
+      - {inputValue: config_json}
       - --inference_result
-      - outputPath: inference_result
+      - {outputPath: inference_result}
