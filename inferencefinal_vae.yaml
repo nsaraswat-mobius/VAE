@@ -8,7 +8,7 @@ inputs:
     type: String
     description: VAE model configuration JSON string
   - name: test_data
-    type: Data
+    type: Dataset
     description: Path to test dataset for inference
   - name: inference_type
     type: String
@@ -180,30 +180,34 @@ implementation:
         print(f"Using device: {device}")
 
         # Load model configuration
-        print(f"Raw model_config: {args.model_config}, type: {type(args.model_config)}")
+        print(f"Raw model_config: {args.model_config}")
         
-        if isinstance(args.model_config, str):
+        # args.model_config is always a string from command line
+        try:
+            # Try parsing as JSON string first
+            config = json.loads(args.model_config)
+            print(f"Successfully parsed config from JSON string: {config}")
+        except (json.JSONDecodeError, ValueError) as e:
+            print(f"Failed to parse as JSON string: {e}")
+            # Try loading as file path
             try:
-                # Try parsing as JSON string
-                config = json.loads(args.model_config)
-                print(f"Parsed config from JSON string: {config}")
-            except (json.JSONDecodeError, ValueError) as e:
-                print(f"Failed to parse as JSON: {e}")
-                # Try as file path
-                try:
+                if os.path.exists(args.model_config):
                     with open(args.model_config, "r", encoding="utf-8") as f:
                         config = json.load(f)
-                    print(f"Loaded config from file: {config}")
-                except FileNotFoundError:
-                    # If it's neither valid JSON nor a file, use defaults
-                    print(f"Using default config values")
+                    print(f"Successfully loaded config from file: {config}")
+                else:
+                    print(f"File not found: {args.model_config}, using default config")
                     config = {}
-        elif isinstance(args.model_config, dict):
-            config = args.model_config
-        else:
+            except Exception as file_error:
+                print(f"Failed to load config file: {file_error}, using default config")
+                config = {}
+        
+        # Ensure config is a dictionary
+        if not isinstance(config, dict):
+            print(f"Warning: config is not a dict (type: {type(config)}), using empty dict")
             config = {}
         
-        print(f"Final config: {config}, type: {type(config)}")
+        print(f"Final config: {config}")
 
         # Load test data
         with open(args.test_data, "rb") as f:
