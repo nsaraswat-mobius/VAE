@@ -317,8 +317,13 @@ implementation:
         # Create model with correct dimensions
         model = VAE(input_dim, hidden_dim, latent_dim)
         
-        # Load the state dict
-        model.load_state_dict(state_dict)
+        # Load the state dict with strict=False to ignore alias mismatches
+        missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
+        if missing_keys:
+            print(f"Missing keys (ignored): {missing_keys}")
+        if unexpected_keys:
+            print(f"Unexpected keys (ignored): {unexpected_keys}")
+        
         model = model.to(torch_device)
         model.eval()
 
