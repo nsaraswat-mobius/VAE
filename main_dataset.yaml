@@ -70,7 +70,7 @@ implementation:
             read=3,                 # Read retries
             redirect=3              # Redirect retries
         )
-        adapter = HTTPAdapter(max_retries=retries, socket_options=[(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)])
+        adapter = HTTPAdapter(max_retries=retries)
         session.mount("http://", adapter)
         session.mount("https://", adapter)
 
