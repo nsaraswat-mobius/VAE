@@ -190,6 +190,20 @@ implementation:
         print("Loading trained VAE model...")
         vae_type = config.get('vae_type', 'standard_vae')
         
+        # First load the state dict to infer the actual dimensions
+        print(f"Loading state dict from {args.trained_model}")
+        state_dict = torch.load(args.trained_model, map_location=torch.device('cpu'))
+        
+        # Infer input_dim from the saved model weights
+        if 'encoder.0.weight' in state_dict:
+            actual_input_dim = state_dict['encoder.0.weight'].shape[1]
+            print(f"Inferred input_dim from saved weights: {actual_input_dim}")
+            # Update config with actual input_dim
+            config['input_dim'] = actual_input_dim
+        else:
+            actual_input_dim = config.get('input_dim', 784)
+            print(f"Could not infer input_dim, using config value: {actual_input_dim}")
+        
         # Try to create model using the same factory function as training
         try:
             model = create_vae_model(vae_type, config)
@@ -253,15 +267,14 @@ implementation:
                     }
             
             model = StandardVAE(
-                config.get('input_dim', 784),
+                actual_input_dim,
                 config.get('hidden_dim', 512),
                 config.get('latent_dim', 128)
             )
-            print("Created fallback StandardVAE model")
+            print(f"Created fallback StandardVAE model with input_dim={actual_input_dim}")
         
         # Load the trained weights
         try:
-            state_dict = torch.load(args.trained_model, map_location=torch.device('cpu'))
             model.load_state_dict(state_dict, strict=True)
             print(f"Successfully loaded {vae_type} model weights with strict=True")
         except Exception as e:
