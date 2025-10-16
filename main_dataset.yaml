@@ -7,7 +7,7 @@ outputs:
   - {name: json_data, type: Dataset}
 implementation:
   container:
-    image: python:3.9
+    image: nikhilv215/nesy-factory:v22
     command:
       - sh
       - -c
@@ -24,6 +24,7 @@ implementation:
         import os
         import requests
         import pickle
+        import socket
         from requests.adapters import HTTPAdapter
         from urllib3.util.retry import Retry
         import logging
@@ -37,6 +38,23 @@ implementation:
         with open(args.token, 'r') as f:
             access_token = f.read().strip()
         
+        print(f"Token loaded successfully (length: {len(access_token)} characters)")
+        print(f"API URL: {args.api_url}")
+        
+        # Test basic connectivity first
+        import urllib.parse
+        parsed_url = urllib.parse.urlparse(args.api_url)
+        domain = parsed_url.netloc
+        print(f"Testing connectivity to domain: {domain}")
+        
+        try:
+            import socket
+            socket.setdefaulttimeout(10)
+            result = socket.getaddrinfo(domain, 443)
+            print(f"DNS resolution successful: {result[0][4][0]}")
+        except Exception as e:
+            print(f"DNS resolution failed: {e}")
+        
         # Setup retry logger
         logging.basicConfig(level=logging.INFO)
         logger = logging.getLogger("api_retry")
@@ -44,12 +62,15 @@ implementation:
         # Setup session with retry logic
         session = requests.Session()
         retries = Retry(
-            total=5,                # total retries
-            backoff_factor=1,       # wait 1s, 2s, 4s
-            status_forcelist=[500, 502, 503, 504],
-            allowed_methods=["POST"]
+            total=3,                # Reduce total retries
+            backoff_factor=2,       # wait 2s, 4s, 8s
+            status_forcelist=[500, 502, 503, 504, 429],
+            allowed_methods=["POST"],
+            connect=3,              # Connection retries
+            read=3,                 # Read retries
+            redirect=3              # Redirect retries
         )
-        adapter = HTTPAdapter(max_retries=retries)
+        adapter = HTTPAdapter(max_retries=retries, socket_options=[(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)])
         session.mount("http://", adapter)
         session.mount("https://", adapter)
 
@@ -72,10 +93,30 @@ implementation:
         try:
             logger.info("Sending request to API with retries enabled")
             print(f"Fetching failure signature data from: {args.api_url}")
-            resp = session.post(args.api_url, headers=headers, json=payload, timeout=30)
+            print(f"Using token: {access_token[:20]}..." if len(access_token) > 20 else f"Using token: {access_token}")
+            
+            resp = session.post(args.api_url, headers=headers, json=payload, timeout=45)
             resp.raise_for_status()
             data = resp.json()
             print(f"Successfully fetched data. Response status: {resp.status_code}")
+            print(f"Response size: {len(resp.content)} bytes")
+            
+        except requests.exceptions.ConnectTimeout as e:
+            logger.error(f"Connection timeout: {e}")
+            print(f"Connection timeout - the server at {domain} is not responding")
+            print("This might be due to:")
+            print("1. Network firewall blocking outbound connections")
+            print("2. Server is down or unreachable")
+            print("3. DNS resolution issues")
+            raise
+        except requests.exceptions.ConnectionError as e:
+            logger.error(f"Connection error: {e}")
+            print(f"Connection error - cannot connect to {domain}")
+            raise
+        except requests.exceptions.HTTPError as e:
+            logger.error(f"HTTP error: {e}")
+            print(f"HTTP error: {resp.status_code} - {resp.text[:200]}")
+            raise
         except requests.exceptions.RequestException as e:
             logger.error(f"API request failed after retries: {e}")
             print(f"Failed to fetch data: {e}")
