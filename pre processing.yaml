@@ -23,20 +23,19 @@ implementation:
         pip install torch torchvision pandas scikit-learn numpy --quiet
         
         cat > preprocess_vae_data.py << 'EOF'
-        cat > preprocess_vae_data.py << 'EOF'
         import argparse
         import os
         import pickle
         import torch
         import json
         import numpy as np
-        from torch.utils.data import DataLoader
+        from torch.utils.data import DataLoader, TensorDataset
 
         class DataWrapper:
             def __init__(self, data_dict):
                 self.__dict__.update(data_dict)
 
-        def preprocess_failure_data(train_path, val_path, data_shape_path):
+        def preprocess_failure_data(train_path, val_path, data_shape_path, vae_type_path, config_path):
             print("Loading failure signature data...")
             
             # Load data loaders
@@ -47,9 +46,24 @@ implementation:
             
             # Read data shape
             with open(data_shape_path, 'r') as f:
-                data_shape_str = f.read().strip().strip('"')
+                data_shape_str = f.read().strip().strip('"').strip("'")
+            
+            # Read vae type
+            try:
+                with open(vae_type_path, 'r') as f:
+                    vae_type = f.read().strip().strip('"').strip("'")
+            except:
+                vae_type = "standard"
+            
+            # Read config
+            try:
+                with open(config_path, 'r') as f:
+                    config = f.read().strip()
+            except:
+                config = "{}"
             
             print(f"Data shape: {data_shape_str}")
+            print(f"VAE type: {vae_type}")
             
             # Extract all data from loaders
             train_data_list = []
@@ -75,87 +89,148 @@ implementation:
             print(f"Train data shape: {train_data.shape}")
             print(f"Val data shape: {val_data.shape}")
             
-            # Normalize data to [0, 1] range
-            data_min = train_data.min()
-            data_max = train_data.max()
-            if data_min < 0 or data_max > 1:
-                train_data = (train_data - data_min) / (data_max - data_min + 1e-8)
-                val_data = (val_data - data_min) / (data_max - data_min + 1e-8)
-                print(f"Data normalized from [{data_min:.4f}, {data_max:.4f}] to [0, 1]")
+            # Apply preprocessing based on VAE type
+            class_mapping = {}
+            
+            if vae_type == 'standard' or vae_type == 'beta':
+                # Normalize to [0, 1] if needed
+                if train_data.min() < 0:
+                    train_data = (train_data + 1) / 2
+                    val_data = (val_data + 1) / 2
+                    print("Data normalized to [0, 1]")
+            
+            elif vae_type == 'conditional':
+                # Normalize to [0, 1] if needed
+                if train_data.min() < 0:
+                    train_data = (train_data + 1) / 2
+                    val_data = (val_data + 1) / 2
+                
+                # Create class mapping
+                unique_labels = torch.unique(train_labels)
+                class_mapping = {int(label): idx for idx, label in enumerate(unique_labels)}
+                remapped_train = torch.zeros_like(train_labels)
+                remapped_val = torch.zeros_like(val_labels)
+                for orig, new in class_mapping.items():
+                    remapped_train[train_labels == orig] = new
+                    remapped_val[val_labels == orig] = new
+                train_labels = remapped_train
+                val_labels = remapped_val
+                print(f"Class mapping created: {class_mapping}")
+            
+            elif vae_type == 'vqvae':
+                # Normalize to [-1, 1] if in [0, 1]
+                if train_data.max() <= 1 and train_data.min() >= 0:
+                    train_data = train_data * 2 - 1
+                    val_data = val_data * 2 - 1
+                    print("Data normalized to [-1, 1]")
             
             # Calculate input dimension
             h, w, c = map(int, data_shape_str.split(','))
             input_dim = h * w * c
             
-            # Create data wrapper object
-            data_dict = {
-                'train_data': train_data.numpy(),
-                'train_labels': train_labels.numpy(),
-                'val_data': val_data.numpy(),
-                'val_labels': val_labels.numpy(),
+            # Create new DataLoaders
+            train_dataset = TensorDataset(train_data, train_labels)
+            val_dataset = TensorDataset(val_data, val_labels)
+            
+            batch_size = train_loader.batch_size
+            new_train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
+            new_val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
+            
+            # Create metadata
+            metadata = {
+                'vae_type': vae_type,
                 'input_dim': input_dim,
                 'num_train': len(train_data),
                 'num_val': len(val_data),
                 'data_shape': data_shape_str,
-                'normalization': {
-                    'min': float(data_min),
-                    'max': float(data_max)
-                }
+                'batch_size': batch_size
             }
             
-            data_wrapper = DataWrapper(data_dict)
-            
             print(f"Preprocessing complete:")
-            print(f"  Train samples: {data_wrapper.num_train}")
-            print(f"  Val samples: {data_wrapper.num_val}")
-            print(f"  Input dimension: {data_wrapper.input_dim}")
+            print(f"  Train samples: {metadata['num_train']}")
+            print(f"  Val samples: {metadata['num_val']}")
+            print(f"  Input dimension: {metadata['input_dim']}")
+            print(f"  Batch size: {batch_size}")
             
-            return data_wrapper
+            return new_train_loader, new_val_loader, input_dim, metadata, class_mapping
 
         if __name__ == "__main__":
             parser = argparse.ArgumentParser()
             parser.add_argument('--train_data', required=True)
             parser.add_argument('--val_data', required=True)
             parser.add_argument('--data_shape', required=True)
-            parser.add_argument('--output_pickle', required=True)
-            parser.add_argument('--weight_out', required=True)
+            parser.add_argument('--vae_type', required=True)
+            parser.add_argument('--preprocessing_config', required=True)
+            parser.add_argument('--processed_train_data', required=True)
+            parser.add_argument('--processed_val_data', required=True)
+            parser.add_argument('--processed_data_shape', required=True)
+            parser.add_argument('--preprocessing_metadata', required=True)
+            parser.add_argument('--class_mapping', required=True)
             args = parser.parse_args()
             
             # Preprocess data
-            data_wrapper = preprocess_failure_data(
+            train_loader, val_loader, input_dim, metadata, class_mapping = preprocess_failure_data(
                 args.train_data,
                 args.val_data,
-                args.data_shape
+                args.data_shape,
+                args.vae_type,
+                args.preprocessing_config
             )
             
-            # Save pickled data wrapper
-            os.makedirs(os.path.dirname(args.output_pickle) or '.', exist_ok=True)
-            with open(args.output_pickle, 'wb') as f:
-                pickle.dump(data_wrapper, f)
-            print(f"Saved processed data to: {args.output_pickle}")
+            # Create output directories
+            os.makedirs(os.path.dirname(args.processed_train_data) or '.', exist_ok=True)
+            os.makedirs(os.path.dirname(args.processed_val_data) or '.', exist_ok=True)
+            os.makedirs(os.path.dirname(args.processed_data_shape) or '.', exist_ok=True)
+            os.makedirs(os.path.dirname(args.preprocessing_metadata) or '.', exist_ok=True)
+            os.makedirs(os.path.dirname(args.class_mapping) or '.', exist_ok=True)
             
-            # Save metadata
-            metadata = {
-                'input_dim': data_wrapper.input_dim,
-                'num_train': data_wrapper.num_train,
-                'num_val': data_wrapper.num_val,
-                'data_shape': data_wrapper.data_shape
-            }
-            os.makedirs(os.path.dirname(args.weight_out) or '.', exist_ok=True)
-            with open(args.weight_out, 'w') as f:
-                json.dump(metadata, f)
-            print(f"Saved metadata to: {args.weight_out}")
+            # Save processed train data
+            with open(args.processed_train_data, 'wb') as f:
+                pickle.dump(train_loader, f)
+            print(f"Saved processed train data to: {args.processed_train_data}")
+            
+            # Save processed val data
+            with open(args.processed_val_data, 'wb') as f:
+                pickle.dump(val_loader, f)
+            print(f"Saved processed val data to: {args.processed_val_data}")
+            
+            # Save processed data shape
+            with open(args.processed_data_shape, 'w') as f:
+                f.write(str(input_dim))
+            print(f"Saved input dimension: {input_dim}")
+            
+            # Save preprocessing metadata
+            with open(args.preprocessing_metadata, 'wb') as f:
+                pickle.dump(metadata, f)
+            print(f"Saved metadata to: {args.preprocessing_metadata}")
+            
+            # Save class mapping
+            with open(args.class_mapping, 'w') as f:
+                json.dump(class_mapping, f)
+            print(f"Saved class mapping to: {args.class_mapping}")
+            
+            print("VAE preprocessing completed successfully!")
         EOF
         
         python preprocess_vae_data.py \
           --train_data "$0" \
           --val_data "$1" \
           --data_shape "$2" \
-          --output_pickle "$3" \
-          --weight_out "$4"
+          --vae_type "$3" \
+          --preprocessing_config "$4" \
+          --processed_train_data "$5" \
+          --processed_val_data "$6" \
+          --processed_data_shape "$7" \
+          --preprocessing_metadata "$8" \
+          --class_mapping "$9"
     args:
       - {inputPath: train_data}
       - {inputPath: val_data}
       - {inputPath: data_shape}
-      - {outputPath: processed_data_pickle}
-      - {outputPath: weight_out}
+      - {inputPath: vae_type}
+      - {inputPath: preprocessing_config}
+      - {outputPath: processed_train_data}
+      - {outputPath: processed_val_data}
+      - {outputPath: processed_data_shape}
+      - {outputPath: preprocessing_metadata}
+      - {outputPath: class_mapping}
