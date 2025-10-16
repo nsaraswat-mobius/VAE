@@ -1,5 +1,5 @@
-name: Load Failure Signature Data
-description: Fetches failure signature JSON data from a specified API endpoint for VAE processing.
+name: Load Failure Signature Data Debug
+description: Fetches failure signature JSON data with enhanced error handling and debugging.
 inputs:
   - {name: schema_id, type: String, description: 'The schema ID to fetch failure signature data from.'}
   - {name: token, type: string, description: 'Bearer token for authentication.'}
@@ -8,7 +8,7 @@ outputs:
   - {name: json_data, type: Dataset}
 implementation:
   container:
-    image: nikhilv215/nesy-factory:v22
+    image: python:3.9
     command:
       - sh
       - -c
@@ -25,9 +25,67 @@ implementation:
         import os
         import requests
         import pickle
+        import sys
+
+        def test_connectivity(url_domain, token):
+            """Test basic connectivity and authentication"""
+            try:
+                # Test basic connectivity
+                test_url = f'https://{url_domain}'
+                print(f"Testing connectivity to: {test_url}")
+                response = requests.get(test_url, timeout=10)
+                print(f"Basic connectivity: {response.status_code}")
+            except Exception as e:
+                print(f"Connectivity test failed: {e}")
+                return False
+            return True
+
+        def list_available_schemas(url_domain, token):
+            """Try to list available schemas to verify token and find correct schema"""
+            try:
+                # Try different possible endpoints to list schemas
+                possible_endpoints = [
+                    f'https://{url_domain}/pi-entity-instances-service/v2.0/schemas',
+                    f'https://{url_domain}/api/v2.0/schemas',
+                    f'https://{url_domain}/schemas'
+                ]
+                
+                headers = {
+                    'Content-Type': 'application/json',
+                    'Authorization': f'Bearer {token}'
+                }
+                
+                for endpoint in possible_endpoints:
+                    try:
+                        print(f"Trying to list schemas from: {endpoint}")
+                        response = requests.get(endpoint, headers=headers, timeout=10)
+                        print(f"Response status: {response.status_code}")
+                        if response.status_code == 200:
+                            schemas = response.json()
+                            print(f"Found {len(schemas) if isinstance(schemas, list) else 'unknown number of'} schemas")
+                            if isinstance(schemas, list) and len(schemas) > 0:
+                                print("Available schema IDs:")
+                                for i, schema in enumerate(schemas[:5]):  # Show first 5
+                                    if isinstance(schema, dict) and 'id' in schema:
+                                        print(f"  - {schema['id']}")
+                            return True
+                    except Exception as e:
+                        print(f"Failed to access {endpoint}: {e}")
+                        continue
+                        
+            except Exception as e:
+                print(f"Schema listing failed: {e}")
+            return False
 
         def fetch_data_from_api(schema_id, token, url_domain):
+            """Enhanced fetch with better error handling"""
             url = f'https://{url_domain}/pi-entity-instances-service/v2.0/schemas/{schema_id}/instances/list?page=0&size=2000&showDBaaSReservedKeywords=true'
+            
+            print(f"Request URL: {url}")
+            print(f"Schema ID: {schema_id}")
+            print(f"Domain: {url_domain}")
+            print(f"Token length: {len(token)} characters")
+            
             headers = {
                 'Content-Type': 'application/json',
                 'Authorization': f'Bearer {token}'
@@ -37,9 +95,41 @@ implementation:
               "ownedOnly": True,
               "filter": {}
             }
-            response = requests.post(url, headers=headers, data=json.dumps(data))
-            response.raise_for_status()
-            return response.json()
+            
+            print(f"Request headers: {dict(headers)}")
+            print(f"Request body: {json.dumps(data)}")
+            
+            try:
+                response = requests.post(url, headers=headers, data=json.dumps(data), timeout=30)
+                print(f"Response status code: {response.status_code}")
+                print(f"Response headers: {dict(response.headers)}")
+                
+                if response.status_code == 401:
+                    print("ERROR: Authentication failed. Check your token.")
+                    return None
+                elif response.status_code == 403:
+                    print("ERROR: Access forbidden. Check permissions.")
+                    return None
+                elif response.status_code == 404:
+                    print("ERROR: Schema not found. Check schema ID and endpoint.")
+                    return None
+                elif response.status_code >= 400:
+                    print(f"ERROR: HTTP {response.status_code}")
+                    print(f"Response text: {response.text}")
+                    return None
+                
+                response.raise_for_status()
+                return response.json()
+                
+            except requests.exceptions.Timeout:
+                print("ERROR: Request timed out")
+                return None
+            except requests.exceptions.ConnectionError:
+                print("ERROR: Connection failed")
+                return None
+            except Exception as e:
+                print(f"ERROR: {e}")
+                return None
 
         parser = argparse.ArgumentParser()
         parser.add_argument('--schema_id', type=str, required=True)
@@ -47,17 +137,44 @@ implementation:
         parser.add_argument('--url_domain', type=str, required=True)
         parser.add_argument('--json_data', type=str, required=True)
         args = parser.parse_args()
-        with open(args.token, 'r') as f:
-            token = f.read().strip()
-        print(f"Fetching failure signature data")
+        
+        # Load token
+        try:
+            with open(args.token, 'r') as f:
+                token = f.read().strip()
+            print(f"Token loaded successfully")
+        except Exception as e:
+            print(f"Failed to load token: {e}")
+            sys.exit(1)
+        
+        print(f"Starting failure signature data fetch...")
+        print(f"Schema ID: {args.schema_id}")
+        print(f"Domain: {args.url_domain}")
+        
+        # Run diagnostics
+        print("\n--- Running Diagnostics ---")
+        test_connectivity(args.url_domain, token)
+        list_available_schemas(args.url_domain, token)
+        
+        print("\n--- Fetching Data ---")
         data = fetch_data_from_api(args.schema_id, token, args.url_domain)
-
+        
+        if data is None:
+            print("Failed to fetch data. Exiting.")
+            sys.exit(1)
+        
+        # Ensure output directory exists
         os.makedirs(os.path.dirname(args.json_data), exist_ok=True)
-        with open(args.json_data, "wb") as f:
-            pickle.dump(data, f)
-
-        print(f"Saved failure signature data to {args.json_data}")
-        print(f"Length of failure signature data: {len(data)}")
+        
+        # Save data
+        try:
+            with open(args.json_data, "wb") as f:
+                pickle.dump(data, f)
+            print(f"Saved failure signature data to {args.json_data}")
+            print(f"Length of failure signature data: {len(data)}")
+        except Exception as e:
+            print(f"Failed to save data: {e}")
+            sys.exit(1)
     args:
       - --schema_id
       - {inputValue: schema_id}
