@@ -111,13 +111,65 @@ implementation:
             exit(1)
             
         print("Loading config...")
-        print("config file is {args.config}")
-        try: 
+        print(f"Config received: {args.config}")
+        
+        try:
+            # Try to parse as JSON first
             config = json.loads(args.config)
-        except : 
-            with open(args.config) as f:
-                config = json.load(f)
-        print(f"the configs are : {config}")
+            print("Config parsed as JSON successfully")
+        except json.JSONDecodeError as e:
+            print(f"Failed to parse as JSON: {e}")
+            try:
+                # Try to load from file
+                with open(args.config, 'r') as f:
+                    config = json.load(f)
+                print("Config loaded from file successfully")
+            except FileNotFoundError:
+                print("Config file not found, trying to parse as query string...")
+                # Try to parse as query string format (key=value,key=value)
+                try:
+                    config = {}
+                    pairs = args.config.split(',')
+                    for pair in pairs:
+                        if '=' in pair:
+                            key, value = pair.split('=', 1)
+                            key = key.strip()
+                            value = value.strip()
+                            # Try to convert to appropriate type
+                            if value.lower() == 'true':
+                                config[key] = True
+                            elif value.lower() == 'false':
+                                config[key] = False
+                            elif value.replace('.', '').replace('-', '').isdigit():
+                                config[key] = float(value) if '.' in value else int(value)
+                            else:
+                                config[key] = value
+                    print("Config parsed from query string successfully")
+                except Exception as query_error:
+                    print(f"Failed to parse as query string: {query_error}")
+                    # Use default config
+                    config = {
+                        'vae_type': 'standard_vae',
+                        'epochs': 3,
+                        'learning_rate': 0.001,
+                        'latent_dim': 128,
+                        'hidden_dim': 512,
+                        'input_dim': 784
+                    }
+                    print("Using default config")
+            except Exception as file_error:
+                print(f"Error loading config file: {file_error}")
+                config = {
+                    'vae_type': 'standard_vae', 
+                    'epochs': 3,
+                    'learning_rate': 0.001,
+                    'latent_dim': 128,
+                    'hidden_dim': 512,
+                    'input_dim': 784
+                }
+                print("Using default config")
+        
+        print(f"Final config: {config}")
         
         # Read the actual input dimension from preprocessing
         with open(args.processed_data_shape, 'r') as f:
