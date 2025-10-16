@@ -3,15 +3,15 @@ description: Takes raw image data from DataLoaders, applies VAE-specific preproc
 inputs:
   - {name: train_data, type: Dataset, description: "Training data loader pickle file from data loader component"}
   - {name: val_data, type: Dataset, description: "Validation data loader pickle file from data loader component"}
-  - {name: data_shape, type: String, description: "Data shape from data loader component (height,width,channels)"}
-  - {name: vae_type, type: String, default: "standard", description: "Type of VAE: standard, beta, conditional, vqvae"}
-  - {name: preprocessing_config, type: String, default: "{}", description: "JSON string with preprocessing configuration"}
+  - {name: data_shape, type: Dataset, description: "Data shape from data loader component (height,width,channels)"}
+  - {name: vae_type, type: Dataset, description: "Type of VAE: standard, beta, conditional, vqvae"}
+  - {name: preprocessing_config, type: Dataset, description: "JSON string with preprocessing configuration"}
 outputs:
   - {name: processed_train_data, type: Dataset, description: "Processed training DataLoader"}
   - {name: processed_val_data, type: Dataset, description: "Processed validation DataLoader"}
-  - {name: processed_data_shape, type: String, description: "Flattened input dimension for VAE"}
+  - {name: processed_data_shape, type: Dataset, description: "Flattened input dimension for VAE"}
   - {name: preprocessing_metadata, type: Dataset, description: "Metadata about preprocessing operations"}
-  - {name: class_mapping, type: String, description: "Class labels mapping JSON string for conditional VAE"}
+  - {name: class_mapping, type: Dataset, description: "Class labels mapping JSON string for conditional VAE"}
 implementation:
   container:
     image: nikhilv215/nesy-factory:v22
@@ -71,95 +71,138 @@ implementation:
         print(f"Arguments received: {sys.argv[1:]}")
 
         parser = argparse.ArgumentParser()
-        parser.add_argument('--train_data', required=True, help='Path to training data')
-        parser.add_argument('--val_data', required=True, help='Path to validation data')
-        parser.add_argument('--data_shape', required=True, help='Data shape')
-        parser.add_argument('--vae_type', required=True, help='VAE type')
-        parser.add_argument('--preprocessing_config', required=True, help='Preprocessing config')
-        parser.add_argument('--processed_train_data', required=True, help='Output processed training data')
-        parser.add_argument('--processed_val_data', required=True, help='Output processed validation data')
-        parser.add_argument('--processed_data_shape', required=True, help='Output processed data shape')
-        parser.add_argument('--preprocessing_metadata', required=True, help='Output preprocessing metadata')
-        parser.add_argument('--class_mapping', required=True, help='Output class mapping')
+        parser.add_argument('--train_data', required=True)
+        parser.add_argument('--val_data', required=True)
+        parser.add_argument('--data_shape', required=True)
+        parser.add_argument('--vae_type', required=True)
+        parser.add_argument('--preprocessing_config', required=True)
+        parser.add_argument('--processed_train_data', required=True)
+        parser.add_argument('--processed_val_data', required=True)
+        parser.add_argument('--processed_data_shape', required=True)
+        parser.add_argument('--preprocessing_metadata', required=True)
+        parser.add_argument('--class_mapping', required=True)
         args = parser.parse_args()
 
-        # Read string values from files and strip any quotes
-        with open(args.data_shape, 'r') as f:
-            data_shape = f.read().strip().strip('"')
+        print("=" * 60)
+        print("VAE PREPROCESSING COMPONENT")
+        print("=" * 60)
         
-        with open(args.vae_type, 'r') as f:
-            vae_type = f.read().strip().strip('"')
+        # Read all input files
+        print("\nReading input files...")
+        
+        try:
+            with open(args.data_shape, 'r') as f:
+                data_shape = f.read().strip().strip('"').strip("'")
+            print(f"  Data shape: {data_shape}")
+        except Exception as e:
+            print(f"  Error reading data_shape: {e}")
+            data_shape = "512,1,1"  # Default for failure signature
+            print(f"  Using default: {data_shape}")
+        
+        try:
+            with open(args.vae_type, 'r') as f:
+                vae_type = f.read().strip().strip('"').strip("'")
+            print(f"  VAE type: {vae_type}")
+        except Exception as e:
+            print(f"  Error reading vae_type: {e}")
+            vae_type = "standard"  # Default
+            print(f"  Using default: {vae_type}")
             
-        with open(args.preprocessing_config, 'r') as f:
-            preprocessing_config = f.read().strip()
+        try:
+            with open(args.preprocessing_config, 'r') as f:
+                preprocessing_config = f.read().strip()
+            print(f"  Preprocessing config loaded")
+        except Exception as e:
+            print(f"  Error reading preprocessing_config: {e}")
+            preprocessing_config = "{}"  # Default
+            print(f"  Using default: {preprocessing_config}")
 
-        print(f"Parsed arguments:")
-        print(f"  train_data: {args.train_data}")
-        print(f"  val_data: {args.val_data}")
-        print(f"  data_shape: {data_shape}")
-        print(f"  vae_type: {vae_type}")
-
+        print("\nLoading data loaders...")
         try:
             with open(args.train_data, 'rb') as f:
                 train_loader = pickle.load(f)
-            print("Training data loaded successfully")
+            print(f"  Training data loaded successfully")
             
             with open(args.val_data, 'rb') as f:
                 val_loader = pickle.load(f)
-            print("Validation data loaded successfully")
-            
-            processed_train = ProcessedVAEDataset(train_loader, vae_type)
-            processed_val = ProcessedVAEDataset(val_loader, vae_type)
-            
-            batch_size = train_loader.batch_size
-            new_train_loader = DataLoader(processed_train, batch_size=batch_size, shuffle=True, num_workers=0)
-            new_val_loader = DataLoader(processed_val, batch_size=batch_size, shuffle=False, num_workers=0)
-            
-            h, w, c = map(int, data_shape.split(','))
-            flattened_dim = h * w * c
-            
-            metadata = {
-                'vae_type': vae_type,
-                'flattened_input_dim': flattened_dim,
-                'num_train_samples': len(processed_train),
-                'num_val_samples': len(processed_val)
-            }
-            
-            # Create output directories
-            os.makedirs(os.path.dirname(args.processed_train_data) or '.', exist_ok=True)
-            os.makedirs(os.path.dirname(args.processed_val_data) or '.', exist_ok=True)
-            os.makedirs(os.path.dirname(args.processed_data_shape) or '.', exist_ok=True)
-            os.makedirs(os.path.dirname(args.preprocessing_metadata) or '.', exist_ok=True)
-            os.makedirs(os.path.dirname(args.class_mapping) or '.', exist_ok=True)
-            
-            # Save outputs
-            with open(args.processed_train_data, 'wb') as f:
-                pickle.dump(new_train_loader, f)
-            print(f"Processed training data saved to: {args.processed_train_data}")
-            
-            with open(args.processed_val_data, 'wb') as f:
-                pickle.dump(new_val_loader, f)
-            print(f"Processed validation data saved to: {args.processed_val_data}")
-            
-            with open(args.processed_data_shape, 'w') as f:
-                f.write(str(flattened_dim))
-            print(f"Processed data shape saved: {flattened_dim}")
-            
-            with open(args.preprocessing_metadata, 'wb') as f:
-                pickle.dump(metadata, f)
-            print("Preprocessing metadata saved")
-            
-            with open(args.class_mapping, 'w') as f:
-                f.write(json.dumps(processed_train.class_mapping))
-            print("Class mapping saved")
-            
-            print("VAE preprocessing completed successfully!")
+            print(f"  Validation data loaded successfully")
             
         except Exception as e:
-            print(f"Error during preprocessing: {e}")
+            print(f"  Error loading data: {e}")
             import traceback
             traceback.print_exc()
             sys.exit(1)
+            
+        print("\nProcessing data...")
+        processed_train = ProcessedVAEDataset(train_loader, vae_type)
+        processed_val = ProcessedVAEDataset(val_loader, vae_type)
+        print(f"  Training samples: {len(processed_train)}")
+        print(f"  Validation samples: {len(processed_val)}")
+        
+        print("\nCreating new data loaders...")
+        batch_size = train_loader.batch_size
+        new_train_loader = DataLoader(processed_train, batch_size=batch_size, shuffle=True, num_workers=0)
+        new_val_loader = DataLoader(processed_val, batch_size=batch_size, shuffle=False, num_workers=0)
+        print(f"  Batch size: {batch_size}")
+        
+        print("\nCalculating dimensions and saving outputs...")
+        h, w, c = map(int, data_shape.split(','))
+        flattened_dim = h * w * c
+        print(f"  Input shape: {h}x{w}x{c}")
+        print(f"  Flattened dimension: {flattened_dim}")
+        
+        metadata = {
+            'vae_type': vae_type,
+            'flattened_input_dim': flattened_dim,
+            'num_train_samples': len(processed_train),
+            'num_val_samples': len(processed_val),
+            'original_shape': data_shape
+        }
+        
+        # Create output directories
+        os.makedirs(os.path.dirname(args.processed_train_data) or '.', exist_ok=True)
+        os.makedirs(os.path.dirname(args.processed_val_data) or '.', exist_ok=True)
+        os.makedirs(os.path.dirname(args.processed_data_shape) or '.', exist_ok=True)
+        os.makedirs(os.path.dirname(args.preprocessing_metadata) or '.', exist_ok=True)
+        os.makedirs(os.path.dirname(args.class_mapping) or '.', exist_ok=True)
+        
+        # Save outputs
+        with open(args.processed_train_data, 'wb') as f:
+            pickle.dump(new_train_loader, f)
+        print(f"  Saved: {args.processed_train_data}")
+        
+        with open(args.processed_val_data, 'wb') as f:
+            pickle.dump(new_val_loader, f)
+        print(f"  Saved: {args.processed_val_data}")
+        
+        with open(args.processed_data_shape, 'w') as f:
+            f.write(str(flattened_dim))
+        print(f"  Saved: {args.processed_data_shape} (value: {flattened_dim})")
+        
+        with open(args.preprocessing_metadata, 'wb') as f:
+            pickle.dump(metadata, f)
+        print(f"  Saved: {args.preprocessing_metadata}")
+        
+        with open(args.class_mapping, 'w') as f:
+            f.write(json.dumps(processed_train.class_mapping))
+        print(f"  Saved: {args.class_mapping}")
+        
+        print("\n" + "=" * 60)
+        print("VAE PREPROCESSING COMPLETED SUCCESSFULLY!")
+        print("=" * 60)
+        print(f"Summary:")
+        print(f"  VAE Type: {vae_type}")
+        print(f"  Input Dimension: {flattened_dim}")
+        print(f"  Training Samples: {len(processed_train)}")
+        print(f"  Validation Samples: {len(processed_val)}")
+        print(f"  Batch Size: {batch_size}")
+        print("=" * 60)
+        
+    except Exception as e:
+        print(f"\nCRITICAL ERROR: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
 
     args:
       - --train_data
