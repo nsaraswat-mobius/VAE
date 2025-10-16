@@ -253,6 +253,26 @@ implementation:
         model_name = args.model_name.strip().strip('"').strip("'")
         print(f"Cleaned model_name: '{model_name}'")
 
+        def parse_query_string_to_dict(query_string):
+            """Parse key=value,key=value format to dictionary"""
+            result = {}
+            pairs = query_string.split(',')
+            for pair in pairs:
+                if '=' in pair:
+                    key, value = pair.split('=', 1)
+                    key = key.strip()
+                    value = value.strip()
+                    # Try to convert to appropriate type
+                    if value.lower() == 'true':
+                        result[key] = True
+                    elif value.lower() == 'false':
+                        result[key] = False
+                    elif value.replace('.', '').replace('-', '').isdigit():
+                        result[key] = float(value) if '.' in value else int(value)
+                    else:
+                        result[key] = value
+            return result
+
         try:
             # Parse config_str with error handling
             config_str_clean = args.config_str.strip().strip("'").strip('"')
@@ -262,9 +282,16 @@ implementation:
                 print("Warning: config_str is empty, using default config")
                 config = {'input_dim': 784, 'hidden_dim': 512, 'latent_dim': 128}
             else:
-                config = json.loads(config_str_clean)
-                print(f"Parsed config: {config}")
-        except json.JSONDecodeError as e:
+                try:
+                    # Try JSON first
+                    config = json.loads(config_str_clean)
+                    print("Config parsed as JSON successfully")
+                except json.JSONDecodeError:
+                    # Try query string format
+                    print("JSON parsing failed, trying query string format...")
+                    config = parse_query_string_to_dict(config_str_clean)
+                    print(f"Config parsed from query string: {config}")
+        except Exception as e:
             print(f"Error parsing config_str: {e}")
             print(f"config_str content: '{args.config_str}'")
             print("Using default config instead")
