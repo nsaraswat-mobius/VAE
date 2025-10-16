@@ -1,0 +1,69 @@
+name: Load Failure Signature Data
+description: Fetches failure signature JSON data from a specified API endpoint for VAE processing.
+inputs:
+  - {name: schema_id, type: String, description: 'The schema ID to fetch failure signature data from.'}
+  - {name: token, type: string, description: 'Bearer token for authentication.'}
+  - {name: url_domain, type: String, description: 'The domain for the API endpoint.'}
+outputs:
+  - {name: json_data, type: Dataset}
+implementation:
+  container:
+    image: python:3.9
+    command:
+      - sh
+      - -c
+      - |
+        PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet requests pandas torch numpy || \
+        PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet requests pandas torch numpy --user
+        exec "$0" "$@"
+      - python3
+      - -u
+      - -c
+      - |
+        import argparse
+        import json
+        import os
+        import requests
+        import pickle
+
+        def fetch_data_from_api(schema_id, token, url_domain):
+            url = f'https://{url_domain}/pi-entity-instances-service/v2.0/schemas/{schema_id}/instances/list?page=0&size=2000&showDBaaSReservedKeywords=true'
+            headers = {
+                'Content-Type': 'application/json',
+                'Authorization': f'Bearer {token}'
+            }
+            data = {
+              "dbType": "TIDB",
+              "ownedOnly": True,
+              "filter": {}
+            }
+            response = requests.post(url, headers=headers, data=json.dumps(data))
+            response.raise_for_status()
+            return response.json()
+
+        parser = argparse.ArgumentParser()
+        parser.add_argument('--schema_id', type=str, required=True)
+        parser.add_argument('--token', type=str, required=True)
+        parser.add_argument('--url_domain', type=str, required=True)
+        parser.add_argument('--json_data', type=str, required=True)
+        args = parser.parse_args()
+        with open(args.token, 'r') as f:
+            token = f.read().strip()
+        print(f"Fetching failure signature data")
+        data = fetch_data_from_api(args.schema_id, token, args.url_domain)
+
+        os.makedirs(os.path.dirname(args.json_data), exist_ok=True)
+        with open(args.json_data, "wb") as f:
+            pickle.dump(data, f)
+
+        print(f"Saved failure signature data to {args.json_data}")
+        print(f"Length of failure signature data: {len(data)}")
+    args:
+      - --schema_id
+      - {inputValue: schema_id}
+      - --token
+      - {inputPath: token}
+      - --url_domain
+      - {inputValue: url_domain}
+      - --json_data
+      - {outputPath: json_data}
