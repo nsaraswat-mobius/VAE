@@ -1,0 +1,329 @@
+name: VAE Train Model
+description: VAE Trains the model using provided data and config parameters.
+inputs:
+  - {name: data_path, type: Dataset}           # Training data from preprocessing
+  - {name: val_data_path, type: Dataset}       # Validation data from preprocessing
+  - {name: model, type: Model}                 # VAE model from build model brick
+  - {name: config, type: String}               # Training configuration (epochs, etc.)
+  - {name: processed_data_shape, type: String} # Input dimension from preprocessing
+outputs:
+  - {name: trained_model, type: Model}     # Trained model object
+  - {name: epoch_loss, type: String}
+implementation:
+  container:
+    image: nikhilv215/nesy-factory:v22
+    command:
+      - sh
+      - -c
+      - |
+        exec "$0" "$@"
+      - python3
+      - -u
+      - -c
+      - |
+        import torch
+        import argparse
+        import pickle
+        import os
+        import json
+        import numpy as np
+        from nesy_factory.VAE import create_vae_model
+        from nesy_factory.utils import set_random_seed
+        import torch.nn as nn
+        import torch.optim as optim
+        from torch.utils.data import DataLoader, Dataset
+        import torchvision.transforms as transforms
+        
+        class ProcessedVAEDataset(Dataset):
+            def __init__(self, original_loader, vae_type):
+                data_list = []
+                label_list = []
+                for batch_data, batch_labels in original_loader:
+                    flat_data = batch_data.view(batch_data.size(0), -1)
+                    data_list.append(flat_data)
+                    label_list.append(batch_labels)
+                
+                self.data = torch.cat(data_list, dim=0)
+                self.labels = torch.cat(label_list, dim=0)
+                self.vae_type = vae_type
+                self.class_mapping = {}
+                
+                self.apply_preprocessing()
+            
+            def apply_preprocessing(self):
+                if self.vae_type == 'standard' or self.vae_type == 'beta':
+                    if self.data.min() < 0:
+                        self.data = (self.data + 1) / 2
+                elif self.vae_type == 'conditional':
+                    if self.data.min() < 0:
+                        self.data = (self.data + 1) / 2
+                    unique_labels = torch.unique(self.labels)
+                    self.class_mapping = {int(label): idx for idx, label in enumerate(unique_labels)}
+                    remapped = torch.zeros_like(self.labels)
+                    for orig, new in self.class_mapping.items():
+                        remapped[self.labels == orig] = new
+                    self.labels = remapped
+                elif self.vae_type == 'vqvae':
+                    if self.data.max() <= 1 and self.data.min() >= 0:
+                        self.data = self.data * 2 - 1
+            
+            def __len__(self):
+                return len(self.data)
+            
+            def __getitem__(self, idx):
+                return self.data[idx], self.labels[idx]
+        
+        class DataWrapper:
+          def __init__(self, data_dict):
+              self.__dict__.update(data_dict)
+
+        # Parse arguments
+        parser = argparse.ArgumentParser()
+        parser.add_argument('--data_path', type=str, required=True)
+        parser.add_argument('--val_data_path', type=str, required=True)
+        parser.add_argument('--model', type=str, required=True)
+        parser.add_argument('--config', type=str, required=True)
+        parser.add_argument('--processed_data_shape', type=str, required=True)
+        parser.add_argument('--trained_model', type=str, required=True)
+        parser.add_argument('--epoch_loss', type=str, required=True)
+        args = parser.parse_args()
+
+        print(f"Data path: {args.data_path}")
+        print(f"Val data path: {args.val_data_path}")
+        print(f"Model path: {args.model}")
+        print(f"Config path: {args.config}")
+        print(f"Output path: {args.trained_model}")
+        
+        # Load training data
+        try:
+            with open(args.data_path, "rb") as f:
+                train_loader = pickle.load(f)
+            print(f"Successfully loaded training data. Type: {type(train_loader)}")
+            
+            with open(args.val_data_path, "rb") as f:
+                val_loader = pickle.load(f)
+            print(f"Successfully loaded validation data. Type: {type(val_loader)}")
+                
+        except Exception as e:
+            print(f"Error loading data: {e}")
+            import traceback
+            traceback.print_exc()
+            exit(1)
+            
+        print("Loading config...")
+        print(f"Config received: {args.config}")
+        
+        try:
+            # Try to parse as JSON first
+            config = json.loads(args.config)
+            print("Config parsed as JSON successfully")
+        except json.JSONDecodeError as e:
+            print(f"Failed to parse as JSON: {e}")
+            try:
+                # Try to load from file
+                with open(args.config, 'r') as f:
+                    config = json.load(f)
+                print("Config loaded from file successfully")
+            except FileNotFoundError:
+                print("Config file not found, trying to parse as query string...")
+                # Try to parse as query string format (key=value,key=value)
+                try:
+                    config = {}
+                    pairs = args.config.split(',')
+                    for pair in pairs:
+                        if '=' in pair:
+                            key, value = pair.split('=', 1)
+                            key = key.strip()
+                            value = value.strip()
+                            # Try to convert to appropriate type
+                            if value.lower() == 'true':
+                                config[key] = True
+                            elif value.lower() == 'false':
+                                config[key] = False
+                            elif value.replace('.', '').replace('-', '').isdigit():
+                                config[key] = float(value) if '.' in value else int(value)
+                            else:
+                                config[key] = value
+                    print("Config parsed from query string successfully")
+                except Exception as query_error:
+                    print(f"Failed to parse as query string: {query_error}")
+                    # Use default config
+                    config = {
+                        'vae_type': 'standard_vae',
+                        'epochs': 3,
+                        'learning_rate': 0.001,
+                        'latent_dim': 128,
+                        'hidden_dim': 512,
+                        'input_dim': 784
+                    }
+                    print("Using default config")
+            except Exception as file_error:
+                print(f"Error loading config file: {file_error}")
+                config = {
+                    'vae_type': 'standard_vae', 
+                    'epochs': 3,
+                    'learning_rate': 0.001,
+                    'latent_dim': 128,
+                    'hidden_dim': 512,
+                    'input_dim': 784
+                }
+                print("Using default config")
+        
+        print(f"Final config: {config}")
+        
+        # Read the actual input dimension from preprocessing
+        with open(args.processed_data_shape, 'r') as f:
+            actual_input_dim = int(f.read().strip())
+        
+        print(f"Using input dimension: {actual_input_dim}")
+        
+        print("Loading model...")
+        vae_type = config.get('vae_type', 'standard_vae')
+        
+        # Create the same model architecture as in model builder
+        input_dim = actual_input_dim  # Force use of actual dimension from preprocessing
+        hidden_dim = config.get('hidden_dim', 512)
+        latent_dim = config.get('latent_dim', 128)
+        
+        print(f"Model architecture: input_dim={input_dim}, hidden_dim={hidden_dim}, latent_dim={latent_dim}")
+        
+        if vae_type == 'standard_vae':
+            class StandardVAE(nn.Module):
+                def __init__(self, input_dim, hidden_dim, latent_dim):
+                    super(StandardVAE, self).__init__()
+                    self.input_dim = input_dim
+                    self.hidden_dim = hidden_dim
+                    self.latent_dim = latent_dim
+                    self.model_type = "standard_vae"
+                    
+                    # Encoder
+                    self.encoder = nn.Sequential(
+                        nn.Linear(input_dim, hidden_dim),
+                        nn.ReLU(),
+                        nn.Linear(hidden_dim, hidden_dim // 2),
+                        nn.ReLU()
+                    )
+                    self.mu_layer = nn.Linear(hidden_dim // 2, latent_dim)
+                    self.logvar_layer = nn.Linear(hidden_dim // 2, latent_dim)
+                    
+                    # Decoder
+                    self.decoder = nn.Sequential(
+                        nn.Linear(latent_dim, hidden_dim // 2),
+                        nn.ReLU(),
+                        nn.Linear(hidden_dim // 2, hidden_dim),
+                        nn.ReLU(),
+                        nn.Linear(hidden_dim, input_dim),
+                        nn.Sigmoid()
+                    )
+                
+                def encode(self, x):
+                    h = self.encoder(x)
+                    mu = self.mu_layer(h)
+                    logvar = self.logvar_layer(h)
+                    return mu, logvar
+                
+                def reparameterize(self, mu, logvar):
+                    std = torch.exp(0.5 * logvar)
+                    eps = torch.randn_like(std)
+                    return mu + eps * std
+                
+                def decode(self, z):
+                    return self.decoder(z)
+                
+                def forward(self, x):
+                    mu, logvar = self.encode(x)
+                    z = self.reparameterize(mu, logvar)
+                    return self.decode(z), mu, logvar
+            
+            model = StandardVAE(input_dim, hidden_dim, latent_dim)
+        else:
+            # Use library for other VAE types
+            model = create_vae_model(vae_type, config)
+        
+        model.load_state_dict(torch.load(args.model, map_location=torch.device('cpu')))
+        
+        epochs = config.get('epochs', 50)
+        learning_rate = config.get('learning_rate', 0.001)
+        beta = config.get('beta', 1.0)
+        
+        # Set device
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        model = model.to(device)
+        
+        # Setup optimizer
+        optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+        
+        print(f"Training for {epochs} epochs")
+        print(" Starting VAE Model Training ")
+        epoch_loss_data = []
+        
+        for epoch in range(epochs):
+            model.train()
+            total_loss = 0
+            num_batches = 0
+            
+            for batch_idx, (data_batch, _) in enumerate(train_loader):
+                data_batch = data_batch.to(device)
+                optimizer.zero_grad()
+                
+                if vae_type == 'conditional_vae':
+                    labels = _.to(device)
+                    recon_batch, mu, logvar = model(data_batch, labels)
+                elif vae_type == 'vq_vae':
+                    recon_batch, vq_loss, _ = model(data_batch)
+                    loss = nn.functional.mse_loss(recon_batch, data_batch) + vq_loss
+                else:
+                    recon_batch, mu, logvar = model(data_batch)
+                    recon_loss = nn.functional.mse_loss(recon_batch, data_batch, reduction='sum')
+                    kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
+                    if vae_type == 'beta_vae':
+                        loss = recon_loss + beta * kl_loss
+                    else:
+                        loss = recon_loss + kl_loss
+                
+                loss.backward()
+                optimizer.step()
+                total_loss += loss.item()
+                num_batches += 1
+            
+            avg_loss = total_loss / num_batches
+            print(f"Epoch {epoch} | Loss: {avg_loss}")
+            epoch_loss_data.append({'epoch': epoch, 'loss': avg_loss})
+
+        output_dir_epoch_loss = os.path.dirname(args.epoch_loss)
+        if output_dir_epoch_loss and not os.path.exists(output_dir_epoch_loss):
+            os.makedirs(output_dir_epoch_loss, exist_ok=True)
+        with open(args.epoch_loss, 'w') as f:
+            f.write(json.dumps(epoch_loss_data))
+        print("Finished VAE Model Training ")
+        
+        # Save trained model
+        print("Saving trained model...")
+        try:
+            # Create parent directory if it doesn't exist
+            output_dir = os.path.dirname(args.trained_model)
+            if output_dir and not os.path.exists(output_dir):
+                os.makedirs(output_dir, exist_ok=True)
+                print(f"Created directory: {output_dir}")
+            
+            torch.save(model.state_dict(), args.trained_model)
+            print(f"Saved trained model to {args.trained_model}")
+        except Exception as e:
+            print(f"Error saving trained model: {e}")
+            exit(1)
+
+    args:
+      - --data_path
+      - {inputPath: data_path}
+      - --val_data_path
+      - {inputPath: val_data_path}
+      - --model
+      - {inputPath: model}
+      - --config
+      - {inputValue: config}
+      - --processed_data_shape
+      - {inputPath: processed_data_shape}
+      - --trained_model
+      - {outputPath: trained_model}
+      - --epoch_loss
+      - {outputPath: epoch_loss}
