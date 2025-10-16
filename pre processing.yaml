@@ -3,7 +3,7 @@ description: Takes raw failure signature data from DataLoaders, applies VAE-spec
 inputs:
   - {name: train_data, type: Dataset, description: "Training data loader pickle file from data loader component"}
   - {name: val_data, type: Dataset, description: "Validation data loader pickle file from data loader component"}
-  - {name: data_shape, type: Dataset, description: "Data shape from data loader component (height,width,channels)"}
+  - {name: data_shape, type: Dataset, description: "Data shape from data loader component"}
   - {name: vae_type, type: Dataset, description: "Type of VAE: standard, beta, conditional, vqvae"}
   - {name: preprocessing_config, type: Dataset, description: "JSON string with preprocessing configuration"}
 outputs:
@@ -36,7 +36,7 @@ implementation:
                 self.__dict__.update(data_dict)
 
         def preprocess_failure_data(train_path, val_path, data_shape_path, vae_type_path, config_path):
-            print("Loading failure signature data...")
+            print("Loading failure signature data")
             
             # Load data loaders
             with open(train_path, 'rb') as f:
