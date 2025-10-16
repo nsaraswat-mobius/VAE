@@ -306,9 +306,16 @@ implementation:
                 print("Warning: weight_in is empty, using default weights")
                 weight = {}
             else:
-                weight = json.loads(weight_in_clean)
-                print(f"Parsed weight: {weight}")
-        except json.JSONDecodeError as e:
+                try:
+                    # Try JSON first
+                    weight = json.loads(weight_in_clean)
+                    print("Weight parsed as JSON successfully")
+                except json.JSONDecodeError:
+                    # Try query string format
+                    print("JSON parsing failed for weight_in, trying query string format...")
+                    weight = parse_query_string_to_dict(weight_in_clean)
+                    print(f"Weight parsed from query string: {weight}")
+        except Exception as e:
             print(f"Error parsing weight_in: {e}")
             print(f"weight_in content: '{args.weight_in}'")
             print("Using empty weights instead")
