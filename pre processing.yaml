@@ -4,8 +4,8 @@ inputs:
   - {name: train_data, type: Dataset, description: "Training data loader pickle file from data loader component"}
   - {name: val_data, type: Dataset, description: "Validation data loader pickle file from data loader component"}
   - {name: data_shape, type: String, description: "Data shape from data loader component (height,width,channels)"}
-  - {name: vae_type, type: String, description: "Type of VAE: standard, beta, conditional, vqvae"}
-  - {name: preprocessing_config, type: String, description: "JSON string with preprocessing configuration"}
+  - {name: vae_type, type: String, default: "standard", description: "Type of VAE: standard, beta, conditional, vqvae"}
+  - {name: preprocessing_config, type: String, default: "{}", description: "JSON string with preprocessing configuration"}
 outputs:
   - {name: processed_train_data, type: Dataset, description: "Processed training DataLoader"}
   - {name: processed_val_data, type: Dataset, description: "Processed validation DataLoader"}
@@ -84,23 +84,14 @@ implementation:
         args = parser.parse_args()
 
         # Read string values from files and strip any quotes
-        try:
-            with open(args.data_shape, 'r') as f:
-                data_shape = f.read().strip().strip('"').strip("'")
-        except:
-            data_shape = "512,1,1"
+        with open(args.data_shape, 'r') as f:
+            data_shape = f.read().strip().strip('"')
         
-        try:
-            with open(args.vae_type, 'r') as f:
-                vae_type = f.read().strip().strip('"').strip("'")
-        except:
-            vae_type = "standard"
+        with open(args.vae_type, 'r') as f:
+            vae_type = f.read().strip().strip('"')
             
-        try:
-            with open(args.preprocessing_config, 'r') as f:
-                preprocessing_config = f.read().strip()
-        except:
-            preprocessing_config = "{}"
+        with open(args.preprocessing_config, 'r') as f:
+            preprocessing_config = f.read().strip()
 
         print(f"Parsed arguments:")
         print(f"  train_data: {args.train_data}")
