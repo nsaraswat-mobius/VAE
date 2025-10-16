@@ -4,8 +4,8 @@ inputs:
   - {name: train_data, type: Dataset, description: "Training data loader pickle file from data loader component"}
   - {name: val_data, type: Dataset, description: "Validation data loader pickle file from data loader component"}
   - {name: data_shape, type: Dataset, description: "Data shape from data loader component (height,width,channels)"}
-  - {name: vae_type, type: Dataset, default: "standard", description: "Type of VAE: standard, beta, conditional, vqvae"}
-  - {name: preprocessing_config, type: Dataset, default: "{}", description: "JSON string with preprocessing configuration"}
+  - {name: vae_type, type: Dataset, description: "Type of VAE: standard, beta, conditional, vqvae"}
+  - {name: preprocessing_config, type: Dataset, description: "JSON string with preprocessing configuration"}
 outputs:
   - {name: processed_train_data, type: Dataset, description: "Processed training DataLoader"}
   - {name: processed_val_data, type: Dataset, description: "Processed validation DataLoader"}
