@@ -212,25 +212,25 @@ implementation:
             print("VAE preprocessing completed successfully!")
         EOF
         
-        python preprocess_vae_data.py \
-          --train_data "$0" \
-          --val_data "$1" \
-          --data_shape "$2" \
-          --vae_type "$3" \
-          --preprocessing_config "$4" \
-          --processed_train_data "$5" \
-          --processed_val_data "$6" \
-          --processed_data_shape "$7" \
-          --preprocessing_metadata "$8" \
-          --class_mapping "$9"
+        python preprocess_vae_data.py
     args:
+      - --train_data
       - {inputPath: train_data}
+      - --val_data
       - {inputPath: val_data}
+      - --data_shape
       - {inputPath: data_shape}
+      - --vae_type
       - {inputPath: vae_type}
+      - --preprocessing_config
       - {inputPath: preprocessing_config}
+      - --processed_train_data
       - {outputPath: processed_train_data}
+      - --processed_val_data
       - {outputPath: processed_val_data}
+      - --processed_data_shape
       - {outputPath: processed_data_shape}
+      - --preprocessing_metadata
       - {outputPath: preprocessing_metadata}
+      - --class_mapping
       - {outputPath: class_mapping}
