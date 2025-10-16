@@ -12,8 +12,8 @@ implementation:
       - sh
       - -c
       - |
-        PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet requests pandas torch numpy || \
-        PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet requests pandas torch numpy --user
+        python3 -m pip install --quiet requests pandas torch numpy || \
+        python3 -m pip install --quiet requests pandas torch numpy --user
         exec "$0" "$@"
       - python3
       - -u
@@ -24,61 +24,62 @@ implementation:
         import os
         import requests
         import pickle
-
-        def fetch_data_from_api(api_url, token):
-            headers = {
-                'Content-Type': 'application/json',
-                'Authorization': f'Bearer {token}'
-            }
-            data = {
-              "dbType": "TIDB",
-              "ownedOnly": True,
-              "filter": {}
-            }
-            
-            print(f"Attempting to connect to: {api_url}")
-            
-            # Add timeout and retry logic
-            import time
-            max_retries = 3
-            timeout = 30
-            
-            for attempt in range(max_retries):
-                try:
-                    print(f"Attempt {attempt + 1}/{max_retries}")
-                    response = requests.post(api_url, headers=headers, data=json.dumps(data), timeout=timeout)
-                    print(f"Response status: {response.status_code}")
-                    response.raise_for_status()
-                    return response.json()
-                except requests.exceptions.ConnectTimeout:
-                    print(f"Connection timeout on attempt {attempt + 1}")
-                    if attempt < max_retries - 1:
-                        wait_time = (attempt + 1) * 5
-                        print(f"Waiting {wait_time} seconds before retry...")
-                        time.sleep(wait_time)
-                    else:
-                        raise
-                except requests.exceptions.ConnectionError as e:
-                    print(f"Connection error on attempt {attempt + 1}: {e}")
-                    if attempt < max_retries - 1:
-                        wait_time = (attempt + 1) * 5
-                        print(f"Waiting {wait_time} seconds before retry...")
-                        time.sleep(wait_time)
-                    else:
-                        raise
-                except Exception as e:
-                    print(f"Unexpected error: {e}")
-                    raise
+        from requests.adapters import HTTPAdapter
+        from urllib3.util.retry import Retry
+        import logging
 
         parser = argparse.ArgumentParser()
         parser.add_argument('--api_url', type=str, required=True)
         parser.add_argument('--token', type=str, required=True)
         parser.add_argument('--json_data', type=str, required=True)
         args = parser.parse_args()
+
         with open(args.token, 'r') as f:
-            token = f.read().strip()
-        print(f"Fetching failure signature data from: {args.api_url}")
-        data = fetch_data_from_api(args.api_url, token)
+            access_token = f.read().strip()
+        
+        # Setup retry logger
+        logging.basicConfig(level=logging.INFO)
+        logger = logging.getLogger("api_retry")
+
+        # Setup session with retry logic
+        session = requests.Session()
+        retries = Retry(
+            total=5,                # total retries
+            backoff_factor=1,       # wait 1s, 2s, 4s
+            status_forcelist=[500, 502, 503, 504],
+            allowed_methods=["POST"]
+        )
+        adapter = HTTPAdapter(max_retries=retries)
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+
+        # Fetch dataset from API with retry + timeout
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {access_token}"
+        }
+        payload = {
+            "dbType": "TIDB",
+            "entityId": "",
+            "entityIds": [],
+            "ownedOnly": False,
+            "projections": [],
+            "filter": {},
+            "startTime": 0,
+            "endTime": 0
+        }
+
+        try:
+            logger.info("Sending request to API with retries enabled")
+            print(f"Fetching failure signature data from: {args.api_url}")
+            resp = session.post(args.api_url, headers=headers, json=payload, timeout=30)
+            resp.raise_for_status()
+            data = resp.json()
+            print(f"Successfully fetched data. Response status: {resp.status_code}")
+        except requests.exceptions.RequestException as e:
+            logger.error(f"API request failed after retries: {e}")
+            print(f"Failed to fetch data: {e}")
+            raise
 
         os.makedirs(os.path.dirname(args.json_data), exist_ok=True)
         with open(args.json_data, "wb") as f:
