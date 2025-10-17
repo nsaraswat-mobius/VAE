@@ -2,7 +2,7 @@ name: Load JSON Data
 description: Fetches JSON data from a specified API endpoint.
 inputs:
   - {name: schema_id, type: String, description: 'The schema ID to fetch data from.'}
-  - {name: token, type: string, description: 'Bearer token for authentication.'}
+  - {name: token, type: Dataset, description: 'Bearer token for authentication.'}
   - {name: url_domain, type: String, description: 'The domain for the API endpoint.'}
 outputs:
   - {name: json_data, type: Dataset}
