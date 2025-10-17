@@ -8,13 +8,11 @@ outputs:
   - {name: test_loader, type: Dataset}
 implementation:
   container:
-    image: python:3.9
+    image: nikhilv215/nesy-factory:v22
     command:
       - sh
       - -c
       - |
-        PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet requests pandas torch numpy scikit-learn || \
-        PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet requests pandas torch numpy scikit-learn --user
         exec "$0" "$@"
       - python3
       - -u
@@ -28,125 +26,38 @@ implementation:
         import pandas as pd
         import torch
         from sklearn.preprocessing import StandardScaler, MinMaxScaler, RobustScaler
-        from sklearn.decomposition import PCA
         from torch.utils.data import TensorDataset, DataLoader
-        import hashlib
 
         def extract_failure_signatures(json_data, config):
             # Extract features from performance/metrics data for VAE
             signatures = []
-            metadata = []
-            
-            # Get feature configuration
-            numerical_features = config.get('numerical_features', ['value'])
-            categorical_features = config.get('categorical_features', [])
-            encoding_strategy = config.get('encoding_strategy', 'single_feature')
-            
-            print("Extracting features using strategy: " + str(encoding_strategy))
-            print("Numerical features: " + str(numerical_features))
-            print("Categorical features: " + str(categorical_features))
+            signature_field = config.get('signature_field', 'value')
             
             for item in json_data:
-                if encoding_strategy == 'single_feature':
-                    # Use single feature (e.g., 'value') as signature
-                    signature_field = config.get('signature_field', 'value')
-                    if signature_field in item:
-                        try:
-                            signature = [float(item[signature_field])]
-                            signatures.append(np.array(signature, dtype=np.float32))
-                            # Store metadata
-                            meta = {key: value for key, value in item.items() if key != signature_field}
-                            metadata.append(meta)
-                        except (ValueError, TypeError):
-                            continue
-                            
-                elif encoding_strategy == 'multi_feature':
-                    # Combine multiple numerical features into signature
-                    signature = []
-                    valid_item = True
-                    
-                    # Add numerical features
-                    for feature in numerical_features:
-                        if feature in item:
-                            try:
-                                value = float(item[feature])
-                                signature.append(value)
-                            except (ValueError, TypeError):
-                                valid_item = False
-                                break
-                        else:
-                            valid_item = False
-                            break
-                    
-                    # Add categorical features (one-hot encoded later)
-                    categorical_values = {}
-                    for feature in categorical_features:
-                        if feature in item:
-                            categorical_values[feature] = str(item[feature])
-                        else:
-                            categorical_values[feature] = 'unknown'
-                    
-                    if valid_item and len(signature) > 0:
-                        signatures.append(np.array(signature, dtype=np.float32))
-                        # Store metadata including categorical features
-                        meta = {key: value for key, value in item.items() 
-                               if key not in numerical_features}
-                        meta['categorical_features'] = categorical_values
-                        metadata.append(meta)
-            
-            if len(signatures) == 0:
-                raise ValueError("No valid signatures extracted from data")
-                
-            return np.array(signatures), metadata
-
-        def deduplicate_signatures(signatures, metadata, threshold=0.95):
-            # Remove duplicate signatures based on cosine similarity
-            from sklearn.metrics.pairwise import cosine_similarity
-            
-            if len(signatures) == 0:
-                return signatures, metadata
-            
-            # Calculate pairwise cosine similarity
-            similarity_matrix = cosine_similarity(signatures)
-            
-            # Find duplicates
-            to_remove = set()
-            for i in range(len(signatures)):
-                if i in to_remove:
-                    continue
-                for j in range(i + 1, len(signatures)):
-                    if j in to_remove:
+                if signature_field in item:
+                    try:
+                        # For VAE, we typically work with single values or simple feature vectors
+                        signature = [float(item[signature_field])]
+                        signatures.append(signature)
+                    except (ValueError, TypeError):
                         continue
-                    if similarity_matrix[i, j] > threshold:
-                        to_remove.add(j)
-            
-            # Keep non-duplicates
-            keep_indices = [i for i in range(len(signatures)) if i not in to_remove]
-            
-            print("Removed " + str(len(to_remove)) + " duplicate signatures (threshold: " + str(threshold) + ")")
-            print("Kept " + str(len(keep_indices)) + " unique signatures")
-            
-            return signatures[keep_indices], [metadata[i] for i in keep_indices]
+                        
+            if len(signatures) == 0:
+                raise ValueError("No valid signatures found")
+                
+            return np.array(signatures, dtype=np.float32)
 
-        def preprocess_signatures(signatures, config):
-            # Apply preprocessing to failure signatures
-            print("Input signature shape: " + str(signatures.shape))
+        def preprocess_for_vae(signatures, config):
+            # Apply preprocessing for VAE training
+            print(f"Input signature shape: {signatures.shape}")
             
-            # Handle missing values
-            if np.isnan(signatures).any():
-                print("Found NaN values, filling with zeros")
-                signatures = np.nan_to_num(signatures, nan=0.0)
+            # Handle missing/invalid values
+            signatures = np.nan_to_num(signatures, nan=0.0)
+            signatures = np.clip(signatures, -1e6, 1e6)
             
-            # Handle infinite values
-            if np.isinf(signatures).any():
-                print("Found infinite values, clipping")
-                signatures = np.clip(signatures, -1e6, 1e6)
-            
-            # Normalization
+            # Apply scaling
             scaler_type = config.get('scaler_type', 'standard')
-            if scaler_type == 'standard':
-                scaler = StandardScaler()
-            elif scaler_type == 'minmax':
+            if scaler_type == 'minmax':
                 scaler = MinMaxScaler()
             elif scaler_type == 'robust':
                 scaler = RobustScaler()
@@ -154,95 +65,10 @@ implementation:
                 scaler = StandardScaler()
             
             signatures_scaled = scaler.fit_transform(signatures)
-            print("Applied " + str(scaler_type) + " scaling")
+            print(f"Applied {scaler_type} scaling")
             
-            # Optional dimensionality reduction
-            if config.get('apply_pca', False):
-                pca_components = config.get('pca_components', min(50, signatures.shape[1]))
-                pca = PCA(n_components=pca_components)
-                signatures_scaled = pca.fit_transform(signatures_scaled)
-                print("Applied PCA: " + str(signatures.shape[1]) + " -> " + str(signatures_scaled.shape[1]) + " dimensions")
-                print("Explained variance ratio: " + str(round(pca.explained_variance_ratio_.sum(), 3)))
-            
-            # Optional noise addition for regularization
-            if config.get('add_noise', False):
-                noise_std = config.get('noise_std', 0.01)
-                noise = np.random.normal(0, noise_std, signatures_scaled.shape)
-                signatures_scaled = signatures_scaled + noise
-                print("Added Gaussian noise (std: " + str(noise_std) + ")")
-            
-            return signatures_scaled, scaler
+            return signatures_scaled
 
-        def create_vae_datasets(signatures, config):
-            # Create train/test datasets for VAE training
-            # Shuffle data
-            np.random.seed(config.get('random_seed', 42))
-            indices = np.random.permutation(len(signatures))
-            signatures_shuffled = signatures[indices]
-            
-            # Split data
-            train_ratio = config.get('train_ratio', 0.8)
-            train_size = int(len(signatures_shuffled) * train_ratio)
-            
-            X_train = signatures_shuffled[:train_size]
-            X_test = signatures_shuffled[train_size:]
-            
-            print("Train signatures shape: " + str(X_train.shape))
-            print("Test signatures shape: " + str(X_test.shape))
-            
-            # Convert to PyTorch tensors
-            X_train_tensor = torch.tensor(X_train, dtype=torch.float32)
-            X_test_tensor = torch.tensor(X_test, dtype=torch.float32)
-            
-            # For VAE, input and target are the same (reconstruction)
-            train_dataset = TensorDataset(X_train_tensor, X_train_tensor)
-            test_dataset = TensorDataset(X_test_tensor, X_test_tensor)
-            
-            return train_dataset, test_dataset
-
-        def create_data_loaders(train_dataset, test_dataset, config):
-            # Create DataLoader objects
-            batch_size = config.get('batch_size', 64)
-            num_workers = config.get('num_workers', 0)
-            
-            train_loader = DataLoader(
-                train_dataset, 
-                batch_size=batch_size, 
-                shuffle=True,
-                num_workers=num_workers,
-                pin_memory=True if torch.cuda.is_available() else False
-            )
-            
-            test_loader = DataLoader(
-                test_dataset, 
-                batch_size=batch_size, 
-                shuffle=False,
-                num_workers=num_workers,
-                pin_memory=True if torch.cuda.is_available() else False
-            )
-            
-            return train_loader, test_loader
-
-        def print_dataset_stats(signatures, config):
-            # Print statistics about the processed dataset
-            print("Dataset Statistics:")
-            print("Total samples: " + str(len(signatures)))
-            print("Feature dimension: " + str(signatures.shape[1]))
-            print("Data type: " + str(signatures.dtype))
-            print("Memory usage: " + str(round(signatures.nbytes / 1024 / 1024, 2)) + " MB")
-            print("Value range: [" + str(round(signatures.min(), 4)) + ", " + str(round(signatures.max(), 4)) + "]")
-            print("Mean: " + str(round(signatures.mean(), 4)))
-            print("Std: " + str(round(signatures.std(), 4)))
-            
-            # Check for potential issues
-            if np.isnan(signatures).any():
-                print("WARNING: Dataset contains NaN values")
-            if np.isinf(signatures).any():
-                print("WARNING: Dataset contains infinite values")
-            if signatures.std() < 1e-6:
-                print("WARNING: Very low variance detected")
-
-        # Main preprocessing pipeline
         parser = argparse.ArgumentParser()
         parser.add_argument('--json_data', type=str, required=True)
         parser.add_argument('--config', type=str, required=True)
@@ -250,42 +76,43 @@ implementation:
         parser.add_argument('--test_loader', type=str, required=True)
         args = parser.parse_args()
 
-        # Load configuration
         config = json.loads(args.config)
-        print("Loaded configuration:")
-        for key, value in config.items():
-            print("  " + str(key) + ": " + str(value))
 
-        # Load raw data
         with open(args.json_data, 'rb') as f:
             json_data = pickle.load(f)
-        print("Loaded failure signature data. Records: " + str(len(json_data)))
+        print(f"Loaded failure signature data. Records: {len(json_data)}")
 
         # Extract failure signatures
-        signatures, metadata = extract_failure_signatures(json_data, config)
+        signatures = extract_failure_signatures(json_data, config)
+        print(f"Extracted {len(signatures)} signatures with dimension {signatures.shape[1]}")
+
+        # Preprocess for VAE
+        signatures_processed = preprocess_for_vae(signatures, config)
+
+        # Create train/test split
+        np.random.seed(config.get('random_seed', 42))
+        indices = np.random.permutation(len(signatures_processed))
+        signatures_shuffled = signatures_processed[indices]
         
-        if len(signatures) == 0:
-            raise ValueError("No valid signatures found")
+        train_ratio = config.get('train_ratio', 0.8)
+        train_size = int(len(signatures_shuffled) * train_ratio)
         
-        print("Extracted " + str(len(signatures)) + " signatures")
-        print("Original signature dimension: " + str(signatures.shape[1]))
+        X_train = signatures_shuffled[:train_size]
+        X_test = signatures_shuffled[train_size:]
+        print(f"Train data shape: {X_train.shape}, Test data shape: {X_test.shape}")
 
-        # Deduplicate signatures
-        if config.get('deduplicate', True):
-            dedup_threshold = config.get('dedup_threshold', 0.95)
-            signatures, metadata = deduplicate_signatures(signatures, metadata, dedup_threshold)
+        # Convert to PyTorch tensors
+        X_train_tensor = torch.tensor(X_train, dtype=torch.float32)
+        X_test_tensor = torch.tensor(X_test, dtype=torch.float32)
 
-        # Preprocess signatures
-        signatures_processed, scaler = preprocess_signatures(signatures, config)
+        # For VAE, input and target are the same (reconstruction)
+        train_dataset = TensorDataset(X_train_tensor, X_train_tensor)
+        test_dataset = TensorDataset(X_test_tensor, X_test_tensor)
 
-        # Print dataset statistics
-        print_dataset_stats(signatures_processed, config)
-
-        # Create datasets
-        train_dataset, test_dataset = create_vae_datasets(signatures_processed, config)
-
-        # Create data loaders
-        train_loader_obj, test_loader_obj = create_data_loaders(train_dataset, test_dataset, config)
+        # Create DataLoaders
+        batch_size = config.get('batch_size', 64)
+        train_loader_obj = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+        test_loader_obj = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
         # Save data loaders
         os.makedirs(os.path.dirname(args.train_loader), exist_ok=True)
@@ -296,25 +123,10 @@ implementation:
         with open(args.test_loader, "wb") as f:
             pickle.dump(test_loader_obj, f)
 
-        # Save preprocessing metadata
-        preprocessing_info = {
-            'scaler': scaler,
-            'original_shape': signatures.shape,
-            'processed_shape': signatures_processed.shape,
-            'config': config,
-            'num_train_samples': len(train_dataset),
-            'num_test_samples': len(test_dataset)
-        }
-        
-        preprocessing_info_path = os.path.dirname(args.train_loader) + "/preprocessing_info.pkl"
-        with open(preprocessing_info_path, "wb") as f:
-            pickle.dump(preprocessing_info, f)
-
-        print("\nSaved train_loader to " + str(args.train_loader))
-        print("Saved test_loader to " + str(args.test_loader))
-        print("Saved preprocessing info to " + str(preprocessing_info_path))
-        print("Train batches: " + str(len(train_loader_obj)))
-        print("Test batches: " + str(len(test_loader_obj)))
+        print(f"Saved train_loader to {args.train_loader}")
+        print(f"Saved test_loader to {args.test_loader}")
+        print(f"Train batches: {len(train_loader_obj)}")
+        print(f"Test batches: {len(test_loader_obj)}")
     args:
       - --json_data
       - {inputPath: json_data}
