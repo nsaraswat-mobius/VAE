@@ -2,7 +2,7 @@ name: Preprocess Failure Signature Data
 description: Processes failure signature data and creates training and testing dataloaders for VAE.
 inputs:
   - {name: json_data, type: Dataset}
-  - {name: config, type: String}
+  - {name: config, type: Dataset}
 outputs:
   - {name: train_loader, type: Dataset}
   - {name: test_loader, type: Dataset}
