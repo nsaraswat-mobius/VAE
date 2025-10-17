@@ -31,16 +31,77 @@ implementation:
         def extract_failure_signatures(json_data, config):
             # Extract features from performance/metrics data for VAE
             signatures = []
-            signature_field = config.get('signature_field', 'value')
+            encoding_strategy = config.get('encoding_strategy', 'single_feature')
             
-            for item in json_data:
-                if signature_field in item:
-                    try:
-                        # For VAE, we typically work with single values or simple feature vectors
-                        signature = [float(item[signature_field])]
+            print(f"Using encoding strategy: {encoding_strategy}")
+            
+            if encoding_strategy == 'single_feature':
+                # Single feature extraction
+                signature_field = config.get('signature_field', 'value')
+                print(f"Extracting single feature: {signature_field}")
+                
+                for item in json_data:
+                    if signature_field in item:
+                        try:
+                            signature = [float(item[signature_field])]
+                            signatures.append(signature)
+                        except (ValueError, TypeError):
+                            continue
+                            
+            elif encoding_strategy == 'multi_feature':
+                # Multi-feature extraction
+                numerical_features = config.get('numerical_features', ['value'])
+                categorical_features = config.get('categorical_features', [])
+                
+                print(f"Extracting numerical features: {numerical_features}")
+                print(f"Extracting categorical features: {categorical_features}")
+                
+                # First pass: collect all categorical values for encoding
+                categorical_mappings = {}
+                for feature in categorical_features:
+                    unique_values = set()
+                    for item in json_data:
+                        if feature in item:
+                            unique_values.add(str(item[feature]))
+                    categorical_mappings[feature] = {val: idx for idx, val in enumerate(sorted(unique_values))}
+                
+                # Second pass: extract features
+                for item in json_data:
+                    signature = []
+                    valid_item = True
+                    
+                    # Add numerical features
+                    for feature in numerical_features:
+                        if feature in item:
+                            try:
+                                value = float(item[feature])
+                                signature.append(value)
+                            except (ValueError, TypeError):
+                                valid_item = False
+                                break
+                        else:
+                            valid_item = False
+                            break
+                    
+                    # Add categorical features (one-hot encoded)
+                    if valid_item:
+                        for feature in categorical_features:
+                            if feature in item:
+                                cat_value = str(item[feature])
+                                if cat_value in categorical_mappings[feature]:
+                                    # One-hot encode: create vector of zeros with 1 at correct position
+                                    one_hot = [0.0] * len(categorical_mappings[feature])
+                                    one_hot[categorical_mappings[feature][cat_value]] = 1.0
+                                    signature.extend(one_hot)
+                                else:
+                                    valid_item = False
+                                    break
+                            else:
+                                valid_item = False
+                                break
+                    
+                    if valid_item and len(signature) > 0:
                         signatures.append(signature)
-                    except (ValueError, TypeError):
-                        continue
                         
             if len(signatures) == 0:
                 raise ValueError("No valid signatures found")
@@ -85,6 +146,29 @@ implementation:
         # Extract failure signatures
         signatures = extract_failure_signatures(json_data, config)
         print(f"Extracted {len(signatures)} signatures with dimension {signatures.shape[1]}")
+
+        # Deduplicate signatures if requested
+        if config.get('deduplicate', False):
+            from sklearn.metrics.pairwise import cosine_similarity
+            threshold = config.get('dedup_threshold', 0.95)
+            
+            print(f"Deduplicating with threshold: {threshold}")
+            similarity_matrix = cosine_similarity(signatures)
+            
+            to_remove = set()
+            for i in range(len(signatures)):
+                if i in to_remove:
+                    continue
+                for j in range(i + 1, len(signatures)):
+                    if j in to_remove:
+                        continue
+                    if similarity_matrix[i, j] > threshold:
+                        to_remove.add(j)
+            
+            keep_indices = [i for i in range(len(signatures)) if i not in to_remove]
+            signatures = signatures[keep_indices]
+            
+            print(f"Removed {len(to_remove)} duplicate signatures, kept {len(signatures)}")
 
         # Preprocess for VAE
         signatures_processed = preprocess_for_vae(signatures, config)
