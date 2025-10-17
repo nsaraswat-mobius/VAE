@@ -32,31 +32,71 @@ implementation:
         from torch.utils.data import TensorDataset, DataLoader
         import hashlib
 
-        def extract_failure_signatures(json_data, signature_field='failure_signature'):
-            # Extract failure signature embeddings from raw data
+        def extract_failure_signatures(json_data, config):
+            # Extract features from performance/metrics data for VAE
             signatures = []
             metadata = []
             
+            # Get feature configuration
+            numerical_features = config.get('numerical_features', ['value'])
+            categorical_features = config.get('categorical_features', [])
+            encoding_strategy = config.get('encoding_strategy', 'single_feature')
+            
+            print("Extracting features using strategy: " + str(encoding_strategy))
+            print("Numerical features: " + str(numerical_features))
+            print("Categorical features: " + str(categorical_features))
+            
             for item in json_data:
-                if signature_field in item:
-                    signature = item[signature_field]
-                    
-                    # Handle different signature formats
-                    if isinstance(signature, str):
+                if encoding_strategy == 'single_feature':
+                    # Use single feature (e.g., 'value') as signature
+                    signature_field = config.get('signature_field', 'value')
+                    if signature_field in item:
                         try:
-                            signature = json.loads(signature)
-                        except (json.JSONDecodeError, TypeError):
-                            try:
-                                signature = [float(x) for x in signature.split(',')]
-                            except (ValueError, AttributeError):
-                                continue
+                            signature = [float(item[signature_field])]
+                            signatures.append(np.array(signature, dtype=np.float32))
+                            # Store metadata
+                            meta = {key: value for key, value in item.items() if key != signature_field}
+                            metadata.append(meta)
+                        except (ValueError, TypeError):
+                            continue
+                            
+                elif encoding_strategy == 'multi_feature':
+                    # Combine multiple numerical features into signature
+                    signature = []
+                    valid_item = True
                     
-                    if isinstance(signature, list):
+                    # Add numerical features
+                    for feature in numerical_features:
+                        if feature in item:
+                            try:
+                                value = float(item[feature])
+                                signature.append(value)
+                            except (ValueError, TypeError):
+                                valid_item = False
+                                break
+                        else:
+                            valid_item = False
+                            break
+                    
+                    # Add categorical features (one-hot encoded later)
+                    categorical_values = {}
+                    for feature in categorical_features:
+                        if feature in item:
+                            categorical_values[feature] = str(item[feature])
+                        else:
+                            categorical_values[feature] = 'unknown'
+                    
+                    if valid_item and len(signature) > 0:
                         signatures.append(np.array(signature, dtype=np.float32))
-                        # Store metadata for each signature
-                        meta = {key: value for key, value in item.items() if key != signature_field}
+                        # Store metadata including categorical features
+                        meta = {key: value for key, value in item.items() 
+                               if key not in numerical_features}
+                        meta['categorical_features'] = categorical_values
                         metadata.append(meta)
             
+            if len(signatures) == 0:
+                raise ValueError("No valid signatures extracted from data")
+                
             return np.array(signatures), metadata
 
         def deduplicate_signatures(signatures, metadata, threshold=0.95):
@@ -83,14 +123,14 @@ implementation:
             # Keep non-duplicates
             keep_indices = [i for i in range(len(signatures)) if i not in to_remove]
             
-            print(f"Removed {len(to_remove)} duplicate signatures (threshold: {threshold})")
-            print(f"Kept {len(keep_indices)} unique signatures")
+            print("Removed " + str(len(to_remove)) + " duplicate signatures (threshold: " + str(threshold) + ")")
+            print("Kept " + str(len(keep_indices)) + " unique signatures")
             
             return signatures[keep_indices], [metadata[i] for i in keep_indices]
 
         def preprocess_signatures(signatures, config):
             # Apply preprocessing to failure signatures
-            print(f"Input signature shape: {signatures.shape}")
+            print("Input signature shape: " + str(signatures.shape))
             
             # Handle missing values
             if np.isnan(signatures).any():
@@ -114,22 +154,22 @@ implementation:
                 scaler = StandardScaler()
             
             signatures_scaled = scaler.fit_transform(signatures)
-            print(f"Applied {scaler_type} scaling")
+            print("Applied " + str(scaler_type) + " scaling")
             
             # Optional dimensionality reduction
             if config.get('apply_pca', False):
                 pca_components = config.get('pca_components', min(50, signatures.shape[1]))
                 pca = PCA(n_components=pca_components)
                 signatures_scaled = pca.fit_transform(signatures_scaled)
-                print(f"Applied PCA: {signatures.shape[1]} -> {signatures_scaled.shape[1]} dimensions")
-                print(f"Explained variance ratio: {pca.explained_variance_ratio_.sum():.3f}")
+                print("Applied PCA: " + str(signatures.shape[1]) + " -> " + str(signatures_scaled.shape[1]) + " dimensions")
+                print("Explained variance ratio: " + str(round(pca.explained_variance_ratio_.sum(), 3)))
             
             # Optional noise addition for regularization
             if config.get('add_noise', False):
                 noise_std = config.get('noise_std', 0.01)
                 noise = np.random.normal(0, noise_std, signatures_scaled.shape)
                 signatures_scaled = signatures_scaled + noise
-                print(f"Added Gaussian noise (std: {noise_std})")
+                print("Added Gaussian noise (std: " + str(noise_std) + ")")
             
             return signatures_scaled, scaler
 
@@ -147,8 +187,8 @@ implementation:
             X_train = signatures_shuffled[:train_size]
             X_test = signatures_shuffled[train_size:]
             
-            print(f"Train signatures shape: {X_train.shape}")
-            print(f"Test signatures shape: {X_test.shape}")
+            print("Train signatures shape: " + str(X_train.shape))
+            print("Test signatures shape: " + str(X_test.shape))
             
             # Convert to PyTorch tensors
             X_train_tensor = torch.tensor(X_train, dtype=torch.float32)
@@ -186,13 +226,13 @@ implementation:
         def print_dataset_stats(signatures, config):
             # Print statistics about the processed dataset
             print("\n=== Dataset Statistics ===")
-            print(f"Total samples: {len(signatures)}")
-            print(f"Feature dimension: {signatures.shape[1]}")
-            print(f"Data type: {signatures.dtype}")
-            print(f"Memory usage: {signatures.nbytes / 1024 / 1024:.2f} MB")
-            print(f"Value range: [{signatures.min():.4f}, {signatures.max():.4f}]")
-            print(f"Mean: {signatures.mean():.4f}")
-            print(f"Std: {signatures.std():.4f}")
+            print("Total samples: " + str(len(signatures)))
+            print("Feature dimension: " + str(signatures.shape[1]))
+            print("Data type: " + str(signatures.dtype))
+            print("Memory usage: " + str(round(signatures.nbytes / 1024 / 1024, 2)) + " MB")
+            print("Value range: [" + str(round(signatures.min(), 4)) + ", " + str(round(signatures.max(), 4)) + "]")
+            print("Mean: " + str(round(signatures.mean(), 4)))
+            print("Std: " + str(round(signatures.std(), 4)))
             
             # Check for potential issues
             if np.isnan(signatures).any():
@@ -214,22 +254,21 @@ implementation:
         config = json.loads(args.config)
         print("Loaded configuration:")
         for key, value in config.items():
-            print(f"  {key}: {value}")
+            print("  " + str(key) + ": " + str(value))
 
         # Load raw data
         with open(args.json_data, 'rb') as f:
             json_data = pickle.load(f)
-        print(f"\nLoaded failure signature data. Records: {len(json_data)}")
+        print("Loaded failure signature data. Records: " + str(len(json_data)))
 
         # Extract failure signatures
-        signature_field = config.get('signature_field', 'failure_signature')
-        signatures, metadata = extract_failure_signatures(json_data, signature_field)
+        signatures, metadata = extract_failure_signatures(json_data, config)
         
         if len(signatures) == 0:
-            raise ValueError(f"No valid signatures found in field '{signature_field}'")
+            raise ValueError("No valid signatures found")
         
-        print(f"Extracted {len(signatures)} signatures")
-        print(f"Original signature dimension: {signatures.shape[1]}")
+        print("Extracted " + str(len(signatures)) + " signatures")
+        print("Original signature dimension: " + str(signatures.shape[1]))
 
         # Deduplicate signatures
         if config.get('deduplicate', True):
@@ -271,11 +310,11 @@ implementation:
         with open(preprocessing_info_path, "wb") as f:
             pickle.dump(preprocessing_info, f)
 
-        print(f"\nSaved train_loader to {args.train_loader}")
-        print(f"Saved test_loader to {args.test_loader}")
-        print(f"Saved preprocessing info to {preprocessing_info_path}")
-        print(f"Train batches: {len(train_loader_obj)}")
-        print(f"Test batches: {len(test_loader_obj)}")
+        print("\nSaved train_loader to " + str(args.train_loader))
+        print("Saved test_loader to " + str(args.test_loader))
+        print("Saved preprocessing info to " + str(preprocessing_info_path))
+        print("Train batches: " + str(len(train_loader_obj)))
+        print("Test batches: " + str(len(test_loader_obj)))
     args:
       - --json_data
       - {inputPath: json_data}
