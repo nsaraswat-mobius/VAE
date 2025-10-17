@@ -261,11 +261,11 @@ implementation:
         print(f"Saved test_loader to {args.test_loader}")
         print(f"Train batches: {len(train_loader_obj)}")
         print(f"Test batches: {len(test_loader_obj)}")
-        args:
-            - --json_data
-            - {inputPath: json_data}
-            - --config
-            - {inputValue: config}
+    args:
+      - --json_data
+      - {inputPath: json_data}
+      - --config
+      - {inputValue: config}
       - --train_loader
       - {outputPath: train_loader}
       - --test_loader
