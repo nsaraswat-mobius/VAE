@@ -225,7 +225,7 @@ implementation:
 
         def print_dataset_stats(signatures, config):
             # Print statistics about the processed dataset
-            print("\n=== Dataset Statistics ===")
+            print("Dataset Statistics:")
             print("Total samples: " + str(len(signatures)))
             print("Feature dimension: " + str(signatures.shape[1]))
             print("Data type: " + str(signatures.dtype))
