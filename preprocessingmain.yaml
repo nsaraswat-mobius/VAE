@@ -1,7 +1,7 @@
 name: Preprocess Failure Signature Data
 description: Processes failure signature data and creates training and testing dataloaders for VAE.
 inputs:
-  - {name: json_data, type: Dataset}
+  - {name: json_data, type: String}
   - {name: config, type: String}
 outputs:
   - {name: train_loader, type: Dataset}
@@ -50,8 +50,32 @@ implementation:
                             
             elif encoding_strategy == 'multi_feature':
                 # Multi-feature extraction
-                numerical_features = config.get('numerical_features', ['value'])
-                categorical_features = config.get('categorical_features', [])
+                # Check if we have feature_columns (like RNN config) or separate numerical/categorical
+                if 'feature_columns' in config:
+                    all_features = config['feature_columns']
+                    # Try to infer which are numerical vs categorical
+                    numerical_features = []
+                    categorical_features = []
+                    
+                    for feature in all_features:
+                        # Sample first item to determine type
+                        sample_found = False
+                        for item in json_data:
+                            if feature in item:
+                                try:
+                                    float(item[feature])
+                                    numerical_features.append(feature)
+                                    sample_found = True
+                                    break
+                                except (ValueError, TypeError):
+                                    categorical_features.append(feature)
+                                    sample_found = True
+                                    break
+                        if not sample_found:
+                            print(f"Warning: Feature {feature} not found in data")
+                else:
+                    numerical_features = config.get('numerical_features', ['value'])
+                    categorical_features = config.get('categorical_features', [])
                 
                 print(f"Extracting numerical features: {numerical_features}")
                 print(f"Extracting categorical features: {categorical_features}")
@@ -139,9 +163,35 @@ implementation:
 
         config = json.loads(args.config)
 
-        with open(args.json_data, 'rb') as f:
-            json_data = pickle.load(f)
-        print(f"Loaded failure signature data. Records: {len(json_data)}")
+        # Handle different data input formats
+        json_data = None
+        data_path = args.json_data
+        
+        print(f"Loading data from: {data_path}")
+        
+        try:
+            # Try to load as pickled data first
+            with open(data_path, 'rb') as f:
+                json_data = pickle.load(f)
+            print(f"Loaded pickled data. Records: {len(json_data)}")
+        except (pickle.UnpicklingError, EOFError, UnicodeDecodeError):
+            try:
+                # If pickle fails, try JSON
+                import json as json_module
+                with open(data_path, 'r', encoding='utf-8') as f:
+                    json_data = json_module.load(f)
+                print(f"Loaded JSON data. Records: {len(json_data)}")
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                try:
+                    # If JSON fails, try CSV
+                    df = pd.read_csv(data_path)
+                    json_data = df.to_dict('records')
+                    print(f"Loaded CSV data. Records: {len(json_data)}")
+                except Exception as e:
+                    raise ValueError(f"Could not load data from {data_path}. Tried pickle, JSON, and CSV formats. Error: {e}")
+        
+        if json_data is None or len(json_data) == 0:
+            raise ValueError("No data loaded or empty dataset")
 
         # Extract failure signatures
         signatures = extract_failure_signatures(json_data, config)
@@ -213,7 +263,7 @@ implementation:
         print(f"Test batches: {len(test_loader_obj)}")
     args:
       - --json_data
-      - {inputPath: json_data}
+      - {inputValue: json_data}
       - --config
       - {inputValue: config}
       - --train_loader
