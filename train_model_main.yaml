@@ -45,9 +45,23 @@ implementation:
         with open(args.model, 'rb') as f:
             model_obj = pickle.load(f)
 
-        # Load the training data
+        # Load the training data (handle new format with metadata)
         with open(args.train_loader, 'rb') as f:
-            train_loader_obj = pickle.load(f)
+            train_data = pickle.load(f)
+            
+        # Handle both old format (just loader) and new format (with metadata)
+        if isinstance(train_data, dict) and 'loader' in train_data:
+            train_loader_obj = train_data['loader']
+            metadata = train_data['metadata']
+            print(f"Loaded training data with metadata:")
+            print(f"  - Input dimension: {metadata['processed_input_dim']}")
+            print(f"  - Train samples: {metadata['train_samples']}")
+            print(f"  - Batch size: {metadata['batch_size']}")
+        else:
+            # Old format compatibility or direct loader
+            train_loader_obj = train_data
+            metadata = None
+            print("Loaded training data (legacy format without metadata)")
 
         # Set up training parameters
         learning_rate = config.get('learning_rate', 0.001)
