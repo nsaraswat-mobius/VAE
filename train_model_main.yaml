@@ -137,8 +137,29 @@ implementation:
                     loss, recon_loss, kl_loss = model_obj.forward_with_loss(data, beta=beta)
                 else:
                     # Manual loss computation for standard VAE
-                    # VAE forward method only takes data as input (no labels)
-                    recon_data, mu, logvar = model_obj(data)
+                    # Check what the VAE forward method returns
+                    vae_output = model_obj(data)
+                    
+                    if isinstance(vae_output, tuple) and len(vae_output) == 3:
+                        # Standard VAE output: (recon_data, mu, logvar)
+                        recon_data, mu, logvar = vae_output
+                    elif isinstance(vae_output, tuple) and len(vae_output) == 2:
+                        # Some VAEs return: (recon_data, (mu, logvar))
+                        recon_data, latent_params = vae_output
+                        if isinstance(latent_params, tuple) and len(latent_params) == 2:
+                            mu, logvar = latent_params
+                        else:
+                            raise ValueError("Unexpected latent parameter format from VAE")
+                    elif hasattr(vae_output, 'reconstruction') and hasattr(vae_output, 'mu') and hasattr(vae_output, 'logvar'):
+                        # Output is an object with attributes
+                        recon_data = vae_output.reconstruction
+                        mu = vae_output.mu
+                        logvar = vae_output.logvar
+                    else:
+                        # Try to use encode/decode methods directly
+                        mu, logvar = model_obj.encode(data)
+                        z = model_obj.reparameterize(mu, logvar)
+                        recon_data = model_obj.decode(z)
                     
                     # Reconstruction loss (MSE)
                     recon_loss = nn.MSELoss()(recon_data, data)
