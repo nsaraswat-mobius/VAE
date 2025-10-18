@@ -146,7 +146,45 @@ implementation:
                 vae_output = model_obj(data)
                 
                 # Handle different VAE output formats
-                if isinstance(vae_output, tuple):
+                if isinstance(vae_output, dict):
+                    # Dictionary output format - extract keys
+                    possible_recon_keys = ['reconstruction', 'recon', 'x_recon', 'decoded', 'output']
+                    possible_mu_keys = ['mu', 'mean', 'latent_mean', 'z_mean']
+                    possible_logvar_keys = ['logvar', 'log_var', 'latent_logvar', 'z_logvar', 'log_variance']
+                    
+                    # Find reconstruction
+                    recon_data = None
+                    for key in possible_recon_keys:
+                        if key in vae_output:
+                            recon_data = vae_output[key]
+                            break
+                    
+                    # Find mu
+                    mu = None
+                    for key in possible_mu_keys:
+                        if key in vae_output:
+                            mu = vae_output[key]
+                            break
+                    
+                    # Find logvar
+                    logvar = None
+                    for key in possible_logvar_keys:
+                        if key in vae_output:
+                            logvar = vae_output[key]
+                            break
+                    
+                    # Debug: print available keys if we can't find expected ones
+                    if recon_data is None or mu is None or logvar is None:
+                        print(f"VAE output keys: {list(vae_output.keys())}")
+                        # Use first available values or create defaults
+                        if recon_data is None:
+                            recon_data = list(vae_output.values())[0] if vae_output else data
+                        if mu is None:
+                            mu = torch.zeros(data.size(0), getattr(model_obj, 'latent_dim', 16)).to(device)
+                        if logvar is None:
+                            logvar = torch.zeros(data.size(0), getattr(model_obj, 'latent_dim', 16)).to(device)
+                            
+                elif isinstance(vae_output, tuple):
                     if len(vae_output) == 3:
                         # Standard format: (recon_data, mu, logvar)
                         recon_data, mu, logvar = vae_output
@@ -161,18 +199,18 @@ implementation:
                             mu, logvar = latent_params[0], latent_params[1]
                         else:
                             # Create dummy latent variables
-                            mu = torch.zeros(data.size(0), model_obj.latent_dim).to(device)
-                            logvar = torch.zeros(data.size(0), model_obj.latent_dim).to(device)
+                            mu = torch.zeros(data.size(0), getattr(model_obj, 'latent_dim', 16)).to(device)
+                            logvar = torch.zeros(data.size(0), getattr(model_obj, 'latent_dim', 16)).to(device)
                     else:
                         # Unexpected tuple length - use first element as reconstruction
                         recon_data = vae_output[0]
-                        mu = torch.zeros(data.size(0), model_obj.latent_dim).to(device)
-                        logvar = torch.zeros(data.size(0), model_obj.latent_dim).to(device)
+                        mu = torch.zeros(data.size(0), getattr(model_obj, 'latent_dim', 16)).to(device)
+                        logvar = torch.zeros(data.size(0), getattr(model_obj, 'latent_dim', 16)).to(device)
                 else:
                     # Single output - assume it's reconstructed data
                     recon_data = vae_output
-                    mu = torch.zeros(data.size(0), model_obj.latent_dim).to(device)
-                    logvar = torch.zeros(data.size(0), model_obj.latent_dim).to(device)
+                    mu = torch.zeros(data.size(0), getattr(model_obj, 'latent_dim', 16)).to(device)
+                    logvar = torch.zeros(data.size(0), getattr(model_obj, 'latent_dim', 16)).to(device)
                 
                 # Calculate losses
                 recon_loss = nn.MSELoss()(recon_data, data)
