@@ -10,14 +10,10 @@ implementation:
   container:
     image: nikhilv215/nesy-factory:v22
     command:
-      - sh
-      - -c
-      - |
-        exec "$0" "$@"
-      - python3
-      - -u
-      - -c
-      - |
+    - sh
+    - -c
+    - |
+        python3 << 'EOF'
         import argparse
         import json
         import os
@@ -179,11 +175,12 @@ implementation:
               test_splits = np.array_split(test_indices, num_tasks)
               
               for i in range(num_tasks):
+                  complexity_desc = "Easy" if i == 0 else "Hard" if i == num_tasks-1 else "Medium"
                   task_data = {
                       'task_id': i,
                       'X_train': X_train[train_splits[i]],
                       'X_test': X_test[test_splits[i]],
-                      'description': f'Complexity Level {i+1}/{num_tasks} ({"Easy" if i == 0 else "Hard" if i == num_tasks-1 else "Medium"})',
+                      'description': f'Complexity Level {i+1}/{num_tasks} ({complexity_desc})',
                       'split_type': 'complexity_based'
                   }
                   
@@ -238,7 +235,7 @@ implementation:
             
             if isinstance(train_data, dict) and 'loader' in train_data:
                 train_loader = train_data['loader']
-                print(f"Loaded training data with metadata")
+                print("Loaded training data with metadata")
             else:
                 train_loader = train_data
                 print("Loaded training data (legacy format)")
@@ -248,7 +245,7 @@ implementation:
                 
             if isinstance(test_data, dict) and 'loader' in test_data:
                 test_loader = test_data['loader']
-                print(f"Loaded test data with metadata")
+                print("Loaded test data with metadata")
             else:
                 test_loader = test_data
                 print("Loaded test data (legacy format)")
@@ -290,28 +287,27 @@ implementation:
             }
 
             # Print task summary
-            print(f"\n=== Continual Learning Task Summary ===")
+            print("=== Continual Learning Task Summary ===")
             print(f"Strategy: {strategy}")
             print(f"Total tasks: {len(tasks)}")
             for i, task in enumerate(tasks):
-                print(f"Task {i}: {task['description']} - "
-                      f"Train: {task['stats']['train_samples']}, "
-                      f"Test: {task['stats']['test_samples']}")
+                print(f"Task {i}: {task['description']} - Train: {task['stats']['train_samples']}, Test: {task['stats']['test_samples']}")
 
             os.makedirs(os.path.dirname(args.tasks), exist_ok=True)
             with open(args.tasks, "wb") as f:
                 pickle.dump(task_summary, f)
 
-            print(f"\nSaved continual learning tasks to {args.tasks}")
+            print(f"Saved continual learning tasks to {args.tasks}")
 
         if __name__ == '__main__':
             main()
+        EOF
     args:
-      - --train_loader
-      - {inputPath: train_loader}
-      - --test_loader
-      - {inputPath: test_loader}
-      - --config
-      - {inputValue: config}
-      - --tasks
-      - {outputPath: tasks}
+    - --train_loader
+    - {inputPath: train_loader}
+    - --test_loader
+    - {inputPath: test_loader}
+    - --config
+    - {inputValue: config}
+    - --tasks
+    - {outputPath: tasks}
