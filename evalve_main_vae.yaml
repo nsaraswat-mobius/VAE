@@ -33,7 +33,7 @@ implementation:
         from nesy_factory.VAE.conditional_vae import ConditionalVAE
 
         def calculate_reconstruction_error(model, data_loader, device):
-            """Calculate reconstruction error for anomaly detection"""
+            # Calculate reconstruction error for anomaly detection
             model.eval()
             reconstruction_errors = []
             
@@ -72,7 +72,7 @@ implementation:
             return np.array(reconstruction_errors)
 
         def calculate_vae_losses(model, data_loader, device, beta=1.0):
-            """Calculate VAE-specific losses (ELBO, reconstruction, KL)"""
+            # Calculate VAE-specific losses (ELBO, reconstruction, KL)
             model.eval()
             total_elbo = 0
             total_recon = 0
@@ -150,7 +150,7 @@ implementation:
             }
 
         def detect_anomalies(reconstruction_errors, threshold_percentile=95):
-            """Detect anomalies based on reconstruction error threshold"""
+            # Detect anomalies based on reconstruction error threshold
             threshold = np.percentile(reconstruction_errors, threshold_percentile)
             anomalies = reconstruction_errors > threshold
             
