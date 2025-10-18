@@ -525,6 +525,10 @@ implementation:
 
             # Initialize VAE model based on type
             model_type = config.get('model_type', 'StandardVAE')
+            # Handle legacy "VAE" type by defaulting to StandardVAE
+            if model_type == 'VAE':
+                model_type = 'StandardVAE'
+            
             if model_type == 'StandardVAE':
                 model = StandardVAE(model_config)
             elif model_type == 'BetaVAE':
@@ -532,7 +536,7 @@ implementation:
             elif model_type == 'ConditionalVAE':
                 model = ConditionalVAE(model_config)
             else:
-                raise ValueError(f"Invalid VAE model type specified: {model_type}")
+                raise ValueError(f"Invalid VAE model type specified: {model_type}. Supported types: StandardVAE, BetaVAE, ConditionalVAE")
 
             # Load pre-trained model weights
             model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
