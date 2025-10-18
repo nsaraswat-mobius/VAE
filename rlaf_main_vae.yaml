@@ -475,6 +475,20 @@ implementation:
             print(f"Update instance field. Status Code: {response.status_code}, Full response: {response.json()}")
             print(f"Successfully updated field '{field}' for model_id '{model_id}'")
 
+        #  Core Logic 
+        def trigger_and_wait_for_dqn_pipeline(config, pipeline_domain, dqn_params):
+            run_id = trigger_pipeline(config, pipeline_domain, dqn_params)
+            config["run_id"] = run_id
+            while True:
+                status = get_pipeline_status(config, pipeline_domain)
+                print(f"Current DQN pipeline status: {status}")
+                if status == 'SUCCEEDED':
+                    print("DQN Pipeline execution completed.")
+                    break
+                elif status in ['FAILED', 'ERROR']:
+                    raise RuntimeError(f"DQN Pipeline failed with status {status}")
+                time.sleep(60)
+
         #  Core VAE Retraining Logic 
         def model_retraining(action, model_path, data_path, config, tasks_path, output_model_path, previous_metrics, dqn_params):
             # Load data and tasks
