@@ -1,0 +1,96 @@
+name: Initialize VAE Model
+description: Initializes the VAE model for failure signature anomaly detection.
+inputs:
+  - {name: config, type: String}
+  - {name: train_loader, type: Dataset}
+outputs:
+  - {name: model, type: Model}
+implementation:
+  container:
+    image: nikhilv215/nesy-factory:v22
+    command:
+      - sh
+      - -c
+      - |
+        exec "$0" "$@"
+      - python3
+      - -u
+      - -c
+      - |
+        import argparse
+        import json
+        import os
+        import pickle
+        import sys
+        import torch
+        
+        from nesy_factory.VAEs.standard_vae import StandardVAE
+        from nesy_factory.VAEs.beta_vae import BetaVAE
+        from nesy_factory.VAEs.conditional_vae import ConditionalVAE
+
+        parser = argparse.ArgumentParser()
+        parser.add_argument('--config', type=str, required=True)
+        parser.add_argument('--train_loader', type=str, required=True)
+        parser.add_argument('--model', type=str, required=True)
+        args = parser.parse_args()
+
+        config = json.loads(args.config)
+
+        # Load train_loader to get input dimensions
+        with open(args.train_loader, 'rb') as f:
+            train_loader_obj = pickle.load(f)
+        
+        # Get input dimension from the first batch
+        sample_batch = next(iter(train_loader_obj))
+        input_dim = sample_batch[0].shape[1]  # Shape: [batch_size, input_dim]
+        
+        print(f"Detected input dimension: {input_dim}")
+
+        # Build VAE model configuration
+        model_config = {
+            'input_dim': input_dim,
+            'latent_dim': config.get('latent_dim', 16),
+            'hidden_dim': config.get('hidden_dim', 64),
+            'num_layers': config.get('num_layers', 2),
+            'dropout': config.get('dropout', 0.1),
+            'beta': config.get('beta', 1.0),  # For Beta-VAE
+            'optimizer': 'adam',
+            'learning_rate': config.get('learning_rate', 0.001),
+            'epochs': config.get('epochs', 100),
+            'loss_function': config.get('loss_function', 'ELBO (reconstruction MSE + KL divergence)')
+        }
+
+        print(f"Model configuration: {model_config}")
+
+        # Initialize the appropriate VAE model based on model_type
+        model_type = config.get('model_type', 'VAE')
+        
+        if model_type == 'StandardVAE' or model_type == 'VAE':
+            model_obj = StandardVAE(model_config)
+            print("Initialized Standard VAE")
+        elif model_type == 'BetaVAE':
+            model_obj = BetaVAE(model_config)
+            print(f"Initialized Beta-VAE with beta={model_config['beta']}")
+        elif model_type == 'ConditionalVAE':
+            # For conditional VAE, we might need additional configuration
+            num_classes = config.get('num_classes', 10)
+            model_config['num_classes'] = num_classes
+            model_obj = ConditionalVAE(model_config)
+            print(f"Initialized Conditional VAE with {num_classes} classes")
+        else:
+            raise ValueError(f"Invalid VAE model type specified: {model_type}")
+
+        # Save the model
+        os.makedirs(os.path.dirname(args.model), exist_ok=True)
+        with open(args.model, "wb") as f:
+            pickle.dump(model_obj, f)
+
+        print(f"Saved {model_type} model to {args.model}")
+        print(f"Model parameters: {sum(p.numel() for p in model_obj.parameters() if p.requires_grad)} trainable parameters")
+    args:
+      - --config
+      - {inputValue: config}
+      - --train_loader
+      - {inputPath: train_loader}
+      - --model
+      - {outputPath: model}
