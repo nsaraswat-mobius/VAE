@@ -423,7 +423,7 @@ implementation:
                 }
             
             def _perform_vae_training_step(self, model, inputs, targets):
-                """Perform a single training step for VAE model"""
+                # Perform a single training step for VAE model
                 if hasattr(model, 'optimizer'):
                     model.optimizer.zero_grad()
                 else:
@@ -470,7 +470,7 @@ implementation:
                 }
             
             def _perform_vae_eval_step(self, model, test_loader):
-                """Perform evaluation on test data"""
+                # Perform evaluation on test data
                 model.eval()
                 total_loss = 0
                 total_recon_loss = 0
