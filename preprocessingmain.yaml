@@ -80,6 +80,19 @@ implementation:
                 print(f"Extracting numerical features: {numerical_features}")
                 print(f"Extracting categorical features: {categorical_features}")
                 
+                # Debug: Check if features exist in data
+                sample_item = json_data[0] if len(json_data) > 0 else {}
+                available_keys = set(sample_item.keys())
+                missing_numerical = [f for f in numerical_features if f not in available_keys]
+                missing_categorical = [f for f in categorical_features if f not in available_keys]
+                
+                if missing_numerical:
+                    print(f"WARNING: Missing numerical features: {missing_numerical}")
+                if missing_categorical:
+                    print(f"WARNING: Missing categorical features: {missing_categorical}")
+                
+                print(f"Available keys in data: {sorted(available_keys)}")
+                
                 # First pass: collect all categorical values for encoding
                 categorical_mappings = {}
                 for feature in categorical_features:
@@ -90,6 +103,9 @@ implementation:
                     categorical_mappings[feature] = {val: idx for idx, val in enumerate(sorted(unique_values))}
                 
                 # Second pass: extract features
+                valid_items = 0
+                invalid_items = 0
+                
                 for item in json_data:
                     signature = []
                     valid_item = True
@@ -100,10 +116,12 @@ implementation:
                             try:
                                 value = float(item[feature])
                                 signature.append(value)
-                            except (ValueError, TypeError):
+                            except (ValueError, TypeError) as e:
+                                print(f"Failed to convert {feature}={item[feature]} to float: {e}")
                                 valid_item = False
                                 break
                         else:
+                            print(f"Feature {feature} not found in item")
                             valid_item = False
                             break
                     
@@ -118,14 +136,21 @@ implementation:
                                     one_hot[categorical_mappings[feature][cat_value]] = 1.0
                                     signature.extend(one_hot)
                                 else:
+                                    print(f"Unknown categorical value {cat_value} for feature {feature}")
                                     valid_item = False
                                     break
                             else:
+                                print(f"Categorical feature {feature} not found in item")
                                 valid_item = False
                                 break
                     
                     if valid_item and len(signature) > 0:
                         signatures.append(signature)
+                        valid_items += 1
+                    else:
+                        invalid_items += 1
+                
+                print(f"Processed {len(json_data)} items: {valid_items} valid, {invalid_items} invalid")
                         
             if len(signatures) == 0:
                 raise ValueError("No valid signatures found")
@@ -193,9 +218,15 @@ implementation:
         if json_data is None or len(json_data) == 0:
             raise ValueError("No data loaded or empty dataset")
 
+        print(f"Sample data structure (first item): {json_data[0] if len(json_data) > 0 else 'No data'}")
+        print(f"Available keys in first item: {list(json_data[0].keys()) if len(json_data) > 0 else 'No keys'}")
+
         # Extract failure signatures
         signatures = extract_failure_signatures(json_data, config)
         print(f"Extracted {len(signatures)} signatures with dimension {signatures.shape[1]}")
+
+        if len(signatures) == 0:
+            raise ValueError("No valid signatures extracted. Check your feature configuration and data format.")
 
         # Deduplicate signatures if requested
         if config.get('deduplicate', False):
@@ -234,6 +265,16 @@ implementation:
         X_train = signatures_shuffled[:train_size]
         X_test = signatures_shuffled[train_size:]
         print(f"Train data shape: {X_train.shape}, Test data shape: {X_test.shape}")
+
+        if len(X_train) == 0:
+            raise ValueError("Training set is empty. Check your train_ratio or data size.")
+        if len(X_test) == 0:
+            print("Warning: Test set is empty. Using a small portion of training data for testing.")
+            # Use last 10% of training data as test set
+            split_idx = int(len(X_train) * 0.9)
+            X_test = X_train[split_idx:]
+            X_train = X_train[:split_idx]
+            print(f"Adjusted - Train data shape: {X_train.shape}, Test data shape: {X_test.shape}")
 
         # Convert to PyTorch tensors
         X_train_tensor = torch.tensor(X_train, dtype=torch.float32)
