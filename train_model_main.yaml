@@ -44,9 +44,23 @@ implementation:
         with open(args.model, 'rb') as f:
             model_obj = pickle.load(f)
 
-        # Load the training data
+        # Load the training data (with metadata from preprocessing)
         with open(args.train_loader, 'rb') as f:
-            train_loader_obj = pickle.load(f)
+            train_data = pickle.load(f)
+            
+        # Handle both old format (just loader) and new format (with metadata)
+        if isinstance(train_data, dict) and 'loader' in train_data:
+            train_loader_obj = train_data['loader']
+            metadata = train_data['metadata']
+            print(f"Loaded training data with metadata:")
+            print(f"  - Input dimension: {metadata['processed_input_dim']}")
+            print(f"  - Train samples: {metadata['train_samples']}")
+            print(f"  - Batch size: {metadata['batch_size']}")
+        else:
+            # Old format compatibility
+            train_loader_obj = train_data
+            metadata = None
+            print("Loaded training data (legacy format without metadata)")
 
         # Set up training parameters
         learning_rate = config.get('learning_rate', 0.001)
@@ -65,6 +79,36 @@ implementation:
         print(f"  - Learning rate: {learning_rate}")
         print(f"  - Epochs: {epochs}")
         print(f"  - Beta (KL weight): {beta}")
+        # Validate model input dimension against actual data
+        print("Validating model architecture against data dimensions...")
+        sample_batch = next(iter(train_loader_obj))
+        if isinstance(sample_batch, (list, tuple)) and len(sample_batch) == 2:
+            sample_data, _ = sample_batch
+        else:
+            sample_data = sample_batch
+        
+        actual_input_dim = sample_data.shape[1]
+        print(f"Actual data input dimension: {actual_input_dim}")
+        
+        # Check if model architecture matches data
+        try:
+            # Test forward pass with a small batch
+            model_obj.eval()
+            with torch.no_grad():
+                test_output = model_obj(sample_data[:1].to(device))
+            print("Model architecture validation: PASSED")
+            model_obj.train()  # Switch back to training mode
+        except RuntimeError as e:
+            if "cannot be multiplied" in str(e):
+                raise RuntimeError(
+                    f"Model input dimension mismatch: "
+                    f"Data has {actual_input_dim} features, but model expects different dimensions. "
+                    f"Please rebuild the model with 'processed_input_dim': {actual_input_dim} in config. "
+                    f"Original error: {e}"
+                )
+            else:
+                raise e
+
         print(f"Starting VAE Model Training...")
 
         # Training loop
