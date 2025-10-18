@@ -1,0 +1,317 @@
+name: Create Continual Learning Tasks
+description: Splits data into multiple tasks for VAE continual learning in failure signature anomaly detection.
+inputs:
+  - {name: train_loader, type: Dataset}
+  - {name: test_loader, type: Dataset}
+  - {name: config, type: String}
+outputs:
+  - {name: tasks, type: Dataset}
+implementation:
+  container:
+    image: nikhilv215/nesy-factory:v22
+    command:
+      - sh
+      - -c
+      - |
+        exec "$0" "$@"
+      - python3
+      - -u
+      - -c
+      - |
+        import argparse
+        import json
+        import os
+        import pickle
+        import numpy as np
+        import torch
+        from torch.utils.data import TensorDataset, DataLoader
+
+        class VAETemporalDataSplitter:
+          
+          def __init__(self, data, config, strategy='temporal_split'):
+              self.data = data
+              self.config = config
+              self.strategy = strategy
+              
+          def create_continual_tasks(self, num_tasks: int = 3) -> list:
+              if self.strategy == 'temporal_split':
+                  return self._temporal_split(num_tasks)
+              elif self.strategy == 'feature_based_split':
+                  return self._feature_based_split(num_tasks)
+              elif self.strategy == 'complexity_split':
+                  return self._complexity_split(num_tasks)
+              else:
+                  return self._temporal_split(num_tasks)
+          
+          def _temporal_split(self, num_tasks: int) -> list:
+              # Split data chronologically for temporal continual learning
+              tasks = []
+              
+              X_train = self.data['X_train']
+              X_test = self.data['X_test']
+
+              train_size = len(X_train)
+              test_size = len(X_test)
+              
+              train_splits = np.array_split(range(train_size), num_tasks)
+              test_splits = np.array_split(range(test_size), num_tasks)
+              
+              for i in range(num_tasks):
+                  task_data = {
+                      'task_id': i,
+                      'X_train': X_train[train_splits[i]],
+                      'X_test': X_test[test_splits[i]],
+                      'description': f'Temporal Period {i+1}/{num_tasks}',
+                      'split_type': 'temporal'
+                  }
+                  
+                  # For VAE, input and target are the same (reconstruction task)
+                  train_dataset = TensorDataset(
+                      torch.tensor(task_data['X_train'], dtype=torch.float32), 
+                      torch.tensor(task_data['X_train'], dtype=torch.float32)
+                  )
+                  test_dataset = TensorDataset(
+                      torch.tensor(task_data['X_test'], dtype=torch.float32), 
+                      torch.tensor(task_data['X_test'], dtype=torch.float32)
+                  )
+
+                  task_data['train_loader'] = DataLoader(
+                      train_dataset, 
+                      batch_size=self.config.get('batch_size', 32), 
+                      shuffle=True
+                  )
+                  task_data['test_loader'] = DataLoader(
+                      test_dataset, 
+                      batch_size=self.config.get('batch_size', 32), 
+                      shuffle=False
+                  )
+                  
+                  # Add task-specific statistics
+                  task_data['stats'] = {
+                      'train_samples': len(task_data['X_train']),
+                      'test_samples': len(task_data['X_test']),
+                      'feature_dim': task_data['X_train'].shape[1],
+                      'train_mean': np.mean(task_data['X_train'], axis=0).tolist(),
+                      'train_std': np.std(task_data['X_train'], axis=0).tolist()
+                  }
+                  
+                  tasks.append(task_data)
+              
+              return tasks
+          
+          def _feature_based_split(self, num_tasks: int) -> list:
+              # Split based on different feature subsets for domain adaptation
+              tasks = []
+              
+              X_train = self.data['X_train']
+              X_test = self.data['X_test']
+              
+              feature_dim = X_train.shape[1]
+              features_per_task = feature_dim // num_tasks
+              
+              for i in range(num_tasks):
+                  start_idx = i * features_per_task
+                  end_idx = start_idx + features_per_task
+                  if i == num_tasks - 1:  # Last task gets remaining features
+                      end_idx = feature_dim
+                  
+                  # Select feature subset
+                  task_X_train = X_train[:, start_idx:end_idx]
+                  task_X_test = X_test[:, start_idx:end_idx]
+                  
+                  task_data = {
+                      'task_id': i,
+                      'X_train': task_X_train,
+                      'X_test': task_X_test,
+                      'description': f'Feature Subset {start_idx}-{end_idx-1} ({i+1}/{num_tasks})',
+                      'split_type': 'feature_based',
+                      'feature_range': [start_idx, end_idx]
+                  }
+                  
+                  # Create datasets for VAE reconstruction
+                  train_dataset = TensorDataset(
+                      torch.tensor(task_data['X_train'], dtype=torch.float32),
+                      torch.tensor(task_data['X_train'], dtype=torch.float32)
+                  )
+                  test_dataset = TensorDataset(
+                      torch.tensor(task_data['X_test'], dtype=torch.float32),
+                      torch.tensor(task_data['X_test'], dtype=torch.float32)
+                  )
+
+                  task_data['train_loader'] = DataLoader(
+                      train_dataset, 
+                      batch_size=self.config.get('batch_size', 32), 
+                      shuffle=True
+                  )
+                  task_data['test_loader'] = DataLoader(
+                      test_dataset, 
+                      batch_size=self.config.get('batch_size', 32), 
+                      shuffle=False
+                  )
+                  
+                  task_data['stats'] = {
+                      'train_samples': len(task_data['X_train']),
+                      'test_samples': len(task_data['X_test']),
+                      'feature_dim': task_data['X_train'].shape[1],
+                      'train_mean': np.mean(task_data['X_train'], axis=0).tolist(),
+                      'train_std': np.std(task_data['X_train'], axis=0).tolist()
+                  }
+                  
+                  tasks.append(task_data)
+              
+              return tasks
+          
+          def _complexity_split(self, num_tasks: int) -> list:
+              # Split based on data complexity (e.g., reconstruction difficulty)
+              tasks = []
+              
+              X_train = self.data['X_train']
+              X_test = self.data['X_test']
+              
+              # Calculate complexity score (variance across features)
+              complexity_scores = np.var(X_train, axis=1)
+              train_sorted_indices = np.argsort(complexity_scores)
+              
+              # For test set, use random order to maintain distribution
+              test_indices = np.random.permutation(len(X_test))
+              
+              train_splits = np.array_split(train_sorted_indices, num_tasks)
+              test_splits = np.array_split(test_indices, num_tasks)
+              
+              for i in range(num_tasks):
+                  task_data = {
+                      'task_id': i,
+                      'X_train': X_train[train_splits[i]],
+                      'X_test': X_test[test_splits[i]],
+                      'description': f'Complexity Level {i+1}/{num_tasks} ({"Easy" if i == 0 else "Hard" if i == num_tasks-1 else "Medium"})',
+                      'split_type': 'complexity_based'
+                  }
+                  
+                  train_dataset = TensorDataset(
+                      torch.tensor(task_data['X_train'], dtype=torch.float32),
+                      torch.tensor(task_data['X_train'], dtype=torch.float32)
+                  )
+                  test_dataset = TensorDataset(
+                      torch.tensor(task_data['X_test'], dtype=torch.float32),
+                      torch.tensor(task_data['X_test'], dtype=torch.float32)
+                  )
+
+                  task_data['train_loader'] = DataLoader(
+                      train_dataset, 
+                      batch_size=self.config.get('batch_size', 32), 
+                      shuffle=True
+                  )
+                  task_data['test_loader'] = DataLoader(
+                      test_dataset, 
+                      batch_size=self.config.get('batch_size', 32), 
+                      shuffle=False
+                  )
+                  
+                  # Add complexity statistics
+                  task_complexity = np.mean(np.var(task_data['X_train'], axis=1))
+                  task_data['stats'] = {
+                      'train_samples': len(task_data['X_train']),
+                      'test_samples': len(task_data['X_test']),
+                      'feature_dim': task_data['X_train'].shape[1],
+                      'complexity_score': float(task_complexity),
+                      'train_mean': np.mean(task_data['X_train'], axis=0).tolist(),
+                      'train_std': np.std(task_data['X_train'], axis=0).tolist()
+                  }
+                  
+                  tasks.append(task_data)
+              
+              return tasks
+
+        def main():
+            parser = argparse.ArgumentParser()
+            parser.add_argument('--train_loader', type=str, required=True)
+            parser.add_argument('--test_loader', type=str, required=True)
+            parser.add_argument('--config', type=str, required=True)
+            parser.add_argument('--tasks', type=str, required=True)
+            args = parser.parse_args()
+
+            config = json.loads(args.config)
+
+            # Load data (handle new format with metadata)
+            with open(args.train_loader, 'rb') as f:
+                train_data = pickle.load(f)
+            
+            if isinstance(train_data, dict) and 'loader' in train_data:
+                train_loader = train_data['loader']
+                print(f"Loaded training data with metadata")
+            else:
+                train_loader = train_data
+                print("Loaded training data (legacy format)")
+            
+            with open(args.test_loader, 'rb') as f:
+                test_data = pickle.load(f)
+                
+            if isinstance(test_data, dict) and 'loader' in test_data:
+                test_loader = test_data['loader']
+                print(f"Loaded test data with metadata")
+            else:
+                test_loader = test_data
+                print("Loaded test data (legacy format)")
+
+            # Extract tensors from DataLoaders (VAE uses same input as target)
+            X_train = train_loader.dataset.tensors[0].numpy()
+            X_test = test_loader.dataset.tensors[0].numpy()
+
+            print(f"Training data shape: {X_train.shape}")
+            print(f"Test data shape: {X_test.shape}")
+
+            data = {
+                'X_train': X_train,
+                'X_test': X_test
+            }
+            
+            # Create continual learning tasks
+            strategy = config.get('cl_strategy', 'temporal_split')
+            num_tasks = config.get('num_tasks', 3)
+            
+            print(f"Creating {num_tasks} continual learning tasks using '{strategy}' strategy")
+            
+            splitter = VAETemporalDataSplitter(data, config, strategy=strategy)
+            tasks = splitter.create_continual_tasks(num_tasks=num_tasks)
+
+            # Add global task information
+            task_summary = {
+                'total_tasks': len(tasks),
+                'strategy': strategy,
+                'original_train_size': len(X_train),
+                'original_test_size': len(X_test),
+                'feature_dim': X_train.shape[1],
+                'config': {
+                    'batch_size': config.get('batch_size', 32),
+                    'cl_strategy': strategy,
+                    'num_tasks': num_tasks
+                },
+                'tasks': tasks
+            }
+
+            # Print task summary
+            print(f"\n--- Continual Learning Task Summary ---")
+            print(f"Strategy: {strategy}")
+            print(f"Total tasks: {len(tasks)}")
+            for i, task in enumerate(tasks):
+                print(f"Task {i}: {task['description']} - "
+                      f"Train: {task['stats']['train_samples']}, "
+                      f"Test: {task['stats']['test_samples']}")
+
+            os.makedirs(os.path.dirname(args.tasks), exist_ok=True)
+            with open(args.tasks, "wb") as f:
+                pickle.dump(task_summary, f)
+
+            print(f"\nSaved continual learning tasks to {args.tasks}")
+
+        if __name__ == '__main__':
+            main()
+    args:
+      - --train_loader
+      - {inputPath: train_loader}
+      - --test_loader
+      - {inputPath: test_loader}
+      - --config
+      - {inputValue: config}
+      - --tasks
+      - {outputPath: tasks}
