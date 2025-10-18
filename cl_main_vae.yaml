@@ -290,7 +290,7 @@ implementation:
             }
 
             # Print task summary
-            print(f"\n--- Continual Learning Task Summary ---")
+            print(f"\n=== Continual Learning Task Summary ===")
             print(f"Strategy: {strategy}")
             print(f"Total tasks: {len(tasks)}")
             for i, task in enumerate(tasks):
