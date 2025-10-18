@@ -8,7 +8,7 @@ outputs:
   - {name: json_data, type: Dataset}
 implementation:
   container:
-    image: gurpreetgandhi/nesy-factory:v21
+    image: nikhilv215/nesy-factory:v22
     command:
       - sh
       - -c
