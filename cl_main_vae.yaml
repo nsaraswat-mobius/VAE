@@ -301,13 +301,12 @@ implementation:
 
         if __name__ == '__main__':
             main()
-        EOF
     args:
-    - --train_loader
-    - {inputPath: train_loader}
-    - --test_loader
-    - {inputPath: test_loader}
-    - --config
-    - {inputValue: config}
-    - --tasks
-    - {outputPath: tasks}
+      - --train_loader
+      - {inputPath: train_loader}
+      - --test_loader
+      - {inputPath: test_loader}
+      - --config
+      - {inputValue: config}
+      - --tasks
+      - {outputPath: tasks}
