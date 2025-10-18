@@ -295,6 +295,7 @@ implementation:
         test_loader_obj = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
         # Create metadata with processing information
+        categorical_features = config.get('categorical_features', [])
         metadata = {
             'processed_input_dim': processed_input_dim,
             'train_samples': len(X_train),
@@ -302,7 +303,7 @@ implementation:
             'batch_size': batch_size,
             'feature_names': config.get('feature_columns', []),
             'num_numerical_features': len(config.get('numerical_features', [])),
-            'num_categorical_features': len(config.get('categorical_features', [])),
+            'num_categorical_features': len(categorical_features),
             'categorical_mappings': categorical_mappings if categorical_features else {}
         }
 
