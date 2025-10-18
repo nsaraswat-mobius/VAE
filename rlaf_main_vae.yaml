@@ -252,7 +252,6 @@ implementation:
                 return results
             
             def _evaluate_anomaly_detection(self, model, test_loader):
-                """Evaluate anomaly detection performance using reconstruction error"""
                 model.eval()
                 reconstruction_errors = []
                 
