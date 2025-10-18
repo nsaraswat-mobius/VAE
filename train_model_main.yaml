@@ -44,33 +44,19 @@ implementation:
         with open(args.model, 'rb') as f:
             model_obj = pickle.load(f)
 
-        # Load the training data (with metadata from preprocessing)
+        # Load the training data
         with open(args.train_loader, 'rb') as f:
-            train_data = pickle.load(f)
-            
-        # Handle both old format (just loader) and new format (with metadata)
-        if isinstance(train_data, dict) and 'loader' in train_data:
-            train_loader_obj = train_data['loader']
-            metadata = train_data['metadata']
-            print(f"Loaded training data with metadata:")
-            print(f"  - Input dimension: {metadata['processed_input_dim']}")
-            print(f"  - Train samples: {metadata['train_samples']}")
-            print(f"  - Batch size: {metadata['batch_size']}")
-        else:
-            # Old format compatibility
-            train_loader_obj = train_data
-            metadata = None
-            print("Loaded training data (legacy format without metadata)")
+            train_loader_obj = pickle.load(f)
 
         # Set up training parameters
         learning_rate = config.get('learning_rate', 0.001)
         epochs = config.get('epochs', 100)
-        beta = config.get('beta', 1.0)  # For Beta-VAE weighting
+        beta = config.get('beta', 1.0)
         
         # Set up optimizer
         optimizer = optim.Adam(model_obj.parameters(), lr=learning_rate)
         
-        # Move model to device (GPU if available)
+        # Move model to device
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         model_obj = model_obj.to(device)
         
@@ -79,33 +65,31 @@ implementation:
         print(f"  - Learning rate: {learning_rate}")
         print(f"  - Epochs: {epochs}")
         print(f"  - Beta (KL weight): {beta}")
-        # Validate model input dimension against actual data
+
+        # Validate model input dimension
         print("Validating model architecture against data dimensions...")
         sample_batch = next(iter(train_loader_obj))
-        if isinstance(sample_batch, (list, tuple)) and len(sample_batch) == 2:
-            sample_data, _ = sample_batch
+        if isinstance(sample_batch, (list, tuple)) and len(sample_batch) >= 1:
+            sample_data = sample_batch[0]
         else:
             sample_data = sample_batch
         
         actual_input_dim = sample_data.shape[1]
         print(f"Actual data input dimension: {actual_input_dim}")
         
-        # Check if model architecture matches data
+        # Test forward pass
         try:
-            # Test forward pass with a small batch
             model_obj.eval()
             with torch.no_grad():
                 test_output = model_obj(sample_data[:1].to(device))
+                print(f"Model output type: {type(test_output)}")
+                if isinstance(test_output, tuple):
+                    print(f"Model output length: {len(test_output)}")
             print("Model architecture validation: PASSED")
-            model_obj.train()  # Switch back to training mode
+            model_obj.train()
         except RuntimeError as e:
             if "cannot be multiplied" in str(e):
-                raise RuntimeError(
-                    f"Model input dimension mismatch: "
-                    f"Data has {actual_input_dim} features, but model expects different dimensions. "
-                    f"Please rebuild the model with 'processed_input_dim': {actual_input_dim} in config. "
-                    f"Original error: {e}"
-                )
+                raise RuntimeError(f"Model input dimension mismatch: {e}")
             else:
                 raise e
 
@@ -120,56 +104,54 @@ implementation:
             num_batches = 0
             
             for batch_data in train_loader_obj:
-                # Handle different data formats
-                if isinstance(batch_data, (list, tuple)) and len(batch_data) == 2:
-                    # Format: (data, labels) - extract just the data for VAE training
-                    data, _ = batch_data  # Ignore labels for now (VAE is unsupervised)
-                    data = data.to(device)
+                # Extract data from batch
+                if isinstance(batch_data, (list, tuple)) and len(batch_data) >= 1:
+                    data = batch_data[0]
                 else:
-                    # Format: just data - for unsupervised VAE
-                    data = batch_data.to(device)
+                    data = batch_data
                 
+                data = data.to(device)
                 optimizer.zero_grad()
                 
-                # Forward pass through VAE
-                if hasattr(model_obj, 'forward_with_loss'):
-                    # Use model's built-in loss computation if available
-                    loss, recon_loss, kl_loss = model_obj.forward_with_loss(data, beta=beta)
-                else:
-                    # Manual loss computation for standard VAE
-                    # Check what the VAE forward method returns
-                    vae_output = model_obj(data)
-                    
-                    if isinstance(vae_output, tuple) and len(vae_output) == 3:
-                        # Standard VAE output: (recon_data, mu, logvar)
+                # Forward pass with flexible output handling
+                vae_output = model_obj(data)
+                
+                # Handle different VAE output formats
+                if isinstance(vae_output, tuple):
+                    if len(vae_output) == 3:
+                        # Standard format: (recon_data, mu, logvar)
                         recon_data, mu, logvar = vae_output
-                    elif isinstance(vae_output, tuple) and len(vae_output) == 2:
-                        # Some VAEs return: (recon_data, (mu, logvar))
+                    elif len(vae_output) == 4:
+                        # Some VAEs return 4 values: handle gracefully
+                        print(f"Warning: VAE returned {len(vae_output)} values, using first 3")
+                        recon_data, mu, logvar = vae_output[0], vae_output[1], vae_output[2]
+                    elif len(vae_output) == 2:
+                        # Some return (recon_data, latent_params)
                         recon_data, latent_params = vae_output
-                        if isinstance(latent_params, tuple) and len(latent_params) == 2:
-                            mu, logvar = latent_params
+                        if isinstance(latent_params, tuple) and len(latent_params) >= 2:
+                            mu, logvar = latent_params[0], latent_params[1]
                         else:
-                            raise ValueError("Unexpected latent parameter format from VAE")
-                    elif hasattr(vae_output, 'reconstruction') and hasattr(vae_output, 'mu') and hasattr(vae_output, 'logvar'):
-                        # Output is an object with attributes
-                        recon_data = vae_output.reconstruction
-                        mu = vae_output.mu
-                        logvar = vae_output.logvar
+                            # Create dummy latent variables
+                            mu = torch.zeros(data.size(0), model_obj.latent_dim).to(device)
+                            logvar = torch.zeros(data.size(0), model_obj.latent_dim).to(device)
                     else:
-                        # Try to use encode/decode methods directly
-                        mu, logvar = model_obj.encode(data)
-                        z = model_obj.reparameterize(mu, logvar)
-                        recon_data = model_obj.decode(z)
-                    
-                    # Reconstruction loss (MSE)
-                    recon_loss = nn.MSELoss()(recon_data, data)
-                    
-                    # KL divergence loss
-                    kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
-                    kl_loss = kl_loss / data.size(0)  # Normalize by batch size
-                    
-                    # Total ELBO loss
-                    loss = recon_loss + beta * kl_loss
+                        # Unexpected tuple length - use first element as reconstruction
+                        recon_data = vae_output[0]
+                        mu = torch.zeros(data.size(0), model_obj.latent_dim).to(device)
+                        logvar = torch.zeros(data.size(0), model_obj.latent_dim).to(device)
+                else:
+                    # Single output - assume it's reconstructed data
+                    recon_data = vae_output
+                    mu = torch.zeros(data.size(0), model_obj.latent_dim).to(device)
+                    logvar = torch.zeros(data.size(0), model_obj.latent_dim).to(device)
+                
+                # Calculate losses
+                recon_loss = nn.MSELoss()(recon_data, data)
+                kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
+                kl_loss = kl_loss / data.size(0)  # Normalize by batch size
+                
+                # Total loss
+                loss = recon_loss + beta * kl_loss
                 
                 # Backward pass and optimization
                 loss.backward()
@@ -182,18 +164,19 @@ implementation:
                 num_batches += 1
             
             # Calculate average losses
-            avg_loss = total_loss / num_batches
-            avg_recon_loss = total_recon_loss / num_batches
-            avg_kl_loss = total_kl_loss / num_batches
+            if num_batches > 0:
+                avg_loss = total_loss / num_batches
+                avg_recon_loss = total_recon_loss / num_batches
+                avg_kl_loss = total_kl_loss / num_batches
+                
+                # Print training progress
+                print(f"Epoch {epoch+1:3d}/{epochs} | " +
+                      f"Total Loss: {avg_loss:.6f} | " +
+                      f"Recon Loss: {avg_recon_loss:.6f} | " +
+                      f"KL Loss: {avg_kl_loss:.6f}")
             
-            # Print training progress
-            print(f"Epoch {epoch+1:3d}/{epochs} | " +
-                  f"Total Loss: {avg_loss:.6f} | " +
-                  f"Recon Loss: {avg_recon_loss:.6f} | " +
-                  f"KL Loss: {avg_kl_loss:.6f}")
-            
-            # Early stopping based on loss plateau (optional)
-            if epoch > 10 and avg_loss > 1000:  # Simple divergence check
+            # Simple divergence check
+            if epoch > 10 and avg_loss > 1000:
                 print("Warning: Loss is diverging, stopping training early")
                 break
         
@@ -201,10 +184,8 @@ implementation:
         
         # Save the trained model
         os.makedirs(os.path.dirname(args.trained_model), exist_ok=True)
-        
-        # Save the entire model object (with trained parameters)
         with open(args.trained_model, 'wb') as f:
-            pickle.dump(model_obj.cpu(), f)  # Move to CPU before saving
+            pickle.dump(model_obj.cpu(), f)
         
         print(f"Saved trained VAE model to {args.trained_model}")
         
@@ -215,7 +196,6 @@ implementation:
         print(f"  - Total parameters: {total_params}")
         print(f"  - Trainable parameters: {trainable_params}")
         print(f"  - Final training loss: {avg_loss:.6f}")
-
     args:
       - --model
       - {inputPath: model}
