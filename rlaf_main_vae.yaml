@@ -168,7 +168,7 @@ implementation:
                             if strategy_name == 'regularized' and task_idx > 0:
                                 loss_dict = self._train_with_regularization(model, (inputs, targets))
                             else:
-                                loss_dict = model.train_step((inputs, targets))
+                                loss_dict = self._perform_vae_training_step(model, inputs, targets)
                             
                             # Handle different VAE output formats
                             if isinstance(loss_dict, dict):
@@ -196,7 +196,7 @@ implementation:
                         if len(previous_task_data) > 3:
                             previous_task_data = previous_task_data[-3:]
                     
-                    current_task_metrics = model.eval_step(task_data['test_loader'])
+                    current_task_metrics = self._perform_vae_eval_step(model, task_data['test_loader'])
                     task_metrics.append(current_task_metrics)
                     
                     # Calculate anomaly detection performance
@@ -208,7 +208,7 @@ implementation:
                     
                     task_performance = []
                     for eval_task_idx in range(task_idx + 1):
-                        eval_metrics = model.eval_step(tasks[eval_task_idx]['test_loader'])
+                        eval_metrics = self._perform_vae_eval_step(model, tasks[eval_task_idx]['test_loader'])
                         eval_anomaly = self._evaluate_anomaly_detection(model, tasks[eval_task_idx]['test_loader'])
                         eval_metrics.update(eval_anomaly)
                         
@@ -230,7 +230,7 @@ implementation:
                 
                 final_eval_metrics = []
                 for i in range(len(tasks)):
-                    task_eval = model.eval_step(tasks[i]['test_loader'])
+                    task_eval = self._perform_vae_eval_step(model, tasks[i]['test_loader'])
                     task_anomaly = self._evaluate_anomaly_detection(model, tasks[i]['test_loader'])
                     task_eval.update(task_anomaly)
                     final_eval_metrics.append(task_eval)
@@ -336,8 +336,10 @@ implementation:
                         self.important_params[name] = param.clone().detach()
             
             def _train_with_regularization(self, model, data) -> Dict[str, float]:
-                base_loss_dict = model.train_step(data)
+                inputs, targets = data
+                base_loss_dict = self._perform_vae_training_step(model, inputs, targets)
                 
+                # Add regularization loss
                 reg_loss = 0.0
                 reg_lambda = 0.1
                 
@@ -346,28 +348,45 @@ implementation:
                         if name in self.important_params and param.requires_grad:
                             reg_loss += torch.sum((param - self.important_params[name]).pow(2))
                 
-                # Handle different return formats from VAE train_step
-                if isinstance(base_loss_dict, dict):
-                    base_loss = base_loss_dict.get('loss', base_loss_dict.get('total_loss', 0))
-                    total_loss = base_loss + reg_lambda * reg_loss
-                    
-                    # Update the loss in the dictionary
-                    result_dict = base_loss_dict.copy()
-                    result_dict['loss'] = total_loss.item() if hasattr(total_loss, 'item') else total_loss
-                    result_dict['regularization_loss'] = reg_loss.item() if hasattr(reg_loss, 'item') else reg_loss
-                else:
-                    total_loss = base_loss_dict + reg_lambda * reg_loss
-                    result_dict = {
-                        'loss': total_loss.item() if hasattr(total_loss, 'item') else total_loss,
-                        'regularization_loss': reg_loss.item() if hasattr(reg_loss, 'item') else reg_loss
-                    }
+                # Update the loss with regularization
+                base_loss = base_loss_dict.get('loss', base_loss_dict.get('total_loss', 0))
                 
-                # Manually do backward pass for regularized training
-                if hasattr(model, 'optimizer'):
+                # Add regularization to the base loss (note: training step already did backward pass)
+                # We need to do additional backward pass for regularization
+                if reg_loss > 0 and hasattr(model, 'optimizer'):
                     model.optimizer.zero_grad()
+                    
+                    # Recalculate forward pass for regularized training
+                    outputs = model(inputs)
+                    if isinstance(outputs, dict):
+                        reconstructed = outputs.get('reconstruction', outputs.get('x_recon', inputs))
+                        mu = outputs.get('mu', outputs.get('z_mean', torch.zeros_like(inputs[:, :model.latent_dim] if hasattr(model, 'latent_dim') else inputs[:, :32])))
+                        logvar = outputs.get('logvar', outputs.get('z_logvar', torch.zeros_like(mu)))
+                    elif isinstance(outputs, tuple) and len(outputs) >= 3:
+                        reconstructed, mu, logvar = outputs[0], outputs[1], outputs[2]
+                    else:
+                        reconstructed = outputs if not isinstance(outputs, tuple) else outputs[0]
+                        latent_dim = getattr(model, 'latent_dim', 32)
+                        mu = torch.zeros(inputs.size(0), latent_dim, device=inputs.device)
+                        logvar = torch.zeros_like(mu)
+                    
+                    recon_loss = torch.nn.functional.mse_loss(reconstructed, inputs, reduction='mean')
+                    kld_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp()) / inputs.size(0)
+                    beta = getattr(model, 'beta', 1.0) if hasattr(model, 'beta') else self.config.get('beta', 1.0)
+                    base_loss_tensor = recon_loss + beta * kld_loss
+                    
+                    total_loss = base_loss_tensor + reg_lambda * reg_loss
                     total_loss.backward()
                     model.optimizer.step()
-
+                    
+                    total_loss_value = total_loss.item()
+                else:
+                    total_loss_value = base_loss
+                
+                result_dict = base_loss_dict.copy()
+                result_dict['loss'] = total_loss_value
+                result_dict['regularization_loss'] = reg_loss.item() if hasattr(reg_loss, 'item') else reg_loss
+                
                 return result_dict
             
             def _calculate_continual_metrics(self, all_task_performance: List[List[Dict]]) -> Dict[str, float]:
@@ -401,6 +420,97 @@ implementation:
                     'backward_transfer': avg_backward_transfer,
                     'forgetting': avg_forgetting,
                     'num_tasks': len(all_task_performance)
+                }
+            
+            def _perform_vae_training_step(self, model, inputs, targets):
+                """Perform a single training step for VAE model"""
+                if hasattr(model, 'optimizer'):
+                    model.optimizer.zero_grad()
+                else:
+                    # Initialize optimizer if not exists
+                    model.optimizer = torch.optim.Adam(model.parameters(), lr=self.config.get('learning_rate', 0.001))
+                    model.optimizer.zero_grad()
+                
+                # Forward pass
+                outputs = model(inputs)
+                
+                # Handle different VAE output formats
+                if isinstance(outputs, dict):
+                    reconstructed = outputs.get('reconstruction', outputs.get('x_recon', inputs))
+                    mu = outputs.get('mu', outputs.get('z_mean', torch.zeros_like(inputs[:, :model.latent_dim] if hasattr(model, 'latent_dim') else inputs[:, :32])))
+                    logvar = outputs.get('logvar', outputs.get('z_logvar', torch.zeros_like(mu)))
+                elif isinstance(outputs, tuple) and len(outputs) >= 3:
+                    reconstructed, mu, logvar = outputs[0], outputs[1], outputs[2]
+                else:
+                    reconstructed = outputs if not isinstance(outputs, tuple) else outputs[0]
+                    # Default values for mu and logvar if not available
+                    latent_dim = getattr(model, 'latent_dim', 32)
+                    mu = torch.zeros(inputs.size(0), latent_dim, device=inputs.device)
+                    logvar = torch.zeros_like(mu)
+                
+                # Calculate reconstruction loss
+                recon_loss = torch.nn.functional.mse_loss(reconstructed, inputs, reduction='mean')
+                
+                # Calculate KLD loss
+                kld_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp()) / inputs.size(0)
+                
+                # Total loss (with beta weighting for BetaVAE)
+                beta = getattr(model, 'beta', 1.0) if hasattr(model, 'beta') else self.config.get('beta', 1.0)
+                total_loss = recon_loss + beta * kld_loss
+                
+                # Backward pass
+                total_loss.backward()
+                model.optimizer.step()
+                
+                return {
+                    'loss': total_loss.item(),
+                    'total_loss': total_loss.item(),
+                    'reconstruction_loss': recon_loss.item(),
+                    'kld_loss': kld_loss.item()
+                }
+            
+            def _perform_vae_eval_step(self, model, test_loader):
+                """Perform evaluation on test data"""
+                model.eval()
+                total_loss = 0
+                total_recon_loss = 0
+                total_kld_loss = 0
+                num_batches = 0
+                
+                with torch.no_grad():
+                    for inputs, targets in test_loader:
+                        # Forward pass
+                        outputs = model(inputs)
+                        
+                        # Handle different VAE output formats
+                        if isinstance(outputs, dict):
+                            reconstructed = outputs.get('reconstruction', outputs.get('x_recon', inputs))
+                            mu = outputs.get('mu', outputs.get('z_mean', torch.zeros_like(inputs[:, :model.latent_dim] if hasattr(model, 'latent_dim') else inputs[:, :32])))
+                            logvar = outputs.get('logvar', outputs.get('z_logvar', torch.zeros_like(mu)))
+                        elif isinstance(outputs, tuple) and len(outputs) >= 3:
+                            reconstructed, mu, logvar = outputs[0], outputs[1], outputs[2]
+                        else:
+                            reconstructed = outputs if not isinstance(outputs, tuple) else outputs[0]
+                            # Default values for mu and logvar if not available
+                            latent_dim = getattr(model, 'latent_dim', 32)
+                            mu = torch.zeros(inputs.size(0), latent_dim, device=inputs.device)
+                            logvar = torch.zeros_like(mu)
+                        
+                        # Calculate losses
+                        recon_loss = torch.nn.functional.mse_loss(reconstructed, inputs, reduction='mean')
+                        kld_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp()) / inputs.size(0)
+                        beta = getattr(model, 'beta', 1.0) if hasattr(model, 'beta') else self.config.get('beta', 1.0)
+                        loss = recon_loss + beta * kld_loss
+                        
+                        total_loss += loss.item()
+                        total_recon_loss += recon_loss.item()
+                        total_kld_loss += kld_loss.item()
+                        num_batches += 1
+                
+                return {
+                    'loss': total_loss / num_batches if num_batches > 0 else 0,
+                    'reconstruction_loss': total_recon_loss / num_batches if num_batches > 0 else 0,
+                    'kld_loss': total_kld_loss / num_batches if num_batches > 0 else 0
                 }
 
         #  API/DB Helper Functions
