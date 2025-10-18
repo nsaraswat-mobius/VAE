@@ -145,6 +145,12 @@ implementation:
                 # Forward pass with flexible output handling
                 vae_output = model_obj(data)
                 
+                # Debug: print output type and structure
+                if num_batches == 0:  # Only print for first batch
+                    print(f"First batch VAE output type: {type(vae_output)}")
+                    if isinstance(vae_output, dict):
+                        print(f"VAE output keys: {list(vae_output.keys())}")
+                
                 # Handle different VAE output formats
                 if isinstance(vae_output, dict):
                     # Dictionary output format - extract keys
@@ -211,6 +217,17 @@ implementation:
                     recon_data = vae_output
                     mu = torch.zeros(data.size(0), getattr(model_obj, 'latent_dim', 16)).to(device)
                     logvar = torch.zeros(data.size(0), getattr(model_obj, 'latent_dim', 16)).to(device)
+                
+                # Ensure we have tensor objects for loss calculation
+                if isinstance(recon_data, dict):
+                    print(f"ERROR: recon_data is still a dict: {list(recon_data.keys())}")
+                    raise ValueError("Failed to extract reconstruction tensor from dictionary")
+                if isinstance(mu, dict):
+                    print(f"ERROR: mu is still a dict: {list(mu.keys())}")
+                    raise ValueError("Failed to extract mu tensor from dictionary")
+                if isinstance(logvar, dict):
+                    print(f"ERROR: logvar is still a dict: {list(logvar.keys())}")
+                    raise ValueError("Failed to extract logvar tensor from dictionary")
                 
                 # Calculate losses
                 recon_loss = nn.MSELoss()(recon_data, data)
