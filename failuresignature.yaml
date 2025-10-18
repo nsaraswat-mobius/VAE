@@ -11,7 +11,7 @@ outputs:
   - {name: preprocessing_config, type: Dataset}
 implementation:
   container:
-    image: nikhilv215/nesy-factory:v22
+    image: gurpreetgandhi/nesy-factory:v21
     command:
       - python3
       - -u
