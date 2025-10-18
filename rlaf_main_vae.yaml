@@ -2,7 +2,7 @@ name: VAE RLAF Loop
 description: Triggers the VAE RLAF pipeline in a loop to optimize model hyperparameters for failure signature anomaly detection, controlled by a pierce_or_not flag.
 inputs:
   - {name: trained_model, type: Model}
-  - {name: init_metrics, type: Dataset}
+  - {name: init_metrics, type: Metrics}
   - {name: data_path, type: Dataset}
   - {name: config, type: String}
   - {name: domain, type: String}
