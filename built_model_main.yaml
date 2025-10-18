@@ -34,19 +34,27 @@ implementation:
 
         config = json.loads(args.config)
 
-        # Get input dimension from config (should be specified or calculated)
-        if 'input_dim' in config:
+        # Get input dimension from config - use actual processed dimension
+        if 'processed_input_dim' in config:
+            # Use the actual dimension from preprocessing step
+            input_dim = config['processed_input_dim']
+            print(f"Using processed input dimension: {input_dim}")
+        elif 'input_dim' in config:
             input_dim = config['input_dim']
+            print(f"Using configured input dimension: {input_dim}")
         elif 'feature_columns' in config:
-            # Estimate dimension based on feature columns
-            # This is a rough estimate - actual dimension may vary with categorical encoding
-            input_dim = len(config['feature_columns'])
+            # This is just an estimate - actual may be higher due to one-hot encoding
+            base_features = len(config['feature_columns'])
+            # Assume worst case: all categorical with 10 categories each
+            input_dim = base_features * 10  # Conservative estimate
+            print(f"Warning: Estimating input dimension as {input_dim} based on {base_features} features")
+            print("Note: Actual dimension may differ due to one-hot encoding")
         else:
-            # Default fallback
-            input_dim = 10
-            print("Warning: input_dim not found in config, using default value of 10")
+            # Default fallback - this should not happen in production
+            input_dim = 50  # Increased default to handle typical one-hot encoded data
+            print(f"Warning: input_dim not found in config, using default value of {input_dim}")
         
-        print(f"Using input dimension: {input_dim}")
+        print(f"Final input dimension: {input_dim}")
 
         # Build VAE model configuration
         model_config = {
