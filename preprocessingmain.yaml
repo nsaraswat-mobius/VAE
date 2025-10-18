@@ -265,6 +265,10 @@ implementation:
         X_train = signatures_shuffled[:train_size]
         X_test = signatures_shuffled[train_size:]
         print(f"Train data shape: {X_train.shape}, Test data shape: {X_test.shape}")
+        
+        # Store the actual processed input dimension for model building
+        processed_input_dim = X_train.shape[1]
+        print(f"Processed input dimension: {processed_input_dim}")
 
         if len(X_train) == 0:
             raise ValueError("Training set is empty. Check your train_ratio or data size.")
@@ -275,6 +279,7 @@ implementation:
             X_test = X_train[split_idx:]
             X_train = X_train[:split_idx]
             print(f"Adjusted - Train data shape: {X_train.shape}, Test data shape: {X_test.shape}")
+            processed_input_dim = X_train.shape[1]  # Update after adjustment
 
         # Convert to PyTorch tensors
         X_train_tensor = torch.tensor(X_train, dtype=torch.float32)
@@ -289,14 +294,28 @@ implementation:
         train_loader_obj = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
         test_loader_obj = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
-        # Save data loaders
+        # Create metadata with processing information
+        metadata = {
+            'processed_input_dim': processed_input_dim,
+            'train_samples': len(X_train),
+            'test_samples': len(X_test),
+            'batch_size': batch_size,
+            'feature_names': config.get('feature_columns', []),
+            'num_numerical_features': len(config.get('numerical_features', [])),
+            'num_categorical_features': len(config.get('categorical_features', [])),
+            'categorical_mappings': categorical_mappings if categorical_features else {}
+        }
+
+        # Save data loaders with metadata
         os.makedirs(os.path.dirname(args.train_loader), exist_ok=True)
+        train_data = {'loader': train_loader_obj, 'metadata': metadata}
         with open(args.train_loader, "wb") as f:
-            pickle.dump(train_loader_obj, f)
+            pickle.dump(train_data, f)
 
         os.makedirs(os.path.dirname(args.test_loader), exist_ok=True)
+        test_data = {'loader': test_loader_obj, 'metadata': metadata}
         with open(args.test_loader, "wb") as f:
-            pickle.dump(test_loader_obj, f)
+            pickle.dump(test_data, f)
 
         print(f"Saved train_loader to {args.train_loader}")
         print(f"Saved test_loader to {args.test_loader}")
