@@ -668,19 +668,31 @@ implementation:
 
                 # Get DQN recommendation
                 updated_instance = get_instance(access_token, args.domain, args.schema_id, args.model_id)
-                latest_rlaf2pierce = updated_instance['rlaf2pierce'][-1]
                 
-                if not latest_rlaf2pierce.get("pierce_or_not", True):
-                    print("pierce_or_not is false. Exiting VAE RLAF loop.")
-                    break
+                # Check if rlaf2pierce exists and is not empty
+                if not updated_instance.get('rlaf2pierce') or len(updated_instance['rlaf2pierce']) == 0:
+                    print("No DQN recommendations found in rlaf2pierce. Using default action.")
+                    # Use the first available action as default
+                    rlaf_actions = updated_instance.get('rlaf_actions', {}).get('actions', [])
+                    if not rlaf_actions:
+                        raise ValueError("No actions available in rlaf_actions")
+                    action_details = rlaf_actions[0]
+                    action_id_for_next_pierce = action_details['id']
+                    latest_rlaf2pierce = {"action_id": action_id_for_next_pierce, "pierce_or_not": True}
+                else:
+                    latest_rlaf2pierce = updated_instance['rlaf2pierce'][-1]
                     
-                print(f"DQN recommendation for VAE: {latest_rlaf2pierce}")
-                rlaf_actions = updated_instance.get('rlaf_actions', {}).get('actions', [])
-                action_id_for_next_pierce = latest_rlaf2pierce['action_id']
-                action_details = next((a for a in rlaf_actions if a["id"] == action_id_for_next_pierce), None)
-                
-                if not action_details:
-                    raise ValueError(f"Action with ID {action_id_for_next_pierce} not found in rlaf_actions")
+                    if not latest_rlaf2pierce.get("pierce_or_not", True):
+                        print("pierce_or_not is false. Exiting VAE RLAF loop.")
+                        break
+                        
+                    print(f"DQN recommendation for VAE: {latest_rlaf2pierce}")
+                    rlaf_actions = updated_instance.get('rlaf_actions', {}).get('actions', [])
+                    action_id_for_next_pierce = latest_rlaf2pierce['action_id']
+                    action_details = next((a for a in rlaf_actions if a["id"] == action_id_for_next_pierce), None)
+                    
+                    if not action_details:
+                        raise ValueError(f"Action with ID {action_id_for_next_pierce} not found in rlaf_actions")
  
                 print(f"DQN pipeline recommended VAE action: {action_details}. Retraining VAE model.")
                 retraining_results = model_retraining(
