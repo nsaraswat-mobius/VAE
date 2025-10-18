@@ -78,30 +78,23 @@ implementation:
             for batch_data in train_loader_obj:
                 # Handle different data formats
                 if isinstance(batch_data, (list, tuple)) and len(batch_data) == 2:
-                    # Format: (data, labels) - for supervised/conditional VAE
-                    data, labels = batch_data
+                    # Format: (data, labels) - extract just the data for VAE training
+                    data, _ = batch_data  # Ignore labels for now (VAE is unsupervised)
                     data = data.to(device)
-                    labels = labels.to(device) if labels is not None else None
                 else:
                     # Format: just data - for unsupervised VAE
                     data = batch_data.to(device)
-                    labels = None
                 
                 optimizer.zero_grad()
                 
                 # Forward pass through VAE
                 if hasattr(model_obj, 'forward_with_loss'):
                     # Use model's built-in loss computation if available
-                    if labels is not None:
-                        loss, recon_loss, kl_loss = model_obj.forward_with_loss(data, labels, beta=beta)
-                    else:
-                        loss, recon_loss, kl_loss = model_obj.forward_with_loss(data, beta=beta)
+                    loss, recon_loss, kl_loss = model_obj.forward_with_loss(data, beta=beta)
                 else:
                     # Manual loss computation for standard VAE
-                    if labels is not None:
-                        recon_data, mu, logvar = model_obj(data, labels)
-                    else:
-                        recon_data, mu, logvar = model_obj(data)
+                    # VAE forward method only takes data as input (no labels)
+                    recon_data, mu, logvar = model_obj(data)
                     
                     # Reconstruction loss (MSE)
                     recon_loss = nn.MSELoss()(recon_data, data)
