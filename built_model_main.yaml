@@ -23,9 +23,9 @@ implementation:
         import sys
         import torch
         
-        from nesy_factory.VAEs.standard_vae import StandardVAE
-        from nesy_factory.VAEs.beta_vae import BetaVAE
-        from nesy_factory.VAEs.conditional_vae import ConditionalVAE
+        from nesy_factory.VAE.standard_vae import StandardVAE
+        from nesy_factory.VAE.beta_vae import BetaVAE
+        from nesy_factory.VAE.conditional_vae import ConditionalVAE
 
         parser = argparse.ArgumentParser()
         parser.add_argument('--config', type=str, required=True)
