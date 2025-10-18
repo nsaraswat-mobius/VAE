@@ -2,7 +2,6 @@ name: Initialize VAE Model
 description: Initializes the VAE model for failure signature anomaly detection.
 inputs:
   - {name: config, type: String}
-  - {name: train_loader, type: Dataset}
 outputs:
   - {name: model, type: Model}
 implementation:
@@ -30,21 +29,24 @@ implementation:
 
         parser = argparse.ArgumentParser()
         parser.add_argument('--config', type=str, required=True)
-        parser.add_argument('--train_loader', type=str, required=True)
         parser.add_argument('--model', type=str, required=True)
         args = parser.parse_args()
 
         config = json.loads(args.config)
 
-        # Load train_loader to get input dimensions
-        with open(args.train_loader, 'rb') as f:
-            train_loader_obj = pickle.load(f)
+        # Get input dimension from config (should be specified or calculated)
+        if 'input_dim' in config:
+            input_dim = config['input_dim']
+        elif 'feature_columns' in config:
+            # Estimate dimension based on feature columns
+            # This is a rough estimate - actual dimension may vary with categorical encoding
+            input_dim = len(config['feature_columns'])
+        else:
+            # Default fallback
+            input_dim = 10
+            print("Warning: input_dim not found in config, using default value of 10")
         
-        # Get input dimension from the first batch
-        sample_batch = next(iter(train_loader_obj))
-        input_dim = sample_batch[0].shape[1]  # Shape: [batch_size, input_dim]
-        
-        print(f"Detected input dimension: {input_dim}")
+        print(f"Using input dimension: {input_dim}")
 
         # Build VAE model configuration
         model_config = {
@@ -90,7 +92,5 @@ implementation:
     args:
       - --config
       - {inputValue: config}
-      - --train_loader
-      - {inputPath: train_loader}
       - --model
       - {outputPath: model}
