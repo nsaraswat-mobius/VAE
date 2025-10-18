@@ -23,6 +23,7 @@ implementation:
         import os
         import pickle
         import sys
+        import numpy as np
         import torch
         import torch.nn as nn
         import torch.optim as optim
@@ -69,13 +70,27 @@ implementation:
         # Validate model input dimension
         print("Validating model architecture against data dimensions...")
         sample_batch = next(iter(train_loader_obj))
+        print(f"Sample batch type: {type(sample_batch)}")
+        
         if isinstance(sample_batch, (list, tuple)) and len(sample_batch) >= 1:
             sample_data = sample_batch[0]
+            print(f"Sample data type: {type(sample_data)}")
         else:
             sample_data = sample_batch
+            print(f"Sample data type (direct): {type(sample_data)}")
         
-        actual_input_dim = sample_data.shape[1]
-        print(f"Actual data input dimension: {actual_input_dim}")
+        # Check if sample_data is a tensor
+        if hasattr(sample_data, 'shape'):
+            actual_input_dim = sample_data.shape[1]
+            print(f"Actual data input dimension: {actual_input_dim}")
+        elif isinstance(sample_data, (list, np.ndarray)):
+            # Try to convert to tensor
+            sample_data = torch.tensor(sample_data, dtype=torch.float32)
+            actual_input_dim = sample_data.shape[1]
+            print(f"Converted to tensor. Actual data input dimension: {actual_input_dim}")
+        else:
+            print(f"Error: sample_data is not a tensor. Type: {type(sample_data)}, Value: {sample_data}")
+            raise ValueError(f"Expected tensor data but got {type(sample_data)}")
         
         # Test forward pass
         try:
