@@ -1,0 +1,169 @@
+name: Train VAE Model
+description: Trains the VAE model for failure signature anomaly detection.
+inputs:
+  - {name: model, type: Model}
+  - {name: train_loader, type: Dataset}
+  - {name: config, type: String}
+outputs:
+  - {name: trained_model, type: Model}
+implementation:
+  container:
+    image: nikhilv215/nesy-factory:v22
+    command:
+      - sh
+      - -c
+      - |
+        exec "$0" "$@"
+      - python3
+      - -u
+      - -c
+      - |
+        import argparse
+        import json
+        import os
+        import pickle
+        import sys
+        import torch
+        import torch.nn as nn
+        import torch.optim as optim
+        
+        from nesy_factory.VAE.standard_vae import StandardVAE
+        from nesy_factory.VAE.beta_vae import BetaVAE
+        from nesy_factory.VAE.conditional_vae import ConditionalVAE
+
+        parser = argparse.ArgumentParser()
+        parser.add_argument('--model', type=str, required=True)
+        parser.add_argument('--train_loader', type=str, required=True)
+        parser.add_argument('--config', type=str, required=True)
+        parser.add_argument('--trained_model', type=str, required=True)
+        args = parser.parse_args()
+
+        config = json.loads(args.config)
+
+        # Load the model
+        with open(args.model, 'rb') as f:
+            model_obj = pickle.load(f)
+
+        # Load the training data
+        with open(args.train_loader, 'rb') as f:
+            train_loader_obj = pickle.load(f)
+
+        # Set up training parameters
+        learning_rate = config.get('learning_rate', 0.001)
+        epochs = config.get('epochs', 100)
+        beta = config.get('beta', 1.0)  # For Beta-VAE weighting
+        
+        # Set up optimizer
+        optimizer = optim.Adam(model_obj.parameters(), lr=learning_rate)
+        
+        # Move model to device (GPU if available)
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        model_obj = model_obj.to(device)
+        
+        print(f"Training VAE on device: {device}")
+        print(f"Training configuration:")
+        print(f"  - Learning rate: {learning_rate}")
+        print(f"  - Epochs: {epochs}")
+        print(f"  - Beta (KL weight): {beta}")
+        print(f"Starting VAE Model Training...")
+
+        # Training loop
+        model_obj.train()
+        for epoch in range(epochs):
+            total_loss = 0
+            total_recon_loss = 0
+            total_kl_loss = 0
+            num_batches = 0
+            
+            for batch_data in train_loader_obj:
+                # Handle different data formats
+                if isinstance(batch_data, (list, tuple)) and len(batch_data) == 2:
+                    # Format: (data, labels) - for supervised/conditional VAE
+                    data, labels = batch_data
+                    data = data.to(device)
+                    labels = labels.to(device) if labels is not None else None
+                else:
+                    # Format: just data - for unsupervised VAE
+                    data = batch_data.to(device)
+                    labels = None
+                
+                optimizer.zero_grad()
+                
+                # Forward pass through VAE
+                if hasattr(model_obj, 'forward_with_loss'):
+                    # Use model's built-in loss computation if available
+                    if labels is not None:
+                        loss, recon_loss, kl_loss = model_obj.forward_with_loss(data, labels, beta=beta)
+                    else:
+                        loss, recon_loss, kl_loss = model_obj.forward_with_loss(data, beta=beta)
+                else:
+                    # Manual loss computation for standard VAE
+                    if labels is not None:
+                        recon_data, mu, logvar = model_obj(data, labels)
+                    else:
+                        recon_data, mu, logvar = model_obj(data)
+                    
+                    # Reconstruction loss (MSE)
+                    recon_loss = nn.MSELoss()(recon_data, data)
+                    
+                    # KL divergence loss
+                    kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
+                    kl_loss = kl_loss / data.size(0)  # Normalize by batch size
+                    
+                    # Total ELBO loss
+                    loss = recon_loss + beta * kl_loss
+                
+                # Backward pass and optimization
+                loss.backward()
+                optimizer.step()
+                
+                # Accumulate losses for logging
+                total_loss += loss.item()
+                total_recon_loss += recon_loss.item()
+                total_kl_loss += kl_loss.item()
+                num_batches += 1
+            
+            # Calculate average losses
+            avg_loss = total_loss / num_batches
+            avg_recon_loss = total_recon_loss / num_batches
+            avg_kl_loss = total_kl_loss / num_batches
+            
+            # Print training progress
+            print(f"Epoch {epoch+1:3d}/{epochs} | " +
+                  f"Total Loss: {avg_loss:.6f} | " +
+                  f"Recon Loss: {avg_recon_loss:.6f} | " +
+                  f"KL Loss: {avg_kl_loss:.6f}")
+            
+            # Early stopping based on loss plateau (optional)
+            if epoch > 10 and avg_loss > 1000:  # Simple divergence check
+                print("Warning: Loss is diverging, stopping training early")
+                break
+        
+        print("Finished VAE Model Training")
+        
+        # Save the trained model
+        os.makedirs(os.path.dirname(args.trained_model), exist_ok=True)
+        
+        # Save the entire model object (with trained parameters)
+        with open(args.trained_model, 'wb') as f:
+            pickle.dump(model_obj.cpu(), f)  # Move to CPU before saving
+        
+        print(f"Saved trained VAE model to {args.trained_model}")
+        
+        # Print final model statistics
+        total_params = sum(p.numel() for p in model_obj.parameters())
+        trainable_params = sum(p.numel() for p in model_obj.parameters() if p.requires_grad)
+        print(f"Model statistics:")
+        print(f"  - Total parameters: {total_params}")
+        print(f"  - Trainable parameters: {trainable_params}")
+        print(f"  - Final training loss: {avg_loss:.6f}")
+
+    args:
+      - --model
+      - {inputPath: model}
+      - --train_loader
+      - {inputPath: train_loader}
+      - --config
+      - {inputValue: config}
+      - --trained_model
+      - {outputPath: trained_model}
