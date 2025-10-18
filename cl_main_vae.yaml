@@ -10,10 +10,9 @@ implementation:
   container:
     image: nikhilv215/nesy-factory:v22
     command:
-    - sh
+    - python3
     - -c
     - |
-        python3 << 'EOF'
         import argparse
         import json
         import os
@@ -302,11 +301,11 @@ implementation:
         if __name__ == '__main__':
             main()
     args:
-      - --train_loader
-      - {inputPath: train_loader}
-      - --test_loader
-      - {inputPath: test_loader}
-      - --config
-      - {inputValue: config}
-      - --tasks
-      - {outputPath: tasks}
+    - --train_loader
+    - {inputPath: train_loader}
+    - --test_loader
+    - {inputPath: test_loader}
+    - --config
+    - {inputValue: config}
+    - --tasks
+    - {outputPath: tasks}
