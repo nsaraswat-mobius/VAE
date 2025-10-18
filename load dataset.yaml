@@ -12,7 +12,7 @@ outputs:
   - {name: num_samples, type: String}
 implementation:
   container:
-    image: nikhilv215/nesy-factory:v22
+    image: nikhilv215/nesy-factory:cuda
     command:
       - sh
       - -c
