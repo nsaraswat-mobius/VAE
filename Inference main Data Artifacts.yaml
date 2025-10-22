@@ -1,0 +1,492 @@
+name: VAE Signature Failure Download Artifacts
+description: Downloads VAE model artifacts specifically trained for signature failure detection and validates signature-specific configurations
+inputs:
+  - name: model_weights_url
+    type: String
+    description: URL to fetch the trained VAE model weights for signature failure detection
+  - name: model_config_url
+    type: String
+    description: URL to fetch the VAE model configuration for signature failure patterns
+  - name: signature_threshold_url
+    type: String
+    description: URL to fetch signature failure detection thresholds and anomaly parameters
+  - name: inference_config_url
+    type: String
+    description: URL to fetch inference configuration for signature processing
+  - name: signature_data_url
+    type: String
+    description: URL to fetch preprocessed signature dataset with normalization parameters
+  - name: signature_mapping_url
+    type: String
+    description: URL to fetch signature feature mapping and failure type classifications
+outputs:
+  - name: model_weights
+    type: Model
+    description: Downloaded VAE model weights for signature failure detection
+  - name: model_config
+    type: String
+    description: Downloaded VAE model configuration
+  - name: signature_threshold
+    type: String
+    description: Downloaded signature failure detection thresholds
+  - name: inference_config
+    type: String
+    description: Downloaded inference configuration
+  - name: signature_data
+    type: Dataset
+    description: Downloaded preprocessed signature dataset
+  - name: signature_mapping
+    type: String
+    description: Downloaded signature feature mapping and failure classifications
+
+implementation:
+  container:
+    image: nikhilv215/nesy-factory:v22
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        python3 -m pip install --quiet requests
+        exec "$0" "$@"
+      - python3
+      - -u
+      - -c
+      - |
+        import argparse, os, requests, json, pickle
+        import io
+        import torch
+        import numpy as np
+
+        parser = argparse.ArgumentParser(description="Download VAE signature failure detection artifacts from CDN URLs.")
+        parser.add_argument('--model_weights_url', type=str, required=True)
+        parser.add_argument('--model_config_url', type=str, required=True)
+        parser.add_argument('--signature_threshold_url', type=str, required=True)
+        parser.add_argument('--inference_config_url', type=str, required=True)
+        parser.add_argument('--signature_data_url', type=str, required=True)
+        parser.add_argument('--signature_mapping_url', type=str, required=True)
+        parser.add_argument('--model_weights', type=str, required=True)
+        parser.add_argument('--model_config', type=str, required=True)
+        parser.add_argument('--signature_threshold', type=str, required=True)
+        parser.add_argument('--inference_config', type=str, required=True)
+        parser.add_argument('--signature_data', type=str, required=True)
+        parser.add_argument('--signature_mapping', type=str, required=True)
+        args = parser.parse_args()
+
+        def download_file(url, output_path, description):
+            print(f"Fetching {description} from: {url}")
+            url = url.replace("$$", "$$$").replace("%24%24", "$$")
+            r = requests.get(url)
+            r.raise_for_status()
+            os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+            with open(output_path, "wb") as f:
+                f.write(r.content)
+            print(f"{description} saved to {output_path}")
+            return output_path
+
+        # Download all signature failure detection artifacts
+        download_file(args.model_weights_url, args.model_weights, "VAE signature failure model weights")
+        download_file(args.model_config_url, args.model_config, "VAE signature failure model config")
+        download_file(args.signature_threshold_url, args.signature_threshold, "signature failure threshold config")
+        download_file(args.inference_config_url, args.inference_config, "signature inference config")
+        download_file(args.signature_data_url, args.signature_data, "signature preprocessed data")
+        download_file(args.signature_mapping_url, args.signature_mapping, "signature feature mapping")
+
+        print("=" * 90)
+        print("SIGNATURE FAILURE DETECTION - VAE MODEL ARTIFACTS ANALYSIS")
+        print("=" * 90)
+
+        print("\n1. VAE SIGNATURE FAILURE MODEL CONFIGURATION:")
+        print("-" * 50)
+        with open(args.model_config, 'r') as f:
+            model_config = json.load(f)
+        print(json.dumps(model_config, indent=2))
+        
+        # Extract signature-specific VAE parameters
+        model_info = model_config.get('model_info', {})
+        vae_type = model_info.get('model_type', 'StandardVAE')
+        input_dim = model_info.get('input_dim')
+        latent_dim = model_info.get('latent_dim')
+        hidden_dim = model_info.get('hidden_dim')
+        beta = model_info.get('beta', 1.0)
+        signature_specific = model_info.get('signature_failure_config', {})
+        
+        print(f"\nSignature Failure VAE Architecture:")
+        print(f"  Model Type: {vae_type}")
+        print(f"  Input Dimension (Signature Features): {input_dim}")
+        print(f"  Latent Dimension: {latent_dim}")
+        print(f"  Hidden Dimension: {hidden_dim}")
+        print(f"  Beta Parameter: {beta}")
+        
+        # Signature failure specific configurations
+        signature_features = signature_specific.get('signature_features', [])
+        failure_types = signature_specific.get('failure_types', [])
+        temporal_features = signature_specific.get('temporal_features', False)
+        
+        print(f"  Signature Features: {len(signature_features)} features")
+        print(f"  Failure Types Detected: {failure_types}")
+        print(f"  Temporal Analysis: {temporal_features}")
+        
+        if not input_dim:
+            print("WARNING: input_dim not found in signature model config")
+        if not latent_dim:
+            print("WARNING: latent_dim not found in signature model config")
+        if not failure_types:
+            print("WARNING: No failure types specified in config")
+
+        print("\n2. SIGNATURE FAILURE DETECTION THRESHOLDS:")
+        print("-" * 50)
+        with open(args.signature_threshold, 'r') as f:
+            threshold_config = json.load(f)
+        print(json.dumps(threshold_config, indent=2))
+        
+        # Extract signature failure specific thresholds
+        signature_thresholds = threshold_config.get('signature_failure_thresholds', {})
+        recon_threshold = signature_thresholds.get('reconstruction_threshold')
+        failure_percentile = signature_thresholds.get('failure_percentile', 95)
+        severity_levels = signature_thresholds.get('severity_levels', {})
+        early_detection = signature_thresholds.get('early_detection_threshold')
+        
+        print(f"\nSignature Failure Threshold Configuration:")
+        print(f"  Reconstruction Threshold: {recon_threshold}")
+        print(f"  Failure Detection Percentile: {failure_percentile}%")
+        print(f"  Early Detection Threshold: {early_detection}")
+        print(f"  Severity Levels: {list(severity_levels.keys())}")
+        
+        # Failure type specific thresholds
+        for failure_type, threshold_val in severity_levels.items():
+            print(f"    {failure_type}: {threshold_val}")
+
+        print("\n3. SIGNATURE INFERENCE CONFIGURATION:")
+        print("-" * 50)
+        with open(args.inference_config, 'r') as f:
+            inference_config = json.load(f)
+        print(json.dumps(inference_config, indent=2))
+        
+        # Extract signature processing parameters
+        batch_size = inference_config.get('batch_size', 32)
+        device = inference_config.get('device', 'cpu')
+        signature_processing = inference_config.get('signature_processing', {})
+        real_time = inference_config.get('real_time_processing', False)
+        
+        print(f"\nSignature Processing Configuration:")
+        print(f"  Batch Size: {batch_size}")
+        print(f"  Device: {device}")
+        print(f"  Real-time Processing: {real_time}")
+        
+        # Signature-specific processing steps
+        window_size = signature_processing.get('window_size')
+        overlap_ratio = signature_processing.get('overlap_ratio', 0.5)
+        noise_filtering = signature_processing.get('noise_filtering', True)
+        normalization_method = signature_processing.get('normalization', 'z-score')
+        
+        print(f"  Window Size: {window_size}")
+        print(f"  Overlap Ratio: {overlap_ratio}")
+        print(f"  Noise Filtering: {noise_filtering}")
+        print(f"  Normalization: {normalization_method}")
+
+        print("\n4. SIGNATURE FEATURE MAPPING:")
+        print("-" * 50)
+        with open(args.signature_mapping, 'r') as f:
+            signature_mapping = json.load(f)
+        print(json.dumps(signature_mapping, indent=2))
+        
+        # Extract signature feature information
+        feature_names = signature_mapping.get('signature_features', [])
+        failure_classifications = signature_mapping.get('failure_classifications', {})
+        signature_patterns = signature_mapping.get('signature_patterns', {})
+        domain_info = signature_mapping.get('domain_info', {})
+        
+        print(f"\nSignature Feature Information:")
+        print(f"  Total Signature Features: {len(feature_names)}")
+        print(f"  Failure Classifications: {len(failure_classifications)} types")
+        print(f"  Known Signature Patterns: {len(signature_patterns)} patterns")
+        
+        # Display signature feature categories
+        if feature_names:
+            print(f"  Feature Categories:")
+            amplitude_features = [f for f in feature_names if 'amplitude' in f.lower() or 'mag' in f.lower()]
+            frequency_features = [f for f in feature_names if 'freq' in f.lower() or 'hz' in f.lower()]
+            temporal_features = [f for f in feature_names if 'time' in f.lower() or 'duration' in f.lower()]
+            statistical_features = [f for f in feature_names if any(stat in f.lower() for stat in ['mean', 'std', 'var', 'skew', 'kurt'])]
+            
+            print(f"    Amplitude Features: {len(amplitude_features)}")
+            print(f"    Frequency Features: {len(frequency_features)}")
+            print(f"    Temporal Features: {len(temporal_features)}")
+            print(f"    Statistical Features: {len(statistical_features)}")
+            
+        # Display failure classifications
+        if failure_classifications:
+            print(f"  Failure Types:")
+            for failure_id, failure_info in failure_classifications.items():
+                failure_name = failure_info.get('name', failure_id)
+                severity = failure_info.get('severity', 'unknown')
+                print(f"    {failure_id}: {failure_name} (Severity: {severity})")
+
+        print("\n5. SIGNATURE DATASET ANALYSIS:")
+        print("-" * 50)
+        try:
+            with open(args.signature_data, 'rb') as f:
+                raw_data = f.read()
+            
+            # Define fallback classes for signature data
+            class DataWrapper:
+                def __init__(self, data_dict=None):
+                    if data_dict:
+                        self.__dict__.update(data_dict)
+
+            class StandardScaler:
+                def __init__(self, mean=None, std=None):
+                    self.mean = mean
+                    self.std = std
+                def transform(self, data):
+                    if self.mean is not None and self.std is not None:
+                        return (data - self.mean) / self.std
+                    return data
+
+            class SafeUnpickler(pickle.Unpickler):
+                def find_class(self, module, name):
+                    try:
+                        return super().find_class(module, name)
+                    except:
+                        if name == 'DataWrapper':
+                            return DataWrapper
+                        elif name == 'StandardScaler':
+                            return StandardScaler
+                        else:
+                            class FallbackClass:
+                                def __init__(self, *args, **kwargs):
+                                    self.__dict__.update(kwargs)
+                            return FallbackClass
+
+            signature_data = SafeUnpickler(io.BytesIO(raw_data)).load()
+            print("Signature dataset loaded successfully")
+            
+            print(f"Data type: {type(signature_data)}")
+            print(f"Data attributes: {[attr for attr in dir(signature_data) if not attr.startswith('_')]}")
+            
+            # Analyze signature data structure
+            found_input_dim = None
+            
+            if hasattr(signature_data, 'X_train'):
+                print(f"Training signature data shape: {signature_data.X_train.shape}")
+                found_input_dim = signature_data.X_train.shape[1] if len(signature_data.X_train.shape) > 1 else signature_data.X_train.shape[0]
+                print(f"Training signature samples: {signature_data.X_train.shape[0]}")
+                
+                # Analyze signature data statistics
+                if hasattr(signature_data.X_train, 'mean'):
+                    print(f"Training data mean: {np.mean(signature_data.X_train):.4f}")
+                    print(f"Training data std: {np.std(signature_data.X_train):.4f}")
+                
+            if hasattr(signature_data, 'X_test'):
+                print(f"Test signature data shape: {signature_data.X_test.shape}")
+                if found_input_dim is None:
+                    found_input_dim = signature_data.X_test.shape[1] if len(signature_data.X_test.shape) > 1 else signature_data.X_test.shape[0]
+                print(f"Test signature samples: {signature_data.X_test.shape[0]}")
+                
+            if hasattr(signature_data, 'failure_labels'):
+                print(f"Failure labels available: {len(signature_data.failure_labels)} samples")
+                unique_failures = np.unique(signature_data.failure_labels)
+                print(f"Unique failure types in data: {unique_failures}")
+                
+            if hasattr(signature_data, 'scaler'):
+                print("Found signature data scaler for normalization")
+                if hasattr(signature_data.scaler, 'mean'):
+                    scaler_mean = np.array(signature_data.scaler.mean)
+                    print(f"Scaler mean shape: {scaler_mean.shape}")
+                    print(f"Scaler mean range: [{scaler_mean.min():.4f}, {scaler_mean.max():.4f}]")
+                if hasattr(signature_data.scaler, 'std'):
+                    scaler_std = np.array(signature_data.scaler.std)
+                    print(f"Scaler std shape: {scaler_std.shape}")
+                    print(f"Scaler std range: [{scaler_std.min():.4f}, {scaler_std.max():.4f}]")
+            
+            if hasattr(signature_data, 'signature_metadata'):
+                metadata = signature_data.signature_metadata
+                print(f"Signature metadata available:")
+                print(f"  Sampling rate: {metadata.get('sampling_rate', 'unknown')} Hz")
+                print(f"  Signal duration: {metadata.get('signal_duration', 'unknown')} seconds")
+                print(f"  Equipment type: {metadata.get('equipment_type', 'unknown')}")
+                
+            if found_input_dim:
+                print(f"SIGNATURE INPUT_DIM FROM DATA: {found_input_dim}")
+                
+                if input_dim and input_dim != found_input_dim:
+                    print(f"WARNING: Config input_dim ({input_dim}) != Signature data input_dim ({found_input_dim})")
+                elif input_dim == found_input_dim:
+                    print("SUCCESS: Config input_dim matches signature data input_dim")
+                else:
+                    print("INFO: No input_dim in config, signature data suggests:", found_input_dim)
+            else:
+                print("WARNING: Could not determine input_dim from signature data")
+                
+        except Exception as e:
+            print(f"Error analyzing signature dataset: {e}")
+            import traceback
+            traceback.print_exc()
+
+        print("\n6. VAE MODEL WEIGHTS ANALYSIS FOR SIGNATURE DETECTION:")
+        print("-" * 50)
+        try:
+            # Load and analyze signature failure VAE weights
+            model_state = torch.load(args.model_weights, map_location='cpu')
+            print("Signature failure VAE weights loaded successfully")
+            
+            if isinstance(model_state, dict):
+                print(f"State dict keys: {list(model_state.keys())[:10]}{'...' if len(model_state.keys()) > 10 else ''}")
+                
+                # Analyze signature-specific layers
+                encoder_params = [k for k in model_state.keys() if 'encoder' in k.lower()]
+                decoder_params = [k for k in model_state.keys() if 'decoder' in k.lower()]
+                mu_params = [k for k in model_state.keys() if 'mu' in k.lower()]
+                logvar_params = [k for k in model_state.keys() if 'logvar' in k.lower() or 'log_var' in k.lower()]
+                
+                print(f"Encoder layers: {len(encoder_params)}")
+                print(f"Decoder layers: {len(decoder_params)}")
+                print(f"Latent mean (mu) layers: {len(mu_params)}")
+                print(f"Latent variance (logvar) layers: {len(logvar_params)}")
+                
+                # Check input dimensions from first layer
+                for key, tensor in model_state.items():
+                    if 'encoder' in key and 'weight' in key and 'bias' not in key:
+                        print(f"First encoder layer shape: {tensor.shape}")
+                        inferred_input = tensor.shape[1] if len(tensor.shape) > 1 else tensor.shape[0]
+                        print(f"Model expects {inferred_input} signature features")
+                        break
+                        
+                # Check latent dimensions
+                for key, tensor in model_state.items():
+                    if 'mu' in key and 'weight' in key:
+                        inferred_latent = tensor.shape[0] if len(tensor.shape) > 1 else tensor.shape[0]
+                        print(f"Latent dimension from weights: {inferred_latent}")
+                        if latent_dim and inferred_latent != latent_dim:
+                            print(f"WARNING: Config latent_dim ({latent_dim}) != Model latent_dim ({inferred_latent})")
+                        break
+                        
+            total_params = sum(p.numel() for p in model_state.values() if torch.is_tensor(p))
+            print(f"Total parameters in signature failure VAE: {total_params:,}")
+            
+        except Exception as e:
+            print(f"Error analyzing signature failure model weights: {e}")
+
+        print("\n7. SIGNATURE FAILURE CONSISTENCY CHECKS:")
+        print("-" * 50)
+        
+        # Check signature feature consistency
+        config_features = input_dim
+        data_features = found_input_dim if 'found_input_dim' in locals() else None
+        mapping_features = len(feature_names)
+        
+        print("Signature Feature Count Consistency:")
+        if config_features:
+            print(f"  Model Config: {config_features} signature features")
+        if data_features:
+            print(f"  Signature Data: {data_features} features")
+        if mapping_features:
+            print(f"  Feature Mapping: {mapping_features} features")
+            
+        if config_features and data_features and mapping_features:
+            if config_features == data_features == mapping_features:
+                print("  ✓ SUCCESS: All signature feature counts match")
+            else:
+                print("  ✗ ERROR: Signature feature count mismatch detected")
+        else:
+            print("  ⚠ WARNING: Cannot verify signature feature count consistency")
+            
+        # Check failure type consistency
+        config_failures = set(failure_types) if failure_types else set()
+        mapping_failures = set(failure_classifications.keys()) if failure_classifications else set()
+        
+        print("\nFailure Type Consistency:")
+        if config_failures and mapping_failures:
+            if config_failures == mapping_failures:
+                print("  ✓ SUCCESS: Failure types match between config and mapping")
+            else:
+                missing_in_config = mapping_failures - config_failures
+                missing_in_mapping = config_failures - mapping_failures
+                if missing_in_config:
+                    print(f"  ⚠ WARNING: Missing in config: {missing_in_config}")
+                if missing_in_mapping:
+                    print(f"  ⚠ WARNING: Missing in mapping: {missing_in_mapping}")
+        
+        # Check VAE configuration for signature detection
+        print("\nSignature Detection VAE Configuration:")
+        if vae_type == 'StandardVAE':
+            print("  ✓ StandardVAE suitable for signature anomaly detection")
+        elif vae_type == 'BetaVAE':
+            if beta > 1.0:
+                print(f"  ✓ BetaVAE (β={beta}) for disentangled signature representations")
+            else:
+                print(f"  ℹ BetaVAE (β={beta}) equivalent to StandardVAE")
+        elif vae_type == 'ConditionalVAE':
+            print("  ℹ ConditionalVAE - ensure failure type conditioning is properly implemented")
+            
+        # Validate threshold settings for signature detection
+        if recon_threshold:
+            print(f"  ✓ Reconstruction threshold: {recon_threshold}")
+        if failure_percentile >= 90:
+            print(f"  ✓ Failure percentile ({failure_percentile}%) appropriate for signature detection")
+        else:
+            print(f"  ⚠ Low failure percentile ({failure_percentile}%) - may cause false alarms")
+
+        print("\n8. SIGNATURE FAILURE DETECTION RECOMMENDATIONS:")
+        print("-" * 50)
+        print("Signature Failure Detection Optimizations:")
+        print("  - Recommended reconstruction threshold: 95-99th percentile")
+        print("  - Focus on early detection of signature degradation")
+        print("  - Monitor both amplitude and frequency domain features")
+        print("  - Consider temporal patterns in signature evolution")
+        print("  - Implement severity-based classification")
+        
+        if temporal_features:
+            print("  - Temporal analysis enabled - suitable for signature trends")
+        if real_time:
+            print("  - Real-time processing enabled - suitable for online monitoring")
+        if noise_filtering:
+            print("  - Noise filtering enabled - improves signature quality")
+            
+        print("\nSignature-Specific Monitoring:")
+        print("  - Track signature consistency over time")
+        print("  - Monitor for gradual signature degradation")
+        print("  - Alert on sudden signature pattern changes")
+        print("  - Correlate failures with environmental conditions")
+
+        print("\n" + "=" * 90)
+        print("SIGNATURE FAILURE DETECTION ARTIFACTS ANALYSIS COMPLETE")
+        print("=" * 90)
+        print("All signature failure detection artifacts validated successfully")
+        
+        # Critical information summary for signature failure inference
+        print("\nCRITICAL INFO FOR SIGNATURE FAILURE INFERENCE:")
+        print(f"  - VAE Type: {vae_type}")
+        print(f"  - Signature Features: {input_dim or data_features or 'CHECK_REQUIRED'}")
+        print(f"  - Latent Dimension: {latent_dim or 'CHECK_REQUIRED'}")
+        print(f"  - Failure Detection Threshold: {recon_threshold or f'{failure_percentile}th percentile'}")
+        print(f"  - Failure Types: {len(failure_classifications)} types")
+        print(f"  - Real-time Processing: {real_time}")
+        print(f"  - Features Mapped: {len(feature_names)} signature features")
+        print(f"  - Early Detection: {'Enabled' if early_detection else 'Disabled'}")
+    args:
+      - --model_weights_url
+      - { inputValue: model_weights_url }
+      - --model_config_url
+      - { inputValue: model_config_url }
+      - --signature_threshold_url
+      - { inputValue: signature_threshold_url }
+      - --inference_config_url
+      - { inputValue: inference_config_url }
+      - --signature_data_url
+      - { inputValue: signature_data_url }
+      - --signature_mapping_url
+      - { inputValue: signature_mapping_url }
+      - --model_weights
+      - { outputPath: model_weights }
+      - --model_config
+      - { outputPath: model_config }
+      - --signature_threshold
+      - { outputPath: signature_threshold }
+      - --inference_config
+      - { outputPath: inference_config }
+      - --signature_data
+      - { outputPath: signature_data }
+      - --signature_mapping
+      - { outputPath: signature_mapping }
