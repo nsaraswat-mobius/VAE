@@ -680,6 +680,23 @@ implementation:
             
             average_eval_metrics = results['naive']['average_eval_metrics']
             
+            # Convert metrics to JSON-serializable format
+            def ensure_json_serializable(metrics):
+                """Ensure all metrics are JSON serializable"""
+                serializable_metrics = {}
+                for key, value in metrics.items():
+                    if hasattr(value, 'item'):  # numpy scalars
+                        serializable_metrics[key] = float(value.item())
+                    elif hasattr(value, 'cpu'):  # torch tensors
+                        serializable_metrics[key] = float(value.cpu().item()) if value.numel() == 1 else value.cpu().numpy().tolist()
+                    elif isinstance(value, (np.float32, np.float64, np.int32, np.int64)):
+                        serializable_metrics[key] = float(value) if 'float' in str(type(value)) else int(value)
+                    else:
+                        serializable_metrics[key] = value
+                return serializable_metrics
+            
+            average_eval_metrics = ensure_json_serializable(average_eval_metrics)
+            
             # Calculate improvement score based on DQN parameters
             improvement_score = 0
             for param in dqn_params:
@@ -759,6 +776,18 @@ implementation:
                 cleaned_metrics = {}
                 dqn_params = []
                 
+                # Helper function to safely convert float32/numpy types to Python floats
+                def safe_float_convert(value):
+                    """Safely convert numpy/torch float32 to Python float"""
+                    if hasattr(value, 'item'):  # numpy scalars
+                        return float(value.item())
+                    elif hasattr(value, 'cpu'):  # torch tensors
+                        return float(value.cpu().item()) if value.numel() == 1 else float(value.cpu().numpy())
+                    elif isinstance(value, (np.float32, np.float64)):
+                        return float(value)
+                    else:
+                        return float(value)
+                
                 # Extract from 'vae_losses' structure (based on your log output)
                 # LIMIT TO TOP 3 METRICS FOR DQN (EXISTING MODEL EXPECTS 3 FEATURES)
                 if 'vae_losses' in current_metrics and isinstance(current_metrics['vae_losses'], dict):
@@ -766,14 +795,14 @@ implementation:
                     
                     # Extract ELBO loss (PRIMARY METRIC)
                     if 'avg_elbo_loss' in vae_losses:
-                        # Round to avoid scientific notation issues
-                        cleaned_metrics['avg_elbo_loss'] = round(float(vae_losses['avg_elbo_loss']), 6)
+                        # Round to avoid scientific notation issues and ensure JSON serializable
+                        cleaned_metrics['avg_elbo_loss'] = round(safe_float_convert(vae_losses['avg_elbo_loss']), 6)
                         dqn_params.append({"key": "avg_elbo_loss", "sign": "-", "mul": 1.0})
                         print(f"[OK] Extracted avg_elbo_loss: {cleaned_metrics['avg_elbo_loss']}")
                     
                     # Extract reconstruction loss (PRIMARY METRIC)
                     if 'avg_reconstruction_loss' in vae_losses:
-                        cleaned_metrics['avg_reconstruction_loss'] = round(float(vae_losses['avg_reconstruction_loss']), 6)
+                        cleaned_metrics['avg_reconstruction_loss'] = round(safe_float_convert(vae_losses['avg_reconstruction_loss']), 6)
                         dqn_params.append({"key": "avg_reconstruction_loss", "sign": "-", "mul": 1.0})
                         print(f"[OK] Extracted avg_reconstruction_loss: {cleaned_metrics['avg_reconstruction_loss']}")
                 
@@ -783,7 +812,7 @@ implementation:
                     
                     # Mean reconstruction error (PRIMARY METRIC - minimize)
                     if 'mean' in recon_stats:
-                        cleaned_metrics['mean_recon_error'] = round(float(recon_stats['mean']), 6)
+                        cleaned_metrics['mean_recon_error'] = round(safe_float_convert(recon_stats['mean']), 6)
                         dqn_params.append({"key": "mean_recon_error", "sign": "-", "mul": 1.0})
                         print(f"[OK] Extracted mean_recon_error: {cleaned_metrics['mean_recon_error']}")
                 
@@ -881,11 +910,30 @@ implementation:
                 current_metrics = retraining_results["metrics"]
                 print(f"VAE retraining completed. New metrics: {current_metrics}")
 
-            # Save final RLAF output
+            # Save final RLAF output with proper type conversion
             os.makedirs(os.path.dirname(args.rlaf_output), exist_ok=True)
+            
+            # Convert any numpy/torch float32 values to native Python floats
+            def convert_to_serializable(obj):
+                """Convert numpy/torch types to JSON serializable types"""
+                if isinstance(obj, dict):
+                    return {k: convert_to_serializable(v) for k, v in obj.items()}
+                elif isinstance(obj, list):
+                    return [convert_to_serializable(v) for v in obj]
+                elif hasattr(obj, 'item'):  # numpy scalars
+                    return obj.item()
+                elif hasattr(obj, 'cpu'):  # torch tensors
+                    return obj.cpu().item() if obj.numel() == 1 else obj.cpu().numpy().tolist()
+                elif isinstance(obj, (np.float32, np.float64, np.int32, np.int64)):
+                    return float(obj) if 'float' in str(type(obj)) else int(obj)
+                else:
+                    return obj
+            
+            serializable_metrics = convert_to_serializable(current_metrics)
+            
             with open(args.rlaf_output, 'w') as f:
                 json.dump({
-                    "final_metrics": current_metrics,
+                    "final_metrics": serializable_metrics,
                     "model_type": "VAE_failure_signature_detector",
                     "rlaf_iterations": i + 1
                 }, f, indent=4)
