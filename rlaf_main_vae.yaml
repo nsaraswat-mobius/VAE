@@ -682,7 +682,6 @@ implementation:
             
             # Convert metrics to JSON-serializable format
             def ensure_json_serializable(metrics):
-                """Ensure all metrics are JSON serializable"""
                 serializable_metrics = {}
                 for key, value in metrics.items():
                     if hasattr(value, 'item'):  # numpy scalars
@@ -778,7 +777,6 @@ implementation:
                 
                 # Helper function to safely convert float32/numpy types to Python floats
                 def safe_float_convert(value):
-                    """Safely convert numpy/torch float32 to Python float"""
                     if hasattr(value, 'item'):  # numpy scalars
                         return float(value.item())
                     elif hasattr(value, 'cpu'):  # torch tensors
@@ -915,7 +913,6 @@ implementation:
             
             # Convert any numpy/torch float32 values to native Python floats
             def convert_to_serializable(obj):
-                """Convert numpy/torch types to JSON serializable types"""
                 if isinstance(obj, dict):
                     return {k: convert_to_serializable(v) for k, v in obj.items()}
                 elif isinstance(obj, list):
