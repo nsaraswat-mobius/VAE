@@ -760,7 +760,7 @@ implementation:
                 dqn_params = []
                 
                 # Extract from 'vae_losses' structure (based on your log output)
-                # LIMIT TO TOP 4 MOST IMPORTANT METRICS FOR DQN
+                # LIMIT TO TOP 3 METRICS FOR DQN (EXISTING MODEL EXPECTS 3 FEATURES)
                 if 'vae_losses' in current_metrics and isinstance(current_metrics['vae_losses'], dict):
                     vae_losses = current_metrics['vae_losses']
                     
@@ -787,35 +787,24 @@ implementation:
                         dqn_params.append({"key": "mean_recon_error", "sign": "-", "mul": 1.0})
                         print(f"[OK] Extracted mean_recon_error: {cleaned_metrics['mean_recon_error']}")
                 
-                # Extract ONLY 95th percentile threshold (most important for anomaly detection)
-                if 'anomaly_detection' in current_metrics and isinstance(current_metrics['anomaly_detection'], dict):
-                    anomaly_data = current_metrics['anomaly_detection']
-                    
-                    # 95th percentile threshold (PRIMARY METRIC)
-                    if 'threshold_95' in anomaly_data and 'threshold' in anomaly_data['threshold_95']:
-                        threshold_95 = round(float(anomaly_data['threshold_95']['threshold']), 6)
-                        cleaned_metrics['threshold_95'] = threshold_95
-                        dqn_params.append({"key": "threshold_95", "sign": "+", "mul": 1.0})
-                        print(f"[OK] Extracted threshold_95: {threshold_95}")
+                # SKIP threshold_95 to keep exactly 3 metrics for DQN model compatibility
                 
-                # Add default metrics if nothing was extracted (LIMIT TO 4)
+                # Add default metrics if nothing was extracted (EXACTLY 3 METRICS)
                 if not dqn_params:
                     print("[WARNING] No metrics extracted from signature failure VAE data! Using defaults.")
                     default_metrics = {
                         "avg_elbo_loss": 1.0,
                         "avg_reconstruction_loss": 1.0,
-                        "mean_recon_error": 1.0,
-                        "threshold_95": 2.0
+                        "mean_recon_error": 1.0
                     }
                     for key, value in default_metrics.items():
                         cleaned_metrics[key] = value
-                        sign = "+" if "threshold" in key else "-"
-                        dqn_params.append({"key": key, "sign": sign, "mul": 1.0})
+                        dqn_params.append({"key": key, "sign": "-", "mul": 1.0})
                 
-                # LIMIT DQN params to max 4-5 metrics to avoid server overload
-                if len(dqn_params) > 5:
-                    print(f"[WARNING] Too many metrics ({len(dqn_params)}). Limiting to top 4.")
-                    dqn_params = dqn_params[:4]
+                # EXACTLY 3 metrics for DQN model compatibility (fc1.weight expects [64, 3])
+                if len(dqn_params) > 3:
+                    print(f"[WARNING] Too many metrics ({len(dqn_params)}). Limiting to exactly 3 for DQN compatibility.")
+                    dqn_params = dqn_params[:3]
                     cleaned_metrics = {param['key']: cleaned_metrics[param['key']] for param in dqn_params}
                 
                 print(f"[TARGET] SIGNATURE FAILURE VAE METRICS READY FOR DQN:")
