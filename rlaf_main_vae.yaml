@@ -760,92 +760,66 @@ implementation:
                 dqn_params = []
                 
                 # Extract from 'vae_losses' structure (based on your log output)
+                # LIMIT TO TOP 4 MOST IMPORTANT METRICS FOR DQN
                 if 'vae_losses' in current_metrics and isinstance(current_metrics['vae_losses'], dict):
                     vae_losses = current_metrics['vae_losses']
                     
-                    # Extract ELBO loss
+                    # Extract ELBO loss (PRIMARY METRIC)
                     if 'avg_elbo_loss' in vae_losses:
-                        cleaned_metrics['avg_elbo_loss'] = float(vae_losses['avg_elbo_loss'])
+                        # Round to avoid scientific notation issues
+                        cleaned_metrics['avg_elbo_loss'] = round(float(vae_losses['avg_elbo_loss']), 6)
                         dqn_params.append({"key": "avg_elbo_loss", "sign": "-", "mul": 1.0})
-                        print(f"[OK] Extracted avg_elbo_loss: {vae_losses['avg_elbo_loss']}")
+                        print(f"[OK] Extracted avg_elbo_loss: {cleaned_metrics['avg_elbo_loss']}")
                     
-                    # Extract reconstruction loss
+                    # Extract reconstruction loss (PRIMARY METRIC)
                     if 'avg_reconstruction_loss' in vae_losses:
-                        cleaned_metrics['avg_reconstruction_loss'] = float(vae_losses['avg_reconstruction_loss'])
+                        cleaned_metrics['avg_reconstruction_loss'] = round(float(vae_losses['avg_reconstruction_loss']), 6)
                         dqn_params.append({"key": "avg_reconstruction_loss", "sign": "-", "mul": 1.0})
-                        print(f"[OK] Extracted avg_reconstruction_loss: {vae_losses['avg_reconstruction_loss']}")
-                    
-                    # Extract KL divergence
-                    if 'avg_kl_divergence' in vae_losses:
-                        cleaned_metrics['avg_kl_divergence'] = float(vae_losses['avg_kl_divergence'])
-                        dqn_params.append({"key": "avg_kl_divergence", "sign": "-", "mul": 1.0})
-                        print(f"[OK] Extracted avg_kl_divergence: {vae_losses['avg_kl_divergence']}")
+                        print(f"[OK] Extracted avg_reconstruction_loss: {cleaned_metrics['avg_reconstruction_loss']}")
                 
                 # Extract from 'reconstruction_error_stats' (based on your log output)
                 if 'reconstruction_error_stats' in current_metrics and isinstance(current_metrics['reconstruction_error_stats'], dict):
                     recon_stats = current_metrics['reconstruction_error_stats']
                     
-                    # Mean reconstruction error (minimize)
+                    # Mean reconstruction error (PRIMARY METRIC - minimize)
                     if 'mean' in recon_stats:
-                        cleaned_metrics['mean_recon_error'] = float(recon_stats['mean'])
+                        cleaned_metrics['mean_recon_error'] = round(float(recon_stats['mean']), 6)
                         dqn_params.append({"key": "mean_recon_error", "sign": "-", "mul": 1.0})
-                        print(f"[OK] Extracted mean_recon_error: {recon_stats['mean']}")
-                    
-                    # Standard deviation (higher std can help anomaly detection)
-                    if 'std' in recon_stats:
-                        cleaned_metrics['std_recon_error'] = float(recon_stats['std'])
-                        dqn_params.append({"key": "std_recon_error", "sign": "+", "mul": 1.0})
-                        print(f"[OK] Extracted std_recon_error: {recon_stats['std']}")
+                        print(f"[OK] Extracted mean_recon_error: {cleaned_metrics['mean_recon_error']}")
                 
-                # Extract from 'anomaly_detection' thresholds (based on your log output)
+                # Extract ONLY 95th percentile threshold (most important for anomaly detection)
                 if 'anomaly_detection' in current_metrics and isinstance(current_metrics['anomaly_detection'], dict):
                     anomaly_data = current_metrics['anomaly_detection']
                     
-                    # 90th percentile threshold
-                    if 'threshold_90' in anomaly_data and 'threshold' in anomaly_data['threshold_90']:
-                        threshold_90 = float(anomaly_data['threshold_90']['threshold'])
-                        cleaned_metrics['threshold_90'] = threshold_90
-                        dqn_params.append({"key": "threshold_90", "sign": "+", "mul": 1.0})
-                        print(f"[OK] Extracted threshold_90: {threshold_90}")
-                    
-                    # 95th percentile threshold
+                    # 95th percentile threshold (PRIMARY METRIC)
                     if 'threshold_95' in anomaly_data and 'threshold' in anomaly_data['threshold_95']:
-                        threshold_95 = float(anomaly_data['threshold_95']['threshold'])
+                        threshold_95 = round(float(anomaly_data['threshold_95']['threshold']), 6)
                         cleaned_metrics['threshold_95'] = threshold_95
                         dqn_params.append({"key": "threshold_95", "sign": "+", "mul": 1.0})
                         print(f"[OK] Extracted threshold_95: {threshold_95}")
-                    
-                    # 99th percentile threshold  
-                    if 'threshold_99' in anomaly_data and 'threshold' in anomaly_data['threshold_99']:
-                        threshold_99 = float(anomaly_data['threshold_99']['threshold'])
-                        cleaned_metrics['threshold_99'] = threshold_99
-                        dqn_params.append({"key": "threshold_99", "sign": "+", "mul": 1.0})
-                        print(f"[OK] Extracted threshold_99: {threshold_99}")
                 
-                # Extract model info parameters
-                if 'model_info' in current_metrics and isinstance(current_metrics['model_info'], dict):
-                    model_info = current_metrics['model_info']
-                    
-                    if 'total_parameters' in model_info:
-                        cleaned_metrics['total_parameters'] = float(model_info['total_parameters'])
-                        dqn_params.append({"key": "total_parameters", "sign": "-", "mul": 1.0})  # Fewer parameters = better
-                        print(f"[OK] Extracted total_parameters: {model_info['total_parameters']}")
-                
-                # Add default metrics if nothing was extracted
+                # Add default metrics if nothing was extracted (LIMIT TO 4)
                 if not dqn_params:
                     print("[WARNING] No metrics extracted from signature failure VAE data! Using defaults.")
                     default_metrics = {
                         "avg_elbo_loss": 1.0,
                         "avg_reconstruction_loss": 1.0,
-                        "avg_kl_divergence": 0.001,
-                        "mean_recon_error": 1.0
+                        "mean_recon_error": 1.0,
+                        "threshold_95": 2.0
                     }
                     for key, value in default_metrics.items():
                         cleaned_metrics[key] = value
-                        dqn_params.append({"key": key, "sign": "-", "mul": 1.0})
+                        sign = "+" if "threshold" in key else "-"
+                        dqn_params.append({"key": key, "sign": sign, "mul": 1.0})
+                
+                # LIMIT DQN params to max 4-5 metrics to avoid server overload
+                if len(dqn_params) > 5:
+                    print(f"[WARNING] Too many metrics ({len(dqn_params)}). Limiting to top 4.")
+                    dqn_params = dqn_params[:4]
+                    cleaned_metrics = {param['key']: cleaned_metrics[param['key']] for param in dqn_params}
                 
                 print(f"[TARGET] SIGNATURE FAILURE VAE METRICS READY FOR DQN:")
-                print(f"   Total extracted metrics: {len(cleaned_metrics)}")
+                print(f"   Total metrics for DQN: {len(cleaned_metrics)}")
                 print(f"   Metrics: {list(cleaned_metrics.keys())}")
                 print(f"[LAUNCH] Signature failure VAE param_json for DQN: {json.dumps(dqn_params)}")
 
