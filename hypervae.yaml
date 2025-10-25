@@ -77,7 +77,7 @@ outputs:
   
 implementation:
   container:
-    image: sanram00/vae-image:v2
+    image: sanram00/vae-image:v3
     command:
       - python3
       - -u
@@ -196,9 +196,9 @@ implementation:
                     feasible_space=p["feasible_space"]
                 )
                 parameters.append(param_spec)
-                print(f"✓ DEBUG: Created parameter: {p['name']}")
+                print(f" DEBUG: Created parameter: {p['name']}")
             except Exception as e:
-                print(f"✗ DEBUG: Failed to create parameter {p.get('name', 'UNKNOWN')}: {e}")
+                print(f" DEBUG: Failed to create parameter {p.get('name', 'UNKNOWN')}: {e}")
                 raise
 
         print("=== DEBUG: CREATING METRICS COLLECTOR ===")
