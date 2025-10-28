@@ -4,6 +4,7 @@ inputs:
   - {name: config, type: String}
 outputs:
   - {name: model, type: Model}
+  - {name: schema_data_json, type: String}
 implementation:
   container:
     image: nikhilv215/nesy-factory:v22
@@ -22,6 +23,8 @@ implementation:
         import pickle
         import sys
         import torch
+        import datetime
+        import hashlib
         
         from nesy_factory.VAE.standard_vae import StandardVAE
         from nesy_factory.VAE.beta_vae import BetaVAE
@@ -30,6 +33,7 @@ implementation:
         parser = argparse.ArgumentParser()
         parser.add_argument('--config', type=str, required=True)
         parser.add_argument('--model', type=str, required=True)
+        parser.add_argument('--schema_data_json', type=str, required=True)
         args = parser.parse_args()
 
         config = json.loads(args.config)
@@ -90,15 +94,106 @@ implementation:
         else:
             raise ValueError(f"Invalid VAE model type specified: {model_type}")
 
+        # Generate RLAF Schema Data
+        param_count = sum(p.numel() for p in model_obj.parameters() if p.requires_grad)
+        timestamp = datetime.datetime.now().isoformat() + "Z"
+        
+        # Generate unique identifiers
+        config_str = json.dumps({
+            "model_type": model_type,
+            "model_config": model_config,
+            "timestamp": datetime.datetime.now().strftime('%Y%m%d')
+        }, sort_keys=True)
+        model_hash = hashlib.md5(config_str.encode()).hexdigest()[:12]
+
+        # Build RLAF schema data
+        rlaf_schema = {
+            # Required RLAF fields
+            "execution_id": f"vae_build_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}_{model_hash[:8]}",
+            "experiment_id": config.get('experiment_name', f'signature_failure_vae_{datetime.datetime.now().strftime("%Y%m%d")}'),
+            "model_id": f"enhanced_{model_type.lower()}_signature_failure_{model_hash}",
+            "tenant_id": config.get('tenant_id', 'gaiangroup_industrial_ai'),
+            "project_id": config.get('project_id', 'predictive_maintenance_vae_project'),
+            "name": f"{model_type} Signature Failure Detector - {config.get('experiment_name', 'Enhanced VAE')}",
+            "architecture_type": "FFN",
+            "symbolic_profile": f"VAE_Encoder({model_config['input_dim']}→{model_config['hidden_dim']}→{model_config['latent_dim']})_Decoder({model_config['latent_dim']}→{model_config['hidden_dim']}→{model_config['input_dim']})",
+            "input_shape": f"[batch_size, {model_config['input_dim']}]",
+            "output_shape": f"[batch_size, {model_config['input_dim']}]",
+            "parameter_count": str(param_count),
+            "source": "auto-generated",
+            "created_by": "vae_build_pipeline",
+            "created_at": timestamp,
+            
+            # Model specific configuration
+            "model_specific_config": {
+                "model_type": model_type,
+                "input_dim": model_config['input_dim'],
+                "latent_dim": model_config['latent_dim'],
+                "hidden_dim": model_config['hidden_dim'],
+                "num_layers": model_config['num_layers'],
+                "dropout": model_config['dropout'],
+                "beta": model_config['beta'],
+                "optimizer": model_config['optimizer'],
+                "learning_rate": model_config['learning_rate'],
+                "epochs": model_config['epochs'],
+                "loss_function": model_config['loss_function'],
+                "failure_types": config.get('failure_types', 8),
+                "failure_categories": config.get('signature_failure_categories', [
+                    'normal_operation', 'bearing_failure', 'misalignment', 
+                    'imbalance', 'looseness', 'oil_whirl', 'gear_fault', 'complex_failure'
+                ]),
+                "feature_engineering_method": config.get('feature_engineering_method', 'time_frequency_domain'),
+                "normalization_method": config.get('normalization_method', 'min_max_scaling'),
+                "architecture_variant": config.get('architecture_variant', 'enhanced_vae'),
+                "activation_function": config.get('activation_function', 'GELU'),
+                "batch_normalization": config.get('batch_normalization', True),
+                "residual_connections": config.get('residual_connections', True),
+                "output_activation": config.get('output_activation', 'Sigmoid'),
+                "rlaf_integration": config.get('rlaf_integration', True),
+                "dqn_optimization": config.get('dqn_optimization', True),
+                "optimization_metrics": config.get('dqn_optimization_metrics', [
+                    'avg_elbo_loss', 'avg_reconstruction_loss', 'mean_recon_error'
+                ]),
+                "target_inference_latency": config.get('target_inference_latency', '< 50ms'),
+                "target_throughput": config.get('target_throughput', '800+ signatures/second'),
+                "target_accuracy": config.get('target_accuracy', '85-95%'),
+                "target_training_loss": config.get('target_training_loss', '< 1.0'),
+                "real_time_inference": config.get('real_time_inference', True),
+                "batch_processing": config.get('batch_processing', True),
+                "kubeflow_integration": config.get('kubeflow_integration', True),
+                "container_image": config.get('container_image', 'nikhilv215/nesy-factory:v22'),
+                "build_timestamp": timestamp,
+                "model_hash": model_hash,
+                "parameter_count_detailed": param_count
+            }
+        }
+
+        print("=== RLAF SCHEMA DATA GENERATED ===")
+        print(f"Execution ID: {rlaf_schema['execution_id']}")
+        print(f"Model ID: {rlaf_schema['model_id']}")
+        print(f"Architecture Type: {rlaf_schema['architecture_type']}")
+        print(f"Parameter Count: {rlaf_schema['parameter_count']}")
+        print("==================================")
+
         # Save the model
         os.makedirs(os.path.dirname(args.model), exist_ok=True)
         with open(args.model, "wb") as f:
             pickle.dump(model_obj, f)
 
-        print(f"Saved {model_type} model to {args.model}")
-        print(f"Model parameters: {sum(p.numel() for p in model_obj.parameters() if p.requires_grad)} trainable parameters")
+        # Save schema data as JSON string
+        schema_data_json = json.dumps(rlaf_schema, indent=2, ensure_ascii=False)
+        os.makedirs(os.path.dirname(args.schema_data_json), exist_ok=True)
+        with open(args.schema_data_json, 'w', encoding='utf-8') as f:
+            f.write(schema_data_json)
+
+        print(f" Saved {model_type} model to {args.model}")
+        print(f" Saved RLAF schema data to {args.schema_data_json}")
+        print(f" Model parameters: {param_count} trainable parameters")
+        print(f" Ready for RLAF integration!")
     args:
       - --config
       - {inputValue: config}
       - --model
       - {outputPath: model}
+      - --schema_data_json
+      - {outputPath: schema_data_json}
