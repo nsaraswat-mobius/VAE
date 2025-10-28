@@ -308,3 +308,7 @@ implementation:
       - {inputValue: config}
       - --trained_model
       - {outputPath: trained_model}
+      - --epoch_loss
+      - {outputPath: epoch_loss}
+      - --epoch_loss
+      - {outputPath: epoch_loss}
