@@ -6,6 +6,7 @@ inputs:
   - {name: config, type: String}
 outputs:
   - {name: trained_model, type: Model}
+  - {name: epoch_loss, type: String}
 implementation:
   container:
     image: nikhilv215/nesy-factory:v22
@@ -37,6 +38,7 @@ implementation:
         parser.add_argument('--train_loader', type=str, required=True)
         parser.add_argument('--config', type=str, required=True)
         parser.add_argument('--trained_model', type=str, required=True)
+        parser.add_argument('--epoch_loss', type=str, required=True)
         args = parser.parse_args()
 
         config = json.loads(args.config)
@@ -126,6 +128,7 @@ implementation:
 
         # Training loop
         model_obj.train()
+        epoch_loss_data = []
         for epoch in range(epochs):
             total_loss = 0
             total_recon_loss = 0
@@ -258,6 +261,14 @@ implementation:
                       f"Total Loss: {avg_loss:.6f} | " +
                       f"Recon Loss: {avg_recon_loss:.6f} | " +
                       f"KL Loss: {avg_kl_loss:.6f}")
+                
+                # Store epoch loss data
+                epoch_loss_data.append({
+                    'epoch': epoch,
+                    'total_loss': avg_loss,
+                    'recon_loss': avg_recon_loss,
+                    'kl_loss': avg_kl_loss
+                })
             
             # Simple divergence check
             if epoch > 10 and avg_loss > 1000:
@@ -265,6 +276,14 @@ implementation:
                 break
         
         print("Finished VAE Model Training")
+        
+        # Save epoch loss data
+        output_dir_epoch_loss = os.path.dirname(args.epoch_loss)
+        if output_dir_epoch_loss and not os.path.exists(output_dir_epoch_loss):
+            os.makedirs(output_dir_epoch_loss, exist_ok=True)
+        with open(args.epoch_loss, 'w') as f:
+            f.write(json.dumps(epoch_loss_data))
+        print(f"Saved epoch loss data to {args.epoch_loss}")
         
         # Save the trained model
         os.makedirs(os.path.dirname(args.trained_model), exist_ok=True)
