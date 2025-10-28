@@ -1,9 +1,10 @@
 name: Initialize VAE Model
-description: Initializes the VAE model for failure signature anomaly detection.
+description: Initializes the VAE model for failure signature anomaly detection with robust error handling.
 inputs:
   - {name: config, type: String}
 outputs:
   - {name: model, type: Model}
+  - {name: model_config, type: String}  # Output the actual config used
 implementation:
   container:
     image: nikhilv215/nesy-factory:v22
@@ -21,84 +22,114 @@ implementation:
         import os
         import pickle
         import sys
-        import torch
+        from datetime import datetime
         
+        # Import your VAE models here
         from nesy_factory.VAE.standard_vae import StandardVAE
         from nesy_factory.VAE.beta_vae import BetaVAE
         from nesy_factory.VAE.conditional_vae import ConditionalVAE
 
+        def validate_config(config):
+            """Validate configuration parameters"""
+            # Check required parameters
+            required = ['latent_dim', 'hidden_dim']
+            for param in required:
+                if param not in config:
+                    raise ValueError(f"Missing required parameter: {param}")
+            
+            # Validate values
+            if config['latent_dim'] <= 0:
+                raise ValueError("latent_dim must be positive")
+            if config['hidden_dim'] <= 0:
+                raise ValueError("hidden_dim must be positive")
+            if config['hidden_dim'] < config['latent_dim']:
+                print("Warning: hidden_dim is smaller than latent_dim")
+            
+            # Validate model type
+            valid_types = ['StandardVAE', 'VAE', 'BetaVAE', 'ConditionalVAE']
+            model_type = config.get('model_type', 'VAE')
+            if model_type not in valid_types:
+                raise ValueError(f"Invalid model_type. Must be one of {valid_types}")
+            
+            return model_type
+
+        def get_input_dimension(config):
+            """Safely determine input dimension"""
+            if 'processed_input_dim' in config:
+                return config['processed_input_dim']
+            elif 'actual_input_dim' in config:
+                return config['actual_input_dim']
+            else:
+                raise ValueError(
+                    "Cannot determine input dimension. "
+                    "Please provide 'processed_input_dim' or 'actual_input_dim' in config"
+                )
+
         parser = argparse.ArgumentParser()
         parser.add_argument('--config', type=str, required=True)
         parser.add_argument('--model', type=str, required=True)
+        parser.add_argument('--model_config', type=str, required=True)
         args = parser.parse_args()
 
-        config = json.loads(args.config)
+        try:
+            # Parse and validate config
+            config = json.loads(args.config)
+            model_type = validate_config(config)
+            input_dim = get_input_dimension(config)
+            
+            print(f"Using input dimension: {input_dim}")
+            print(f"Model type: {model_type}")
 
-        # Get input dimension from config - use actual processed dimension
-        if 'processed_input_dim' in config:
-            # Use the actual dimension from preprocessing step
-            input_dim = config['processed_input_dim']
-            print(f"Using processed input dimension: {input_dim}")
-        elif 'input_dim' in config:
-            input_dim = config['input_dim']
-            print(f"Using configured input dimension: {input_dim}")
-        elif 'feature_columns' in config:
-            # This is just an estimate - actual may be higher due to one-hot encoding
-            base_features = len(config['feature_columns'])
-            # Assume worst case: all categorical with 10 categories each
-            input_dim = base_features * 10  # Conservative estimate
-            print(f"Warning: Estimating input dimension as {input_dim} based on {base_features} features")
-            print("Note: Actual dimension may differ due to one-hot encoding")
-        else:
-            # Default fallback - this should not happen in production
-            input_dim = 50  # Increased default to handle typical one-hot encoded data
-            print(f"Warning: input_dim not found in config, using default value of {input_dim}")
-        
-        print(f"Final input dimension: {input_dim}")
+            # Build complete model configuration
+            model_config = {
+                'input_dim': input_dim,
+                'latent_dim': config['latent_dim'],
+                'hidden_dim': config['hidden_dim'],
+                'num_layers': config.get('num_layers', 2),
+                'dropout': config.get('dropout', 0.1),
+                'beta': config.get('beta', 1.0),
+                'optimizer': 'adam',
+                'learning_rate': config.get('learning_rate', 0.001),
+                'epochs': config.get('epochs', 100),
+                'loss_function': config.get('loss_function', 'ELBO'),
+                'model_type': model_type
+            }
 
-        # Build VAE model configuration
-        model_config = {
-            'input_dim': input_dim,
-            'latent_dim': config.get('latent_dim', 16),
-            'hidden_dim': config.get('hidden_dim', 64),
-            'num_layers': config.get('num_layers', 2),
-            'dropout': config.get('dropout', 0.1),
-            'beta': config.get('beta', 1.0),  # For Beta-VAE
-            'optimizer': 'adam',
-            'learning_rate': config.get('learning_rate', 0.001),
-            'epochs': config.get('epochs', 100),
-            'loss_function': config.get('loss_function', 'ELBO (reconstruction MSE + KL divergence)')
-        }
+            # Initialize appropriate VAE model
+            if model_type in ['StandardVAE', 'VAE']:
+                model_obj = StandardVAE(model_config)
+            elif model_type == 'BetaVAE':
+                model_obj = BetaVAE(model_config)
+            elif model_type == 'ConditionalVAE':
+                model_config['num_classes'] = config.get('num_classes', 10)
+                model_obj = ConditionalVAE(model_config)
 
-        print(f"Model configuration: {model_config}")
+            # Save model and config
+            os.makedirs(os.path.dirname(args.model), exist_ok=True)
+            with open(args.model, "wb") as f:
+                pickle.dump({
+                    'model_obj': model_obj,
+                    'model_config': model_config,
+                    'metadata': {
+                        'model_type': model_type,
+                        'input_dim': input_dim,
+                        'created_at': datetime.now().isoformat()
+                    }
+                }, f)
 
-        # Initialize the appropriate VAE model based on model_type
-        model_type = config.get('model_type', 'VAE')
-        
-        if model_type == 'StandardVAE' or model_type == 'VAE':
-            model_obj = StandardVAE(model_config)
-            print("Initialized Standard VAE")
-        elif model_type == 'BetaVAE':
-            model_obj = BetaVAE(model_config)
-            print(f"Initialized Beta-VAE with beta={model_config['beta']}")
-        elif model_type == 'ConditionalVAE':
-            # For conditional VAE, we might need additional configuration
-            num_classes = config.get('num_classes', 10)
-            model_config['num_classes'] = num_classes
-            model_obj = ConditionalVAE(model_config)
-            print(f"Initialized Conditional VAE with {num_classes} classes")
-        else:
-            raise ValueError(f"Invalid VAE model type specified: {model_type}")
+            # Save the configuration used
+            with open(args.model_config, 'w') as f:
+                json.dump(model_config, f, indent=2)
 
-        # Save the model
-        os.makedirs(os.path.dirname(args.model), exist_ok=True)
-        with open(args.model, "wb") as f:
-            pickle.dump(model_obj, f)
-
-        print(f"Saved {model_type} model to {args.model}")
-        print(f"Model parameters: {sum(p.numel() for p in model_obj.parameters() if p.requires_grad)} trainable parameters")
+            print(f"Successfully initialized {model_type} with {sum(p.numel() for p in model_obj.parameters() if p.requires_grad)} parameters")
+            
+        except Exception as e:
+            print(f"Error initializing VAE model: {e}")
+            sys.exit(1)
     args:
       - --config
       - {inputValue: config}
       - --model
       - {outputPath: model}
+      - --model_config
+      - {outputPath: model_config}
