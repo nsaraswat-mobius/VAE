@@ -1,11 +1,9 @@
 name: Initialize VAE Model
-description: Initializes the VAE model for failure signature anomaly detection with dataset conversion.
+description: Initializes the VAE model for failure signature anomaly detection.
 inputs:
   - {name: config, type: String}
-  - {name: input_dataset, type: Dataset}  # Add dataset input
 outputs:
   - {name: model, type: Model}
-  - {name: json_string, type: String}     # Add string output for Update Schema Row
 implementation:
   container:
     image: nikhilv215/nesy-factory:v22
@@ -23,7 +21,6 @@ implementation:
         import os
         import pickle
         import sys
-        import pandas as pd
         import torch
         
         from nesy_factory.VAE.standard_vae import StandardVAE
@@ -32,54 +29,9 @@ implementation:
 
         parser = argparse.ArgumentParser()
         parser.add_argument('--config', type=str, required=True)
-        parser.add_argument('--input_dataset', type=str, required=True)
         parser.add_argument('--model', type=str, required=True)
-        parser.add_argument('--json_string', type=str, required=True)
         args = parser.parse_args()
 
-        # Convert Dataset to JSON String for Update Schema Row
-        try:
-            # Read the dataset file
-            print("Converting dataset to JSON string...")
-            
-            # Try different file formats
-            try:
-                df = pd.read_parquet(args.input_dataset)
-                print("Successfully read dataset as Parquet")
-            except:
-                try:
-                    df = pd.read_csv(args.input_dataset)
-                    print("Successfully read dataset as CSV")
-                except:
-                    try:
-                        df = pd.read_json(args.input_dataset)
-                        print("Successfully read dataset as JSON")
-                    except:
-                        # Create minimal dataset if all formats fail
-                        df = pd.DataFrame({'info': ['dataset_conversion']})
-                        print("Created minimal dataset for conversion")
-            
-            # Convert to JSON string
-            json_data = df.to_json(orient='records', indent=2)
-            
-            # Write JSON string output
-            os.makedirs(os.path.dirname(args.json_string), exist_ok=True)
-            with open(args.json_string, 'w') as f:
-                f.write(json_data)
-            
-            print(f"Successfully converted dataset to JSON string")
-            print(f"Dataset shape: {df.shape}")
-            print(f"JSON output saved to: {args.json_string}")
-            
-        except Exception as e:
-            print(f"Error converting dataset: {e}")
-            # Create a default JSON string if conversion fails
-            default_json = json.dumps({"status": "conversion_failed", "error": str(e)})
-            with open(args.json_string, 'w') as f:
-                f.write(default_json)
-            print("Created fallback JSON string")
-
-        # Continue with original VAE model initialization
         config = json.loads(args.config)
 
         # Get input dimension from config - use actual processed dimension
@@ -148,9 +100,5 @@ implementation:
     args:
       - --config
       - {inputValue: config}
-      - --input_dataset
-      - {inputPath: input_dataset}
       - --model
       - {outputPath: model}
-      - --json_string
-      - {outputPath: json_string}
