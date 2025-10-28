@@ -30,7 +30,6 @@ implementation:
         from nesy_factory.VAE.conditional_vae import ConditionalVAE
 
         def validate_config(config):
-            """Validate configuration parameters"""
             # Check required parameters
             required = ['latent_dim', 'hidden_dim']
             for param in required:
@@ -54,7 +53,6 @@ implementation:
             return model_type
 
         def get_input_dimension(config):
-            """Safely determine input dimension"""
             if 'processed_input_dim' in config:
                 return config['processed_input_dim']
             elif 'actual_input_dim' in config:
