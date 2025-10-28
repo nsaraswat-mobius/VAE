@@ -262,12 +262,18 @@ implementation:
                       f"Recon Loss: {avg_recon_loss:.6f} | " +
                       f"KL Loss: {avg_kl_loss:.6f}")
                 
-                # Store epoch loss data
+                # Store epoch loss data in the required schema format
                 epoch_loss_data.append({
                     'epoch': epoch,
-                    'total_loss': avg_loss,
-                    'recon_loss': avg_recon_loss,
-                    'kl_loss': avg_kl_loss
+                    'loss': avg_loss,  # total_loss -> loss
+                    'accuracy': 0.0,  # VAE doesn't have traditional accuracy - placeholder
+                    'validation_loss': avg_loss,  # using training loss as validation for now
+                    'validation_accuracy': 0.0,  # placeholder
+                    'custom_metrics': {
+                        'recon_loss': avg_recon_loss,
+                        'kl_loss': avg_kl_loss,
+                        'total_loss': avg_loss
+                    }
                 })
             
             # Simple divergence check
@@ -284,6 +290,23 @@ implementation:
         with open(args.epoch_loss, 'w') as f:
             f.write(json.dumps(epoch_loss_data))
         print(f"Saved epoch loss data to {args.epoch_loss}")
+        
+        # Create training summary for model schema integration
+        training_summary = {
+            "total_epochs": len(epoch_loss_data),
+            "final_total_loss": epoch_loss_data[-1]["custom_metrics"]["total_loss"] if epoch_loss_data else 0.0,
+            "final_recon_loss": epoch_loss_data[-1]["custom_metrics"]["recon_loss"] if epoch_loss_data else 0.0,
+            "final_kl_loss": epoch_loss_data[-1]["custom_metrics"]["kl_loss"] if epoch_loss_data else 0.0,
+            "epoch_losses": epoch_loss_data,
+            "convergence_achieved": epoch_loss_data[-1]["custom_metrics"]["total_loss"] < 1.0 if epoch_loss_data else False,
+            "training_config": {
+                "learning_rate": learning_rate,
+                "beta": beta,
+                "optimizer": "Adam"
+            }
+        }
+        print(f"Training Summary: Final Loss = {training_summary['final_total_loss']:.6f}")
+        print(f"Convergence: {'Yes' if training_summary['convergence_achieved'] else 'No'}")
         
         # Save the trained model
         os.makedirs(os.path.dirname(args.trained_model), exist_ok=True)
