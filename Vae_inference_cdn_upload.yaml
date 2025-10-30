@@ -10,7 +10,7 @@ outputs:
   - {name: config_file, type: String, description: "Downloaded config.properties file"}
 implementation:
   container:
-    image: nikhilv215/nesy-factory:v22
+    image: python:3.9
     command:
       - sh
       - -c
@@ -36,29 +36,14 @@ implementation:
         
         args = parser.parse_args()
         
-        # Fix URL escaping issue - the URLs should contain $$_V1_ not $_V1_
-        def fix_url(url):
-            # Convert single $ to $$ in the URL path
-            if '_$_V1_' in url:
-                url = url.replace('_$_V1_', '_$$_V1_')
-            print(f"URL fix: {url}")
-            return url
-        
-        handler_url = fix_url(args.handler_url)
-        pth_url = fix_url(args.pth_url)
-        config_url = fix_url(args.config_url)
-        
-        print("Original handler_url:", args.handler_url)
-        print("Fixed handler_url:", handler_url)
-        print("Original pth_url:", args.pth_url)
-        print("Fixed pth_url:", pth_url)
-        print("Original config_url:", args.config_url)
-        print("Fixed config_url:", config_url)
+        print("Received handler_url:", args.handler_url)
+        print("Received pth_url:", args.pth_url)
+        print("Received config_url:", args.config_url)
         
         try:
             # Download handler.py
-            print("Fetching handler.py from CDN:", handler_url)
-            resp_handler = requests.get(handler_url, timeout=120)
+            print("Fetching handler.py from CDN:", args.handler_url)
+            resp_handler = requests.get(args.handler_url, timeout=120)
             resp_handler.raise_for_status()
             
             os.makedirs(args.handler_file, exist_ok=True)
@@ -69,8 +54,8 @@ implementation:
             print("Handler size:", len(resp_handler.text), "characters")
             
             # Download trained_model.pth model file
-            print("Fetching trained_model.pth from CDN:", pth_url)
-            resp_pth = requests.get(pth_url, timeout=300)
+            print("Fetching trained_model.pth from CDN:", args.pth_url)
+            resp_pth = requests.get(args.pth_url, timeout=300)
             resp_pth.raise_for_status()
             
             os.makedirs(args.pth_file, exist_ok=True)
@@ -81,8 +66,8 @@ implementation:
             print("PTH model size:", len(resp_pth.content), "bytes")
             
             # Download config.properties
-            print("Fetching config.properties from CDN:", config_url)
-            resp_config = requests.get(config_url, timeout=120)
+            print("Fetching config.properties from CDN:", args.config_url)
+            resp_config = requests.get(args.config_url, timeout=120)
             resp_config.raise_for_status()
             
             os.makedirs(args.config_file, exist_ok=True)
@@ -119,37 +104,7 @@ implementation:
             exit(1)
         except requests.exceptions.RequestException as e:
             print("Error: Network error during download:", str(e))
-            print("Creating fallback files to prevent pipeline failure...")
-            
-            # Create fallback files when CDN fails
-            try:
-                # Create fallback handler
-                os.makedirs(args.handler_file, exist_ok=True)
-                handler_path = os.path.join(args.handler_file, 'handler.py')
-                fallback_handler = "# Fallback handler - CDN download failed\\nprint(\\"Fallback handler loaded\\")\\n"
-                with open(handler_path, "w") as f:
-                    f.write(fallback_handler)
-                
-                # Create fallback model  
-                os.makedirs(args.pth_file, exist_ok=True)
-                pth_path = os.path.join(args.pth_file, 'trained_model.pth')
-                with open(pth_path, "wb") as f:
-                    f.write(b"FALLBACK_MODEL_PLACEHOLDER")
-                
-                # Create fallback config
-                os.makedirs(args.config_file, exist_ok=True) 
-                config_path = os.path.join(args.config_file, 'config.properties')
-                fallback_config = "# Fallback config - CDN download failed\\nstatus=fallback\\n"
-                with open(config_path, "w") as f:
-                    f.write(fallback_config)
-                    
-                print("✓ Fallback files created successfully")
-                print("Pipeline can continue with placeholder files")
-                
-            except Exception as fallback_error:
-                print(f"Error creating fallback files: {fallback_error}")
-                exit(1)
-                
+            exit(1)
         except Exception as e:
             print("Error: Failed to download files:", str(e))
             import traceback
