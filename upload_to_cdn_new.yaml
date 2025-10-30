@@ -1,11 +1,11 @@
-name: Upload VAE Model to CDN
-description: Uploads trained VAE model, handler.py, and config files to cloud storage and returns CDN URLs for KServe inference deployment.
+name: Generate Static VAE URLs
+description: Generates static hardcoded URLs for VAE model, handler.py, and config files for KServe inference deployment.
 inputs:
-  - {name: trained_model, type: Model, description: "Trained VAE PyTorch model file from train_vae_model component"}
+  - {name: trained_model, type: Model, description: "Trained VAE PyTorch model file (for validation only)"}
 outputs:
-  - {name: vae_model_url, type: String, description: "CDN URL for trained_vae_model.pth"}
-  - {name: handler_url, type: String, description: "CDN URL for handler.py"}
-  - {name: config_url, type: String, description: "CDN URL for vae_config.properties"}
+  - {name: vae_model_url, type: String, description: "Static URL for trained_vae_model.pth"}
+  - {name: handler_url, type: String, description: "Static URL for handler.py"}
+  - {name: config_url, type: String, description: "Static URL for vae_config.properties"}
 implementation:
   container:
     image: nikhilv215/nesy-factory:v22
@@ -13,8 +13,8 @@ implementation:
       - sh
       - -c
       - |
-        PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet google-cloud-storage torch || \
-        PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet google-cloud-storage torch --user
+        PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet torch || \
+        PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet torch --user
         exec "$0" "$@"
       - python3
       - -u
@@ -24,7 +24,6 @@ implementation:
         import os
         import torch
         import sys
-        from google.cloud import storage
         from datetime import datetime
         
         parser = argparse.ArgumentParser()
@@ -35,50 +34,21 @@ implementation:
         
         args = parser.parse_args()
         
-        # Configuration - you can modify these defaults as needed
-        bucket_name = "vae-signature-failure-models"
-        model_version = "v1.0"
-        project_id = "your-project-id"  # Change to your actual project ID
-        
-        print("VAE Model Upload to CDN Started")
-        print("Bucket:", bucket_name)
-        print("Model Version:", model_version)
-        print("Project ID:", project_id)
+        print("Generating Static VAE URLs for KServe")
         print("Model path:", args.trained_model)
         
+        # Static hardcoded URLs - modify these to point to your actual CDN/storage
+        base_url = "https://your-cdn.com/vae-models/signature-failure"
+        model_url = f"{base_url}/trained_vae_model.pth"
+        handler_url = f"{base_url}/handler.py"
+        config_url = f"{base_url}/vae_config.properties"
+        
         try:
-            # Validate model file exists
+            # Validate model file exists (optional validation)
             if not os.path.exists(args.trained_model):
                 raise FileNotFoundError(f"Model file not found: {args.trained_model}")
             
-            # Initialize Google Cloud Storage client
-            try:
-                client = storage.Client(project=project_id)
-                bucket = client.bucket(bucket_name)
-                
-                # Check if bucket exists
-                if not bucket.exists():
-                    print(f"Bucket {bucket_name} does not exist, creating...")
-                    bucket = client.create_bucket(bucket_name, location='us-central1')
-                    print(f"✓ Bucket created: {bucket_name}")
-                
-            except Exception as e:
-                print(f"GCS initialization failed: {str(e)}")
-                print("Ensure:")
-                print("1. GCP credentials are available")
-                print("2. Project ID is correct")
-                print("3. You have storage admin permissions")
-                raise
-            
-            # Create folder structure
-            base_path = f"vae-models/{model_version}/signature-failure"
-            
-            # 1. Upload trained VAE model
-            print("Uploading trained VAE model...")
-            model_blob_name = f"{base_path}/trained_vae_model.pth"
-            model_blob = bucket.blob(model_blob_name)
-            
-            # Validate model file
+            # Validate model file format
             try:
                 checkpoint = torch.load(args.trained_model, map_location='cpu', weights_only=False)
                 print("✓ VAE model validation successful")
@@ -92,80 +62,7 @@ implementation:
                 print(f"Warning: Model validation failed: {str(e)}")
                 # Continue anyway - might be a custom format
             
-            model_blob.upload_from_filename(args.trained_model)
-            model_url = f"https://storage.googleapis.com/{bucket_name}/{model_blob_name}"
-            print(f"✓ Model uploaded: {model_url}")
-            
-            # 2. Create and upload VAE handler.py
-            print("Creating VAE handler.py for KServe...")
-            handler_content = '''
-import torch
-import logging
-import kserve
-from kserve import Model
-
-logger = logging.getLogger(__name__)
-
-class VAEModel(Model):
-    def __init__(self, name: str):
-        super().__init__(name)
-        self.model = None
-        self.ready = False
-        
-    def load(self):
-        try:
-            logger.info("Loading VAE model...")
-            # Model loading logic would go here
-            self.ready = True
-            logger.info("Model loaded successfully")
-        except Exception as e:
-            logger.error(f"Model loading failed: {str(e)}")
-            raise
-    
-    def predict(self, request, headers=None):
-        if not self.ready:
-            raise RuntimeError("Model not loaded")
-        
-        try:
-            # Simplified prediction logic
-            return {"predictions": [], "status": "success"}
-        except Exception as e:
-            logger.error(f"Prediction failed: {str(e)}")
-            return {"error": str(e)}
-
-if __name__ == "__main__":
-    model = VAEModel("vae-signature-failure")
-    model.load()
-    kserve.ModelServer().start([model])
-'''
-            
-            handler_blob_name = f"{base_path}/handler.py"
-            handler_blob = bucket.blob(handler_blob_name)
-            handler_blob.upload_from_string(handler_content)
-            handler_url = f"https://storage.googleapis.com/{bucket_name}/{handler_blob_name}"
-            print(f"✓ Handler uploaded: {handler_url}")
-            
-            # 3. Create and upload VAE config
-            print("Creating VAE configuration...")
-            config_content = f'''# VAE Signature Failure Configuration
-vae_type=standard
-input_dim=784
-latent_dim=32
-anomaly_threshold=0.5
-model_version={model_version}
-created_at={datetime.now().isoformat()}
-use_case=signature_failure_detection
-batch_size=128
-project_id={project_id}
-'''
-            
-            config_blob_name = f"{base_path}/vae_config.properties"
-            config_blob = bucket.blob(config_blob_name)
-            config_blob.upload_from_string(config_content)
-            config_url = f"https://storage.googleapis.com/{bucket_name}/{config_blob_name}"
-            print(f"✓ Config uploaded: {config_url}")
-            
-            # Write URLs to output files
+            # Write static URLs to output files
             with open(args.vae_model_url, 'w') as f:
                 f.write(model_url)
             
@@ -175,14 +72,19 @@ project_id={project_id}
             with open(args.config_url, 'w') as f:
                 f.write(config_url)
             
-            print(" All VAE files uploaded to CDN successfully!")
+            print("Static VAE URLs generated successfully!")
             print("URLs generated:")
             print(f"  Model: {model_url}")
             print(f"  Handler: {handler_url}")
             print(f"  Config: {config_url}")
+            print("")
+            print("Note: These are static URLs. Make sure your files are available at these locations:")
+            print("- Upload your trained model to the model URL location")
+            print("- Upload a KServe handler.py to the handler URL location") 
+            print("- Upload a vae_config.properties to the config URL location")
             
         except Exception as e:
-            print(f" Failed to upload VAE files: {str(e)}")
+            print(f"Failed to generate VAE URLs: {str(e)}")
             import traceback
             traceback.print_exc()
             sys.exit(1)
