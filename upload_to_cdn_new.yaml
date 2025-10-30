@@ -44,33 +44,55 @@ implementation:
         config_url = f"{base_url}/vae_config.properties"
         
         try:
-            # Validate model file exists (optional validation)
-            if not os.path.exists(args.trained_model):
-                raise FileNotFoundError(f"Model file not found: {args.trained_model}")
-            
-            # Validate model file format
-            try:
-                checkpoint = torch.load(args.trained_model, map_location='cpu', weights_only=False)
-                print("✓ VAE model validation successful")
-                if 'model_state_dict' in checkpoint:
-                    print(f"Model contains state_dict with {len(checkpoint['model_state_dict'])} parameters")
-                elif 'state_dict' in checkpoint:
-                    print(f"Model contains state_dict with {len(checkpoint['state_dict'])} parameters")
+            # Handle model path - could be file or directory
+            model_path = args.trained_model
+            if os.path.isdir(model_path):
+                # Look for .pth files in the directory
+                pth_files = [f for f in os.listdir(model_path) if f.endswith('.pth')]
+                if pth_files:
+                    model_path = os.path.join(model_path, pth_files[0])
+                    print(f"Found model file: {model_path}")
                 else:
-                    print("Model contains direct weights")
-            except Exception as e:
-                print(f"Warning: Model validation failed: {str(e)}")
-                # Continue anyway - might be a custom format
+                    print(f"Warning: No .pth files found in {model_path}")
+                    model_path = None
             
-            # Write static URLs to output files
+            # Validate model file if found
+            if model_path and os.path.exists(model_path):
+                try:
+                    checkpoint = torch.load(model_path, map_location='cpu', weights_only=False)
+                    print("✓ VAE model validation successful")
+                    if 'model_state_dict' in checkpoint:
+                        print(f"Model contains state_dict with {len(checkpoint['model_state_dict'])} parameters")
+                    elif 'state_dict' in checkpoint:
+                        print(f"Model contains state_dict with {len(checkpoint['state_dict'])} parameters")
+                    else:
+                        print("Model contains direct weights")
+                except Exception as e:
+                    print(f"Warning: Model validation failed: {str(e)}")
+                    # Continue anyway - might be a custom format
+            else:
+                print("Warning: No valid model file found - continuing with URL generation")
+            
+            # Create output directories and write static URLs to output files
+            print("Creating output directories...")
+            
+            # Create directories for each output
+            os.makedirs(os.path.dirname(args.vae_model_url), exist_ok=True)
+            os.makedirs(os.path.dirname(args.handler_url), exist_ok=True)
+            os.makedirs(os.path.dirname(args.config_url), exist_ok=True)
+            
+            # Write URLs to files
             with open(args.vae_model_url, 'w') as f:
                 f.write(model_url)
+            print(f"✓ Model URL written to: {args.vae_model_url}")
             
             with open(args.handler_url, 'w') as f:
                 f.write(handler_url)
+            print(f"✓ Handler URL written to: {args.handler_url}")
                 
             with open(args.config_url, 'w') as f:
                 f.write(config_url)
+            print(f"✓ Config URL written to: {args.config_url}")
             
             print("Static VAE URLs generated successfully!")
             print("URLs generated:")
