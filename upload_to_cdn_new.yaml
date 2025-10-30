@@ -85,25 +85,69 @@ implementation:
             with open(args.vae_model_url, 'w') as f:
                 f.write(model_url)
             print(f"✓ Model URL written to: {args.vae_model_url}")
+            print(f"   Content: {model_url}")
             
             with open(args.handler_url, 'w') as f:
                 f.write(handler_url)
             print(f"✓ Handler URL written to: {args.handler_url}")
+            print(f"   Content: {handler_url}")
                 
             with open(args.config_url, 'w') as f:
                 f.write(config_url)
             print(f"✓ Config URL written to: {args.config_url}")
+            print(f"   Content: {config_url}")
             
-            print("Static VAE URLs generated successfully!")
-            print("URLs generated:")
-            print(f"  Model: {model_url}")
-            print(f"  Handler: {handler_url}")
-            print(f"  Config: {config_url}")
+            # Also read back and verify the files
             print("")
-            print("Note: These are static URLs. Make sure your files are available at these locations:")
-            print("- Upload your trained model to the model URL location")
-            print("- Upload a KServe handler.py to the handler URL location") 
-            print("- Upload a vae_config.properties to the config URL location")
+            print("🔍 VERIFYING OUTPUT FILES:")
+            try:
+                with open(args.vae_model_url, 'r') as f:
+                    content = f.read().strip()
+                    print(f"Model URL file contains: {content}")
+                
+                with open(args.handler_url, 'r') as f:
+                    content = f.read().strip()
+                    print(f"Handler URL file contains: {content}")
+                    
+                with open(args.config_url, 'r') as f:
+                    content = f.read().strip()
+                    print(f"Config URL file contains: {content}")
+            except Exception as e:
+                print(f"Warning: Could not verify files: {e}")
+            
+            print("=" * 80)
+            print("STATIC VAE URLs GENERATED SUCCESSFULLY!")
+            print("=" * 80)
+            print("")
+            print("📄 GENERATED URLs FOR KSERVE INFERENCE:")
+            print("-" * 50)
+            print(f"🔗 MODEL URL:")
+            print(f"   {model_url}")
+            print("")
+            print(f"🔗 HANDLER URL:")
+            print(f"   {handler_url}")
+            print("")
+            print(f"🔗 CONFIG URL:")
+            print(f"   {config_url}")
+            print("")
+            print("=" * 80)
+            print("📋 COPY THESE URLs FOR KSERVE DEPLOYMENT:")
+            print("=" * 80)
+            print("Model URL (for download component):")
+            print(model_url)
+            print("")
+            print("Handler URL (for download component):")
+            print(handler_url)
+            print("")
+            print("Config URL (for download component):")
+            print(config_url)
+            print("")
+            print("=" * 80)
+            print("📝 NEXT STEPS:")
+            print("1. Copy the URLs above")
+            print("2. Use them in your KServe inference pipeline")
+            print("3. Make sure files are uploaded to these locations")
+            print("=" * 80)
             
         except Exception as e:
             print(f"Failed to generate VAE URLs: {str(e)}")
