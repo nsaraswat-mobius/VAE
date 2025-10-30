@@ -25,7 +25,6 @@ implementation:
         import argparse
         import os
         import requests
-        import urllib.parse
         
         parser = argparse.ArgumentParser()
         parser.add_argument('--handler_url', type=str, required=True)
@@ -41,23 +40,10 @@ implementation:
         print("Received pth_url:", args.pth_url)
         print("Received config_url:", args.config_url)
         
-        def fix_url_format(url):
-            """Fix URL formatting by replacing $_ with $$"""
-            return url.replace('$_', '$$')
-        
         try:
-            # Fix URL formatting
-            handler_url_fixed = fix_url_format(args.handler_url)
-            pth_url_fixed = fix_url_format(args.pth_url)
-            config_url_fixed = fix_url_format(args.config_url)
-            
-            print("Fixed handler_url:", handler_url_fixed)
-            print("Fixed pth_url:", pth_url_fixed)
-            print("Fixed config_url:", config_url_fixed)
-            
             # Download handler.py
-            print("Fetching handler.py from CDN:", handler_url_fixed)
-            resp_handler = requests.get(handler_url_fixed, timeout=120)
+            print("Fetching handler.py from CDN:", args.handler_url)
+            resp_handler = requests.get(args.handler_url, timeout=120)
             resp_handler.raise_for_status()
             
             os.makedirs(args.handler_file, exist_ok=True)
@@ -68,8 +54,8 @@ implementation:
             print("Handler size:", len(resp_handler.text), "characters")
             
             # Download trained_model.pth model file
-            print("Fetching trained_model.pth from CDN:", pth_url_fixed)
-            resp_pth = requests.get(pth_url_fixed, timeout=300)
+            print("Fetching trained_model.pth from CDN:", args.pth_url)
+            resp_pth = requests.get(args.pth_url, timeout=300)
             resp_pth.raise_for_status()
             
             os.makedirs(args.pth_file, exist_ok=True)
@@ -80,8 +66,8 @@ implementation:
             print("PTH model size:", len(resp_pth.content), "bytes")
             
             # Download config.properties
-            print("Fetching config.properties from CDN:", config_url_fixed)
-            resp_config = requests.get(config_url_fixed, timeout=120)
+            print("Fetching config.properties from CDN:", args.config_url)
+            resp_config = requests.get(args.config_url, timeout=120)
             resp_config.raise_for_status()
             
             os.makedirs(args.config_file, exist_ok=True)
@@ -118,7 +104,6 @@ implementation:
             exit(1)
         except requests.exceptions.RequestException as e:
             print("Error: Network error during download:", str(e))
-            print("URL that failed:", getattr(e, 'request', {}).get('url', 'Unknown'))
             exit(1)
         except Exception as e:
             print("Error: Failed to download files:", str(e))
