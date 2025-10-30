@@ -10,7 +10,7 @@ outputs:
   - {name: config_file, type: String, description: "Downloaded config.properties file"}
 implementation:
   container:
-    image: python:3.9
+    image: nikhilv215/nesy-factory:v22
     command:
       - sh
       - -c
