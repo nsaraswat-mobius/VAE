@@ -1,0 +1,265 @@
+name: Upload VAE Model to CDN
+description: Uploads trained VAE model, handler.py, and config files to cloud storage and returns CDN URLs for KServe inference deployment.
+inputs:
+  - {name: trained_model, type: Model, description: "Trained VAE PyTorch model file from train_vae_model component"}
+outputs:
+  - {name: vae_model_url, type: String, description: "CDN URL for trained_vae_model.pth"}
+  - {name: handler_url, type: String, description: "CDN URL for handler.py"}
+  - {name: config_url, type: String, description: "CDN URL for vae_config.properties"}
+implementation:
+  container:
+    image: nikhilv215/nesy-factory:v22
+    command:
+      - sh
+      - -c
+      - |
+        PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet google-cloud-storage || \
+        PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet google-cloud-storage --user
+        exec "$0" "$@"
+      - python3
+      - -u
+      - -c
+      - |
+        import argparse
+        import os
+        import json
+        import torch
+        from google.cloud import storage
+        from datetime import datetime
+        
+        parser = argparse.ArgumentParser()
+        parser.add_argument('--trained_model', type=str, required=True)
+        parser.add_argument('--vae_model_url', type=str, required=True)
+        parser.add_argument('--handler_url', type=str, required=True)
+        parser.add_argument('--config_url', type=str, required=True)
+        
+        args = parser.parse_args()
+        
+        # Hardcoded values for simplicity - you can change these as needed
+        bucket_name = "vae-signature-failure-models"
+        model_version = "v1.0"
+        project_id = "your-project-id"  # Replace with your actual project ID
+        
+        print("VAE Model Upload to CDN Started")
+        print("Bucket:", bucket_name)
+        print("Model Version:", model_version)
+        print("Project ID:", project_id)
+        
+        try:
+            # Initialize Google Cloud Storage client
+            client = storage.Client(project=project_id)
+            bucket = client.bucket(bucket_name)
+            
+            # Create folder structure: vae-models/{model_version}/signature-failure/
+            base_path = f"vae-models/{model_version}/signature-failure"
+            
+            # 1. Upload trained VAE model
+            print("Uploading trained VAE model...")
+            model_blob_name = f"{base_path}/trained_vae_model.pth"
+            model_blob = bucket.blob(model_blob_name)
+            
+            # Validate model file before upload
+            try:
+                checkpoint = torch.load(args.trained_model, map_location='cpu')
+                print("✓ VAE model validation successful before upload")
+                if 'model_state_dict' in checkpoint:
+                    print("Model contains state_dict with", len(checkpoint['model_state_dict']), "parameters")
+                elif 'state_dict' in checkpoint:
+                    print("Model contains state_dict with", len(checkpoint['state_dict']), "parameters")
+            except Exception as e:
+                print("Warning: Model validation failed:", str(e))
+            
+            model_blob.upload_from_filename(args.trained_model)
+            model_url = f"https://storage.googleapis.com/{bucket_name}/{model_blob_name}"
+            print(f"✓ Model uploaded: {model_url}")
+            
+            # 2. Create and upload VAE handler.py
+            print("Creating VAE handler.py for KServe...")
+            handler_content = '''
+import json
+import logging
+import torch
+import numpy as np
+from typing import Dict, List
+import kserve
+from kserve import Model
+from nesy_factory.VAE.standard_vae import StandardVAE
+from nesy_factory.VAE.beta_vae import BetaVAE
+from nesy_factory.VAE.conditional_vae import ConditionalVAE
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+class VAESignatureFailureModel(Model):
+    def __init__(self, name: str):
+        super().__init__(name)
+        self.name = name
+        self.model = None
+        self.config = None
+        self.ready = False
+        
+    def load(self):
+        try:
+            logger.info("Loading VAE model for signature failure detection...")
+            
+            # Load model configuration
+            with open('/tmp/vae_config.properties', 'r') as f:
+                config_lines = f.readlines()
+                
+            self.config = {}
+            for line in config_lines:
+                if '=' in line and not line.strip().startswith('#'):
+                    key, value = line.strip().split('=', 1)
+                    self.config[key.strip()] = value.strip()
+            
+            # Load trained model
+            checkpoint = torch.load('/tmp/trained_vae_model.pth', map_location='cpu')
+            
+            # Determine VAE type and initialize
+            vae_type = self.config.get('vae_type', 'standard')
+            input_dim = int(self.config.get('input_dim', 784))
+            latent_dim = int(self.config.get('latent_dim', 32))
+            
+            if vae_type == 'beta':
+                beta = float(self.config.get('beta', 1.0))
+                self.model = BetaVAE(input_dim, latent_dim, beta=beta)
+            elif vae_type == 'conditional':
+                num_classes = int(self.config.get('num_classes', 10))
+                self.model = ConditionalVAE(input_dim, latent_dim, num_classes)
+            else:
+                self.model = StandardVAE(input_dim, latent_dim)
+            
+            # Load model weights
+            if 'model_state_dict' in checkpoint:
+                self.model.load_state_dict(checkpoint['model_state_dict'])
+            elif 'state_dict' in checkpoint:
+                self.model.load_state_dict(checkpoint['state_dict'])
+            else:
+                self.model.load_state_dict(checkpoint)
+            
+            self.model.eval()
+            self.ready = True
+            
+            logger.info(f"VAE model loaded successfully: {vae_type}_vae")
+            logger.info(f"Input dim: {input_dim}, Latent dim: {latent_dim}")
+            
+        except Exception as e:
+            logger.error(f"Failed to load VAE model: {str(e)}")
+            raise
+    
+    def predict(self, payload: Dict, headers: Dict[str, str] = None) -> Dict:
+        if not self.ready:
+            raise RuntimeError("Model not loaded")
+        
+        try:
+            # Extract input data
+            if "instances" in payload:
+                instances = payload["instances"]
+            else:
+                instances = payload
+            
+            # Convert to tensor
+            if isinstance(instances, list):
+                data = torch.tensor(instances, dtype=torch.float32)
+            else:
+                data = torch.tensor(instances, dtype=torch.float32)
+            
+            if data.dim() == 1:
+                data = data.unsqueeze(0)  # Add batch dimension
+            
+            # VAE forward pass
+            with torch.no_grad():
+                recon_x, mu, logvar = self.model(data)
+                
+                # Calculate reconstruction loss for anomaly detection
+                recon_loss = torch.nn.functional.mse_loss(recon_x, data, reduction='none')
+                recon_loss = recon_loss.sum(dim=1)  # Sum over features
+                
+                # Calculate KL divergence
+                kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1)
+                
+                # Total loss (ELBO)
+                total_loss = recon_loss + kl_loss
+            
+            # Anomaly detection using threshold
+            threshold = float(self.config.get('anomaly_threshold', 0.5))
+            anomaly_scores = total_loss.numpy().tolist()
+            is_anomaly = [score > threshold for score in anomaly_scores]
+            
+            return {
+                "predictions": {
+                    "anomaly_scores": anomaly_scores,
+                    "is_anomaly": is_anomaly,
+                    "threshold": threshold,
+                    "reconstruction_errors": recon_loss.numpy().tolist(),
+                    "kl_divergences": kl_loss.numpy().tolist()
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"Prediction failed: {str(e)}")
+            return {"error": str(e)}
+
+if __name__ == "__main__":
+    model = VAESignatureFailureModel("vae-signature-failure")
+    model.load()
+    kserve.ModelServer().start([model])
+'''
+            
+            handler_blob_name = f"{base_path}/handler.py"
+            handler_blob = bucket.blob(handler_blob_name)
+            handler_blob.upload_from_string(handler_content)
+            handler_url = f"https://storage.googleapis.com/{bucket_name}/{handler_blob_name}"
+            print(f"✓ Handler uploaded: {handler_url}")
+            
+            # 3. Create and upload VAE config
+            print("Creating VAE configuration...")
+            config_content = f'''# VAE Signature Failure Configuration
+vae_type=standard
+input_dim=784
+latent_dim=32
+anomaly_threshold=0.5
+model_version={model_version}
+created_at={datetime.now().isoformat()}
+use_case=signature_failure_detection
+batch_size=128
+'''
+            
+            config_blob_name = f"{base_path}/vae_config.properties"
+            config_blob = bucket.blob(config_blob_name)
+            config_blob.upload_from_string(config_content)
+            config_url = f"https://storage.googleapis.com/{bucket_name}/{config_blob_name}"
+            print(f"✓ Config uploaded: {config_url}")
+            
+            # Write URLs to output files
+            with open(args.vae_model_url, 'w') as f:
+                f.write(model_url)
+            
+            with open(args.handler_url, 'w') as f:
+                f.write(handler_url)
+                
+            with open(args.config_url, 'w') as f:
+                f.write(config_url)
+            
+            print("All VAE files uploaded to CDN successfully!")
+            print("URLs generated:")
+            print(f"  Model URL: {model_url}")
+            print(f"  Handler URL: {handler_url}")
+            print(f"  Config URL: {config_url}")
+            print("Ready for KServe inference deployment!")
+            
+        except Exception as e:
+            print("Error: Failed to upload VAE files to CDN:", str(e))
+            import traceback
+            traceback.print_exc()
+            exit(1)
+
+    args:
+      - --trained_model
+      - {inputValue: trained_model}
+      - --vae_model_url
+      - {outputPath: vae_model_url}
+      - --handler_url
+      - {outputPath: handler_url}
+      - --config_url
+      - {outputPath: config_url}
