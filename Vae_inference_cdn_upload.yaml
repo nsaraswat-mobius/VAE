@@ -14,14 +14,16 @@ implementation:
     command:
       - sh
       - -c
+    args:
       - |
-        PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet requests || \
-        PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet requests --user
-        exec "$0" "$@"
-      - python3
-      - -u
-      - -c
-      - |
+        set -e
+        
+        # Install requests if needed
+        PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet requests 2>/dev/null || \
+        PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet requests --user 2>/dev/null || true
+        
+        # Create Python script
+        cat > /tmp/download_script.py << 'EOF'
         import argparse
         import os
         import requests
@@ -89,37 +91,37 @@ implementation:
             file_path = os.path.join(output_dir, filename)
             
             if file_type == "handler":
-                fallback_content = '''import logging
-logger = logging.getLogger(__name__)
+                fallback_content = """import logging
+        logger = logging.getLogger(__name__)
 
-class VAEModel:
-    def __init__(self, name):
-        self.name = name
-        self.ready = True
-        logger.info(f"Fallback VAE model {name} initialized")
-        
-    def load(self):
-        logger.info("Fallback model loaded")
-        
-    def predict(self, request, headers=None):
-        logger.info("Fallback prediction - returning mock result")
-        return {"predictions": [], "status": "fallback", "message": "Using fallback handler"}
+        class VAEModel:
+            def __init__(self, name):
+                self.name = name
+                self.ready = True
+                logger.info(f"Fallback VAE model {name} initialized")
+                
+            def load(self):
+                logger.info("Fallback model loaded")
+                
+            def predict(self, request, headers=None):
+                logger.info("Fallback prediction - returning mock result")
+                return {"predictions": [], "status": "fallback", "message": "Using fallback handler"}
 
-if __name__ == "__main__":
-    logger.info("Fallback handler started")
-'''
+        if __name__ == "__main__":
+            logger.info("Fallback handler started")
+        """
                 with open(file_path, "w") as f:
                     f.write(fallback_content)
                     
             elif file_type == "config":
-                fallback_content = '''# Fallback VAE Configuration
-vae_type=standard
-input_dim=784
-latent_dim=32
-anomaly_threshold=0.5
-model_version=fallback
-status=fallback_mode
-'''
+                fallback_content = """# Fallback VAE Configuration
+        vae_type=standard
+        input_dim=784
+        latent_dim=32
+        anomaly_threshold=0.5
+        model_version=fallback
+        status=fallback_mode
+        """
                 with open(file_path, "w") as f:
                     f.write(fallback_content)
                     
@@ -220,17 +222,19 @@ status=fallback_mode
             import traceback
             traceback.print_exc()
             exit(1)
-
-    args:
-      - --handler_url
+        EOF
+        
+        # Run the Python script with all arguments
+        python3 /tmp/download_script.py \
+          --handler_url "$0" \
+          --handler_file "$1" \
+          --vae_model_url "$2" \
+          --vae_model_file "$3" \
+          --config_url "$4" \
+          --config_file "$5"
       - {inputValue: handler_url}
-      - --handler_file
       - {outputPath: handler_file}
-      - --vae_model_url
       - {inputValue: vae_model_url}
-      - --vae_model_file
       - {outputPath: vae_model_file}
-      - --config_url
       - {inputValue: config_url}
-      - --config_file
       - {outputPath: config_file}
