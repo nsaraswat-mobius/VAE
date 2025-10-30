@@ -2,7 +2,7 @@ name: Upload VAE to CDN
 description: Uploads VAE model, handler.py, and config files to CDN using curl and outputs the public URLs for KServe inference.
 inputs:
   - {name: trained_model, type: Model, description: "Trained VAE PyTorch model file"}
-  - {name: bearer_token, type: String, description: "Bearer token for CDN authentication"}
+  - {name: bearer_token, type: string, description: "Bearer token for CDN authentication"}
   - {name: domain, type: String, description: "CDN domain"}
   - {name: get_cdn, type: String, description: "CDN base URL for file access"}
 outputs:
@@ -32,7 +32,6 @@ implementation:
         import os
         import uuid
         import torch
-        import base64
         
         parser = argparse.ArgumentParser(description="Upload VAE files to CDN.")
         parser.add_argument('--trained_model', type=str, required=True, help='Path to the trained VAE model file.')
@@ -198,7 +197,7 @@ implementation:
                 "    model.load()",
                 "    kserve.ModelServer().start([model])"
             ]
-            handler_content = "\\n".join(handler_lines)
+            handler_content = "\n".join(handler_lines)
             
             handler_temp_file = f"/tmp/handler_{uuid.uuid4().hex}.py"
             with open(handler_temp_file, 'w') as f:
@@ -223,7 +222,7 @@ implementation:
                 "batch_size=128",
                 f"upload_timestamp={timestamp}"
             ]
-            config_content = "\\n".join(config_lines)
+            config_content = "\n".join(config_lines)
             
             config_temp_file = f"/tmp/vae_config_{uuid.uuid4().hex}.properties"
             with open(config_temp_file, 'w') as f:
