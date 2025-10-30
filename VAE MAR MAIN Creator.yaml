@@ -1,0 +1,218 @@
+name: VAE MAR File Creator from Downloads
+description: Creates a torch-model-archiver MAR file using downloaded handler.py and trained_vae_model.pth files along with the VAE library already present in the container.
+inputs:
+  - {name: handler_file, type: String, description: "Directory containing downloaded handler.py file"}
+  - {name: vae_model_file, type: Model, description: "Directory containing downloaded trained_vae_model.pth file"}
+  - {name: model_name, type: String, description: "Name for the MAR model", default: "vae_signature_failure"}
+  - {name: model_version, type: String, description: "Version for the MAR model", default: "1.0"}
+outputs:
+  - {name: mar_file_out, type: String, description: "Output directory containing the VAE MAR file"}
+  - {name: mar_creation_log, type: String, description: "Log file with MAR creation details"}
+implementation:
+  container:
+    image: nikhilv215/nesy-factory:v22
+    command:
+      - sh
+      - -c
+      - |
+        PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet torch-model-archiver || \
+        PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet torch-model-archiver --user
+        exec "$0" "$@"
+      - python3
+      - -u
+      - -c
+      - |
+        import os
+        import sys
+        import subprocess
+        import json
+        import argparse
+        from datetime import datetime
+        import shutil
+        import glob
+
+        def find_vae_module():
+            try:
+                import vae
+                vae_file = vae.__file__
+                print("Found vae module at: " + vae_file)
+                
+                # If it's a __init__.py file, we need to find the main module
+                if vae_file.endswith('__init__.py'):
+                    # Look for vae.py in the same directory
+                    vae_dir = os.path.dirname(vae_file)
+                    potential_files = ['vae.py', 'model.py', 'main.py']
+                    
+                    for potential_file in potential_files:
+                        potential_path = os.path.join(vae_dir, potential_file)
+                        if os.path.exists(potential_path):
+                            print("Found main module file: " + potential_path)
+                            return potential_path
+                    
+                    # If no specific file found, copy the __init__.py as vae.py
+                    local_vae = os.path.join(os.getcwd(), 'vae.py')
+                    shutil.copy2(vae_file, local_vae)
+                    print("Copied " + vae_file + " to " + local_vae)
+                    return local_vae
+                else:
+                    return vae_file
+                    
+            except ImportError as e:
+                print("Could not import vae module: " + str(e))
+                # Try to find it in the installed packages
+                try:
+                    import site
+                    
+                    for site_dir in site.getsitepackages():
+                        vae_files = glob.glob(os.path.join(site_dir, '**/vae.py'), recursive=True)
+                        if vae_files:
+                            print("Found vae.py at: " + vae_files[0])
+                            return vae_files[0]
+                            
+                except Exception as search_error:
+                    print("Could not find vae module: " + str(search_error))
+                    
+                raise Exception("Could not locate vae module. Ensure it's properly installed in the container.")
+
+        def create_mar_file(model_name, model_version, vae_path, handler_path, model_pth_path, output_dir):
+            
+            # Ensure output directory exists
+            os.makedirs(output_dir, exist_ok=True)
+            
+            # Build the command
+            cmd = [
+                'torch-model-archiver',
+                '--model-name', model_name,
+                '--version', model_version,
+                '--model-file', vae_path,
+                '--serialized-file', model_pth_path,
+                '--handler', handler_path,
+                '--export-path', output_dir,
+                '--force'
+            ]
+            
+            print("Creating MAR file with command:")
+            print(' '.join(cmd))
+            
+            # Execute the command
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+                
+                print("MAR file created successfully!")
+                print("STDOUT: " + result.stdout)
+                
+                # Verify MAR file was created
+                mar_file = os.path.join(output_dir, model_name + ".mar")
+                if os.path.exists(mar_file):
+                    file_size = os.path.getsize(mar_file)
+                    print("MAR file created: " + mar_file + " (" + str(file_size) + " bytes)")
+                    return mar_file, result.stdout
+                else:
+                    raise Exception("MAR file was not created in expected location")
+                    
+            except subprocess.CalledProcessError as e:
+                print("MAR file creation failed!")
+                print("STDOUT: " + str(e.stdout))
+                print("STDERR: " + str(e.stderr))
+                raise Exception("torch-model-archiver failed: " + str(e.stderr))
+
+        def main():
+            parser = argparse.ArgumentParser()
+            parser.add_argument('--handler_file', type=str, required=True, help='Directory containing handler.py')
+            parser.add_argument('--vae_model_file', type=str, required=True, help='Directory containing trained_vae_model.pth')
+            parser.add_argument('--model_name', type=str, default='vae_signature_failure', help='Model name for MAR file')
+            parser.add_argument('--model_version', type=str, default='1.0', help='Model version')
+            parser.add_argument('--mar_file_out', type=str, required=True, help='Output directory for MAR file')
+            parser.add_argument('--mar_creation_log', type=str, required=True, help='Output path for creation log')
+            
+            args = parser.parse_args()
+            
+            # Create log data structure
+            log_data = {
+                'timestamp': datetime.now().isoformat(),
+                'model_name': args.model_name,
+                'model_version': args.model_version,
+                'handler_input_dir': args.handler_file,
+                'vae_model_input_dir': args.vae_model_file,
+                'status': 'starting',
+                'steps': []
+            }
+            
+            try:
+                print("=== MAR File Creator Started ===")
+                print("Model Name: " + args.model_name)
+                print("Model Version: " + args.model_version)
+                print("Handler Input Directory: " + args.handler_file)
+                print("VAE Model Input Directory: " + args.vae_model_file)
+                print("Output Directory: " + args.mar_file_out)
+                
+                # Step 1: Locate input files
+                print("\\n--- Step 1: Locating input files ---")
+                handler_path = os.path.join(args.handler_file, 'handler.py')
+                vae_model_path = os.path.join(args.vae_model_file, 'trained_vae_model.pth')
+                
+                if not os.path.exists(handler_path):
+                    raise Exception("handler.py not found at: " + handler_path)
+                if not os.path.exists(vae_model_path):
+                    raise Exception("trained_vae_model.pth not found at: " + vae_model_path)
+                    
+                print("Handler file found: " + handler_path)
+                print("VAE model file found: " + vae_model_path)
+                log_data['steps'].append({'step': 1, 'action': 'locate_files', 'status': 'success'})
+                
+                # Step 2: Find vae module
+                print("\\n--- Step 2: Locating vae module ---")
+                vae_path = find_vae_module()
+                log_data['steps'].append({'step': 2, 'action': 'locate_vae', 'status': 'success', 'vae_path': vae_path})
+                
+                # Step 3: Create MAR file
+                print("\\n--- Step 3: Creating MAR file ---")
+                mar_file_path, creation_output = create_mar_file(
+                    args.model_name, 
+                    args.model_version, 
+                    vae_path, 
+                    handler_path, 
+                    vae_model_path, 
+                    args.mar_file_out
+                )
+                log_data['steps'].append({'step': 3, 'action': 'create_mar', 'status': 'success', 'mar_file': mar_file_path})
+                log_data['mar_file_path'] = mar_file_path
+                log_data['creation_output'] = creation_output
+                log_data['status'] = 'completed'
+                
+                print("\\n=== MAR File Creation Completed Successfully ===")
+                print("MAR file created at: " + mar_file_path)
+                
+            except Exception as e:
+                error_msg = str(e)
+                print("\\nMAR File Creation Failed: " + error_msg)
+                log_data['status'] = 'failed'
+                log_data['error'] = error_msg
+                sys.exit(1)
+                
+            finally:
+                # Write log file
+                log_dir = os.path.dirname(args.mar_creation_log)
+                if log_dir and not os.path.exists(log_dir):
+                    os.makedirs(log_dir, exist_ok=True)
+                    
+                with open(args.mar_creation_log, 'w') as f:
+                    json.dump(log_data, f, indent=2)
+                print("Log saved to: " + args.mar_creation_log)
+
+        if __name__ == "__main__":
+            main()
+
+    args:
+      - --handler_file
+      - {inputPath: handler_file}
+      - --vae_model_file
+      - {inputPath: vae_model_file}
+      - --model_name
+      - {inputValue: model_name}
+      - --model_version
+      - {inputValue: model_version}
+      - --mar_file_out
+      - {outputPath: mar_file_out}
+      - --mar_creation_log
+      - {outputPath: mar_creation_log}
