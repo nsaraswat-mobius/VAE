@@ -149,15 +149,20 @@ implementation:
                 # Step 1: Locate input files
                 print("\\n--- Step 1: Locating input files ---")
                 handler_path = os.path.join(args.handler_file, 'handler.py')
+                
+                # Try both possible model file names
                 vae_model_path = os.path.join(args.vae_model_file, 'trained_vae_model.pth')
+                if not os.path.exists(vae_model_path):
+                    vae_model_path = os.path.join(args.vae_model_file, 'trained_model.pth')
                 
                 if not os.path.exists(handler_path):
                     raise Exception("handler.py not found at: " + handler_path)
                 if not os.path.exists(vae_model_path):
-                    raise Exception("trained_vae_model.pth not found at: " + vae_model_path)
+                    raise Exception("Model file not found at: " + args.vae_model_file + " (tried trained_vae_model.pth and trained_model.pth)")
                     
                 print("Handler file found: " + handler_path)
                 print("VAE model file found: " + vae_model_path)
+                print("Model file name: " + os.path.basename(vae_model_path))
                 log_data['steps'].append({'step': 1, 'action': 'locate_files', 'status': 'success'})
                 
                 # Step 2: Find vae module
