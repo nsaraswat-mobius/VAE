@@ -2,7 +2,7 @@ name: Upload VAE to CDN
 description: Uploads VAE model, handler.py, and config files to CDN using curl and outputs the public URLs for KServe inference.
 inputs:
   - {name: trained_model, type: Model, description: "Trained VAE PyTorch model file"}
-  - {name: bearer_token, type: String, description: "Bearer token for CDN authentication"}
+  - {name: bearer_token, type: string, description: "Bearer token for CDN authentication"}
   - {name: domain, type: String, description: "CDN domain"}
   - {name: get_cdn, type: String, description: "CDN base URL for file access"}
 outputs:
