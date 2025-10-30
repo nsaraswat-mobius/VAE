@@ -159,45 +159,45 @@ implementation:
             print("\n" + "=" * 60)
             print("CREATING AND UPLOADING HANDLER.PY")
             print("=" * 60)
-            handler_content = '''import torch
-import logging
-import kserve
-from kserve import Model
-
-logger = logging.getLogger(__name__)
-
-class VAEModel(Model):
-    def __init__(self, name: str):
-        super().__init__(name)
-        self.model = None
-        self.ready = False
-        
-    def load(self):
-        try:
-            logger.info("Loading VAE model")
-            # Model loading logic would go here
-            self.ready = True
-            logger.info("Model loaded successfully")
-        except Exception as e:
-            logger.error(f"Model loading failed: {str(e)}")
-            raise
-    
-    def predict(self, request, headers=None):
-        if not self.ready:
-            raise RuntimeError("Model not loaded")
-        
-        try:
-            # Simplified prediction logic
-            return {"predictions": [], "status": "success"}
-        except Exception as e:
-            logger.error(f"Prediction failed: {str(e)}")
-            return {"error": str(e)}
-
-if __name__ == "__main__":
-    model = VAEModel("vae-signature-failure")
-    model.load()
-    kserve.ModelServer().start([model])
-'''
+            handler_lines = [
+                "import torch",
+                "import logging", 
+                "import kserve",
+                "from kserve import Model",
+                "",
+                "logger = logging.getLogger(__name__)",
+                "",
+                "class VAEModel(Model):",
+                "    def __init__(self, name: str):",
+                "        super().__init__(name)",
+                "        self.model = None",
+                "        self.ready = False",
+                "        ",
+                "    def load(self):",
+                "        try:",
+                "            logger.info('Loading VAE model')",
+                "            self.ready = True",
+                "            logger.info('Model loaded successfully')",
+                "        except Exception as e:",
+                "            logger.error(f'Model loading failed: {str(e)}')",
+                "            raise",
+                "    ",
+                "    def predict(self, request, headers=None):",
+                "        if not self.ready:",
+                "            raise RuntimeError('Model not loaded')",
+                "        ",
+                "        try:",
+                "            return {'predictions': [], 'status': 'success'}",
+                "        except Exception as e:",
+                "            logger.error(f'Prediction failed: {str(e)}')",
+                "            return {'error': str(e)}",
+                "",
+                "if __name__ == '__main__':",
+                "    model = VAEModel('vae-signature-failure')",
+                "    model.load()",
+                "    kserve.ModelServer().start([model])"
+            ]
+            handler_content = "\\n".join(handler_lines)
             
             handler_temp_file = f"/tmp/handler_{uuid.uuid4().hex}.py"
             with open(handler_temp_file, 'w') as f:
@@ -210,16 +210,19 @@ if __name__ == "__main__":
             print("\n" + "=" * 60)
             print("CREATING AND UPLOADING CONFIG FILE")
             print("=" * 60)
-            config_content = f'''# VAE Signature Failure Configuration
-vae_type=standard
-input_dim=784
-latent_dim=32
-anomaly_threshold=0.5
-model_version=v1.0
-use_case=signature_failure_detection
-batch_size=128
-upload_timestamp={uuid.uuid4().hex[:8]}
-'''
+            timestamp = uuid.uuid4().hex[:8]
+            config_lines = [
+                "# VAE Signature Failure Configuration",
+                "vae_type=standard",
+                "input_dim=784",
+                "latent_dim=32",
+                "anomaly_threshold=0.5",
+                "model_version=v1.0",
+                "use_case=signature_failure_detection",
+                "batch_size=128",
+                f"upload_timestamp={timestamp}"
+            ]
+            config_content = "\\n".join(config_lines)
             
             config_temp_file = f"/tmp/vae_config_{uuid.uuid4().hex}.properties"
             with open(config_temp_file, 'w') as f:
