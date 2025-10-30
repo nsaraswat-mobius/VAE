@@ -1,5 +1,5 @@
 name: VAE CDN Download Files
-description: Downloads handler.py, trained_vae_model.pth, and vae_config.properties files from CDN URLs for VAE signature failure inference and saves them locally with proper directory structure.
+description: Downloads handler.py, trained_vae_model.pth, and vae_config.properties files from CDN URLs for VAE signature failure inference
 inputs:
   - {name: handler_url, type: String, description: "URL to fetch the VAE handler.py file from"}
   - {name: vae_model_url, type: String, description: "URL to fetch the trained_vae_model.pth model file from"}
