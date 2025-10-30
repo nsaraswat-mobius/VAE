@@ -126,8 +126,9 @@ implementation:
                 # Create fallback handler
                 os.makedirs(args.handler_file, exist_ok=True)
                 handler_path = os.path.join(args.handler_file, 'handler.py')
+                fallback_handler = "# Fallback handler - CDN download failed\\nprint(\\"Fallback handler loaded\\")\\n"
                 with open(handler_path, "w") as f:
-                    f.write("# Fallback handler - CDN download failed\nprint('Fallback handler loaded')\n")
+                    f.write(fallback_handler)
                 
                 # Create fallback model  
                 os.makedirs(args.pth_file, exist_ok=True)
@@ -138,8 +139,9 @@ implementation:
                 # Create fallback config
                 os.makedirs(args.config_file, exist_ok=True) 
                 config_path = os.path.join(args.config_file, 'config.properties')
+                fallback_config = "# Fallback config - CDN download failed\\nstatus=fallback\\n"
                 with open(config_path, "w") as f:
-                    f.write("# Fallback config - CDN download failed\nstatus=fallback\n")
+                    f.write(fallback_config)
                     
                 print("✓ Fallback files created successfully")
                 print("Pipeline can continue with placeholder files")
