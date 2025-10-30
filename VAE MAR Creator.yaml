@@ -1,0 +1,369 @@
+name: VAE MAR File Creator from Downloads
+description: Creates a torch-model-archiver MAR file using downloaded handler.py and trained_vae_model.pth files for VAE signature failure detection with VAE module support.
+inputs:
+  - {name: handler_file, type: String, description: "Directory containing downloaded handler.py file"}
+  - {name: vae_model_file, type: Model, description: "Directory containing downloaded trained_vae_model.pth file"}
+  - {name: config_file, type: String, description: "Directory containing downloaded vae_config.properties file"}
+  - {name: model_name, type: String, description: "Name for the MAR model", default: "vae_signature_failure"}
+  - {name: model_version, type: String, description: "Version for the MAR model", default: "1.0"}
+outputs:
+  - {name: mar_file_out, type: String, description: "Output directory containing the VAE MAR file"}
+  - {name: mar_creation_log, type: String, description: "Log file with MAR creation details"}
+implementation:
+  container:
+    image: nikhilv215/nesy-factory:v22
+    command:
+      - sh
+      - -c
+      - |
+        PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet torch-model-archiver || \
+        PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet torch-model-archiver --user
+        exec "$0" "$@"
+      - python3
+      - -u
+      - -c
+      - |
+        import os
+        import sys
+        import subprocess
+        import json
+        import argparse
+        from datetime import datetime
+        import shutil
+        import glob
+        import torch
+        import torch.nn as nn
+
+        def create_vae_model_file():
+            """Create a VAE model definition file for torch-model-archiver"""
+            vae_model_content = '''
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class StandardVAE(nn.Module):
+    """Standard Variational Autoencoder for signature failure detection"""
+    def __init__(self, input_dim=784, hidden_dim=256, latent_dim=32):
+        super(StandardVAE, self).__init__()
+        
+        # Encoder
+        self.encoder_fc1 = nn.Linear(input_dim, hidden_dim)
+        self.encoder_fc2_mu = nn.Linear(hidden_dim, latent_dim)
+        self.encoder_fc2_logvar = nn.Linear(hidden_dim, latent_dim)
+        
+        # Decoder
+        self.decoder_fc1 = nn.Linear(latent_dim, hidden_dim)
+        self.decoder_fc2 = nn.Linear(hidden_dim, input_dim)
+        
+    def encode(self, x):
+        h = F.relu(self.encoder_fc1(x))
+        mu = self.encoder_fc2_mu(h)
+        logvar = self.encoder_fc2_logvar(h)
+        return mu, logvar
+    
+    def reparameterize(self, mu, logvar):
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return mu + eps * std
+    
+    def decode(self, z):
+        h = F.relu(self.decoder_fc1(z))
+        return torch.sigmoid(self.decoder_fc2(h))
+    
+    def forward(self, x):
+        mu, logvar = self.encode(x)
+        z = self.reparameterize(mu, logvar)
+        recon_x = self.decode(z)
+        return recon_x, mu, logvar
+
+class BetaVAE(StandardVAE):
+    """Beta-VAE variant for disentangled representation learning"""
+    def __init__(self, input_dim=784, hidden_dim=256, latent_dim=32, beta=1.0):
+        super(BetaVAE, self).__init__(input_dim, hidden_dim, latent_dim)
+        self.beta = beta
+
+class ConditionalVAE(nn.Module):
+    """Conditional VAE for class-specific generation"""
+    def __init__(self, input_dim=784, hidden_dim=256, latent_dim=32, num_classes=10):
+        super(ConditionalVAE, self).__init__()
+        self.num_classes = num_classes
+        
+        # Encoder
+        self.encoder_fc1 = nn.Linear(input_dim + num_classes, hidden_dim)
+        self.encoder_fc2_mu = nn.Linear(hidden_dim, latent_dim)
+        self.encoder_fc2_logvar = nn.Linear(hidden_dim, latent_dim)
+        
+        # Decoder
+        self.decoder_fc1 = nn.Linear(latent_dim + num_classes, hidden_dim)
+        self.decoder_fc2 = nn.Linear(hidden_dim, input_dim)
+        
+    def encode(self, x, c):
+        inputs = torch.cat([x, c], dim=1)
+        h = F.relu(self.encoder_fc1(inputs))
+        mu = self.encoder_fc2_mu(h)
+        logvar = self.encoder_fc2_logvar(h)
+        return mu, logvar
+    
+    def reparameterize(self, mu, logvar):
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return mu + eps * std
+    
+    def decode(self, z, c):
+        inputs = torch.cat([z, c], dim=1)
+        h = F.relu(self.decoder_fc1(inputs))
+        return torch.sigmoid(self.decoder_fc2(h))
+    
+    def forward(self, x, c):
+        mu, logvar = self.encode(x, c)
+        z = self.reparameterize(mu, logvar)
+        recon_x = self.decode(z, c)
+        return recon_x, mu, logvar
+'''
+            
+            vae_model_file = os.path.join(os.getcwd(), 'vae_model.py')
+            with open(vae_model_file, 'w') as f:
+                f.write(vae_model_content)
+            
+            print("Created VAE model file at: " + vae_model_file)
+            return vae_model_file
+
+        def find_vae_dependencies():
+            """Create or find VAE-related dependencies"""
+            try:
+                # Check if we have PyTorch
+                import torch
+                print("PyTorch version: " + torch.__version__)
+                
+                # Create a simple requirements file for VAE
+                requirements_content = '''torch
+torchvision
+numpy
+scikit-learn
+matplotlib
+'''
+                requirements_file = os.path.join(os.getcwd(), 'requirements.txt')
+                with open(requirements_file, 'w') as f:
+                    f.write(requirements_content)
+                print("Created requirements.txt for VAE dependencies")
+                
+                return requirements_file
+                
+            except ImportError as e:
+                print("Warning: PyTorch not found: " + str(e))
+                raise Exception("PyTorch is required for VAE model archiving")
+
+        def create_mar_file(model_name, model_version, vae_model_path, handler_path, model_pth_path, output_dir, requirements_file=None):
+            
+            # Ensure output directory exists
+            os.makedirs(output_dir, exist_ok=True)
+            
+            # Build the command
+            cmd = [
+                'torch-model-archiver',
+                '--model-name', model_name,
+                '--version', model_version,
+                '--model-file', vae_model_path,
+                '--serialized-file', model_pth_path,
+                '--handler', handler_path,
+                '--export-path', output_dir,
+                '--force'
+            ]
+            
+            # Add requirements file if provided
+            if requirements_file and os.path.exists(requirements_file):
+                cmd.extend(['--requirements-file', requirements_file])
+            
+            print("Creating VAE MAR file with command:")
+            print(' '.join(cmd))
+            
+            # Execute the command
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+                
+                print("VAE MAR file created successfully!")
+                print("STDOUT: " + result.stdout)
+                
+                # Verify MAR file was created
+                mar_file = os.path.join(output_dir, model_name + ".mar")
+                if os.path.exists(mar_file):
+                    file_size = os.path.getsize(mar_file)
+                    print("VAE MAR file created: " + mar_file + " (" + str(file_size) + " bytes)")
+                    return mar_file, result.stdout
+                else:
+                    raise Exception("VAE MAR file was not created in expected location")
+                    
+            except subprocess.CalledProcessError as e:
+                print("VAE MAR file creation failed!")
+                print("STDOUT: " + str(e.stdout))
+                print("STDERR: " + str(e.stderr))
+                raise Exception("torch-model-archiver failed for VAE: " + str(e.stderr))
+
+        def validate_vae_files(handler_path, model_path, config_path):
+            """Validate VAE-specific files before MAR creation"""
+            print("\\n--- Validating VAE Files ---")
+            
+            # Check handler file
+            if os.path.exists(handler_path):
+                with open(handler_path, 'r') as f:
+                    handler_content = f.read()
+                if 'VAE' in handler_content or 'vae' in handler_content:
+                    print("✓ Handler file appears to be VAE-specific")
+                else:
+                    print("⚠️ Handler file may not be VAE-specific")
+            
+            # Check model file
+            if os.path.exists(model_path):
+                try:
+                    # Try to load the model to validate it's a proper PyTorch checkpoint
+                    checkpoint = torch.load(model_path, map_location='cpu')
+                    print("✓ VAE model file is a valid PyTorch checkpoint")
+                    
+                    # Check for VAE-specific keys
+                    if isinstance(checkpoint, dict):
+                        if 'model_state_dict' in checkpoint:
+                            state_dict = checkpoint['model_state_dict']
+                        elif 'state_dict' in checkpoint:
+                            state_dict = checkpoint['state_dict']
+                        else:
+                            state_dict = checkpoint
+                            
+                        vae_keys = [k for k in state_dict.keys() if 'encoder' in k or 'decoder' in k or 'mu' in k or 'logvar' in k]
+                        if vae_keys:
+                            print("✓ Model contains VAE-specific layers: " + str(len(vae_keys)) + " layers found")
+                        else:
+                            print("⚠️ Model may not contain standard VAE architecture")
+                            
+                except Exception as e:
+                    print("⚠️ Could not validate model file: " + str(e))
+            
+            # Check config file
+            if os.path.exists(config_path):
+                with open(config_path, 'r') as f:
+                    config_content = f.read()
+                if 'vae' in config_content.lower() or 'latent' in config_content.lower():
+                    print("✓ Config file appears to be VAE-specific")
+                else:
+                    print("⚠️ Config file may not be VAE-specific")
+
+        def main():
+            parser = argparse.ArgumentParser()
+            parser.add_argument('--handler_file', type=str, required=True, help='Directory containing handler.py')
+            parser.add_argument('--vae_model_file', type=str, required=True, help='Directory containing trained_vae_model.pth')
+            parser.add_argument('--config_file', type=str, required=True, help='Directory containing vae_config.properties')
+            parser.add_argument('--model_name', type=str, default='vae_signature_failure', help='Model name for MAR file')
+            parser.add_argument('--model_version', type=str, default='1.0', help='Model version')
+            parser.add_argument('--mar_file_out', type=str, required=True, help='Output directory for MAR file')
+            parser.add_argument('--mar_creation_log', type=str, required=True, help='Output path for creation log')
+            
+            args = parser.parse_args()
+            
+            # Create log data structure
+            log_data = {
+                'timestamp': datetime.now().isoformat(),
+                'model_name': args.model_name,
+                'model_version': args.model_version,
+                'handler_input_dir': args.handler_file,
+                'vae_model_input_dir': args.vae_model_file,
+                'config_input_dir': args.config_file,
+                'status': 'starting',
+                'steps': []
+            }
+            
+            try:
+                print("=== VAE MAR File Creator Started ===")
+                print("Model Name: " + args.model_name)
+                print("Model Version: " + args.model_version)
+                print("Handler Input Directory: " + args.handler_file)
+                print("VAE Model Input Directory: " + args.vae_model_file)
+                print("Config Input Directory: " + args.config_file)
+                print("Output Directory: " + args.mar_file_out)
+                
+                # Step 1: Locate input files
+                print("\\n--- Step 1: Locating VAE input files ---")
+                handler_path = os.path.join(args.handler_file, 'handler.py')
+                vae_model_path = os.path.join(args.vae_model_file, 'trained_vae_model.pth')
+                config_path = os.path.join(args.config_file, 'vae_config.properties')
+                
+                if not os.path.exists(handler_path):
+                    raise Exception("handler.py not found at: " + handler_path)
+                if not os.path.exists(vae_model_path):
+                    raise Exception("trained_vae_model.pth not found at: " + vae_model_path)
+                if not os.path.exists(config_path):
+                    print("Warning: vae_config.properties not found at: " + config_path)
+                    
+                print("Handler file found: " + handler_path)
+                print("VAE model file found: " + vae_model_path)
+                if os.path.exists(config_path):
+                    print("Config file found: " + config_path)
+                log_data['steps'].append({'step': 1, 'action': 'locate_files', 'status': 'success'})
+                
+                # Step 2: Validate VAE files
+                validate_vae_files(handler_path, vae_model_path, config_path)
+                log_data['steps'].append({'step': 2, 'action': 'validate_vae_files', 'status': 'success'})
+                
+                # Step 3: Create VAE model definition
+                print("\\n--- Step 3: Creating VAE model definition ---")
+                vae_model_def_path = create_vae_model_file()
+                log_data['steps'].append({'step': 3, 'action': 'create_vae_model_def', 'status': 'success', 'vae_model_def_path': vae_model_def_path})
+                
+                # Step 4: Setup VAE dependencies
+                print("\\n--- Step 4: Setting up VAE dependencies ---")
+                requirements_file = find_vae_dependencies()
+                log_data['steps'].append({'step': 4, 'action': 'setup_dependencies', 'status': 'success', 'requirements_file': requirements_file})
+                
+                # Step 5: Create VAE MAR file
+                print("\\n--- Step 5: Creating VAE MAR file ---")
+                mar_file_path, creation_output = create_mar_file(
+                    args.model_name, 
+                    args.model_version, 
+                    vae_model_def_path, 
+                    handler_path, 
+                    vae_model_path, 
+                    args.mar_file_out,
+                    requirements_file
+                )
+                log_data['steps'].append({'step': 5, 'action': 'create_vae_mar', 'status': 'success', 'mar_file': mar_file_path})
+                log_data['mar_file_path'] = mar_file_path
+                log_data['creation_output'] = creation_output
+                log_data['status'] = 'completed'
+                
+                print("\\n=== VAE MAR File Creation Completed Successfully ===")
+                print("VAE MAR file created at: " + mar_file_path)
+                print("Ready for KServe deployment with VAE signature failure detection!")
+                
+            except Exception as e:
+                error_msg = str(e)
+                print("\\nVAE MAR File Creation Failed: " + error_msg)
+                log_data['status'] = 'failed'
+                log_data['error'] = error_msg
+                sys.exit(1)
+                
+            finally:
+                # Write log file
+                log_dir = os.path.dirname(args.mar_creation_log)
+                if log_dir and not os.path.exists(log_dir):
+                    os.makedirs(log_dir, exist_ok=True)
+                    
+                with open(args.mar_creation_log, 'w') as f:
+                    json.dump(log_data, f, indent=2)
+                print("VAE MAR creation log saved to: " + args.mar_creation_log)
+
+        if __name__ == "__main__":
+            main()
+
+    args:
+      - --handler_file
+      - {inputPath: handler_file}
+      - --vae_model_file
+      - {inputPath: vae_model_file}
+      - --config_file
+      - {inputPath: config_file}
+      - --model_name
+      - {inputValue: model_name}
+      - --model_version
+      - {inputValue: model_version}
+      - --mar_file_out
+      - {outputPath: mar_file_out}
+      - --mar_creation_log
+      - {outputPath: mar_creation_log}
