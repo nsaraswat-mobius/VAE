@@ -60,7 +60,7 @@ implementation:
             if model_path and os.path.exists(model_path):
                 try:
                     checkpoint = torch.load(model_path, map_location='cpu', weights_only=False)
-                    print("✓ VAE model validation successful")
+                    print(" VAE model validation successful")
                     if 'model_state_dict' in checkpoint:
                         print(f"Model contains state_dict with {len(checkpoint['model_state_dict'])} parameters")
                     elif 'state_dict' in checkpoint:
@@ -99,7 +99,7 @@ implementation:
             
             # Also read back and verify the files
             print("")
-            print("🔍 VERIFYING OUTPUT FILES:")
+            print(" VERIFYING OUTPUT FILES:")
             try:
                 with open(args.vae_model_url, 'r') as f:
                     content = f.read().strip()
@@ -119,19 +119,19 @@ implementation:
             print("STATIC VAE URLs GENERATED SUCCESSFULLY!")
             print("=" * 80)
             print("")
-            print("📄 GENERATED URLs FOR KSERVE INFERENCE:")
+            print(" GENERATED URLs FOR KSERVE INFERENCE:")
             print("-" * 50)
-            print(f"🔗 MODEL URL:")
+            print(f" MODEL URL:")
             print(f"   {model_url}")
             print("")
-            print(f"🔗 HANDLER URL:")
+            print(f" HANDLER URL:")
             print(f"   {handler_url}")
             print("")
-            print(f"🔗 CONFIG URL:")
+            print(f" CONFIG URL:")
             print(f"   {config_url}")
             print("")
             print("=" * 80)
-            print("📋 COPY THESE URLs FOR KSERVE DEPLOYMENT:")
+            print(" COPY THESE URLs FOR KSERVE DEPLOYMENT:")
             print("=" * 80)
             print("Model URL (for download component):")
             print(model_url)
@@ -143,7 +143,7 @@ implementation:
             print(config_url)
             print("")
             print("=" * 80)
-            print("📝 NEXT STEPS:")
+            print(" NEXT STEPS:")
             print("1. Copy the URLs above")
             print("2. Use them in your KServe inference pipeline")
             print("3. Make sure files are uploaded to these locations")
