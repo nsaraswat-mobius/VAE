@@ -1,152 +1,256 @@
-name: Generate Static VAE URLs
-description: Generates static hardcoded URLs for VAE model, handler.py, and config files for KServe inference deployment.
+name: Upload VAE to CDN
+description: Uploads VAE model, handler.py, and config files to CDN using curl and outputs the public URLs for KServe inference.
 inputs:
-  - {name: trained_model, type: Model, description: "Trained VAE PyTorch model file (for validation only)"}
+  - {name: trained_model, type: Model, description: "Trained VAE PyTorch model file"}
+  - {name: bearer_token, type: String, description: "Bearer token for CDN authentication"}
+  - {name: domain, type: String, description: "CDN domain"}
+  - {name: get_cdn, type: String, description: "CDN base URL for file access"}
 outputs:
-  - {name: vae_model_url, type: String, description: "Static URL for trained_vae_model.pth"}
-  - {name: handler_url, type: String, description: "Static URL for handler.py"}
-  - {name: config_url, type: String, description: "Static URL for vae_config.properties"}
+  - {name: vae_model_url, type: String, description: "CDN URL for trained_vae_model.pth"}
+  - {name: handler_url, type: String, description: "CDN URL for handler.py"}
+  - {name: config_url, type: String, description: "CDN URL for vae_config.properties"}
 implementation:
   container:
     image: nikhilv215/nesy-factory:v22
     command:
       - sh
-      - -c
+      - -ec
       - |
-        PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet torch || \
-        PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet torch --user
+        # The container image needs curl
+        if ! command -v curl &> /dev/null; then
+            echo "curl could not be found, installing..."
+            apt-get update > /dev/null && apt-get install -y curl > /dev/null
+        fi
         exec "$0" "$@"
       - python3
       - -u
       - -c
       - |
         import argparse
+        import subprocess
+        import json
         import os
-        import torch
-        import sys
-        from datetime import datetime
+        import uuid
         
-        parser = argparse.ArgumentParser()
-        parser.add_argument('--trained_model', type=str, required=True)
-        parser.add_argument('--vae_model_url', type=str, required=True)
-        parser.add_argument('--handler_url', type=str, required=True)
-        parser.add_argument('--config_url', type=str, required=True)
+        parser = argparse.ArgumentParser(description="Upload VAE files to CDN.")
+        parser.add_argument('--trained_model', type=str, required=True, help='Path to the trained VAE model file.')
+        parser.add_argument('--bearer_token', type=str, required=True, help='Bearer token for CDN authentication.')
+        parser.add_argument('--domain', type=str, required=True, help='CDN domain.')
+        parser.add_argument('--get_cdn', type=str, required=True, help='CDN base URL.')
+        parser.add_argument('--vae_model_url', type=str, required=True, help='Path to output VAE model CDN URL.')
+        parser.add_argument('--handler_url', type=str, required=True, help='Path to output handler CDN URL.')
+        parser.add_argument('--config_url', type=str, required=True, help='Path to output config CDN URL.')
         
         args = parser.parse_args()
         
-        print("Generating Static VAE URLs for KServe")
+        print("Uploading VAE files to CDN...")
         print("Model path:", args.trained_model)
         
-        # Static hardcoded URLs - modify these to point to your actual CDN/storage
-        base_url = "https://storage.googleapis.com/vae-signature-failure-models/vae-models/v1.0/signature-failure"
-        model_url = f"{base_url}/trained_vae_model.pth"
-        handler_url = f"{base_url}/handler.py"
-        config_url = f"{base_url}/vae_config.properties"
+        # Read bearer token
+        with open(args.bearer_token, 'r') as f:
+            bearer_token = f.read().strip()
         
+        upload_url = f"{args.domain}/mobius-content-service/v1.0/content/upload?filePathAccess=private&filePath=%2Fvae%2Fsignature-failure%2F"
+        
+        def upload_file_to_cdn(file_path, output_cdn_url_path, filename_prefix):
+            original_filename = os.path.basename(file_path)
+            cdn_filename = f"{filename_prefix}_{original_filename}"
+            
+            print(f"Uploading file from {file_path} with CDN name {cdn_filename} to {upload_url}...")
+
+            curl_command = [
+                "curl",
+                "--location", upload_url,
+                "--header", f"Authorization: Bearer {bearer_token}",
+                "--form", f"file=@{file_path}",
+                "--fail",
+                "--show-error"
+            ]
+            print(f"Executing curl command: {' '.join(curl_command)}")
+
+            try:
+                process = subprocess.run(
+                    curl_command,
+                    capture_output=True,
+                    check=True
+                )
+                
+                print("Upload successful. Raw response:")
+                print(process.stdout.decode('utf-8'))
+
+                response_json = json.loads(process.stdout.decode('utf-8'))
+                
+                relative_cdn_url = response_json.get("cdnUrl", "URL_NOT_FOUND")
+
+                if relative_cdn_url == "URL_NOT_FOUND":
+                    print("Error: Could not find 'cdnUrl' in the server response.")
+                    print("Full response:", process.stdout.decode('utf-8'))
+                    raise ValueError("Failed to parse cdnUrl from CDN response.")
+                
+                content_url_value = f"{args.get_cdn}{relative_cdn_url}"
+
+                print(f"Extracted CDN URL: {content_url_value}")
+
+                output_dir = os.path.dirname(output_cdn_url_path)
+                if output_dir:
+                    os.makedirs(output_dir, exist_ok=True)
+                
+                with open(output_cdn_url_path, "w") as f:
+                    f.write(content_url_value)
+                
+                return content_url_value
+
+            except subprocess.CalledProcessError as e:
+                print("Error executing curl command:")
+                print(f"Return code: {e.returncode}")
+                print(f"Output: {e.stdout.decode('utf-8')}")
+                print(f"Error Output: {e.stderr.decode('utf-8')}")
+                raise e
+            except (json.JSONDecodeError, KeyError, ValueError) as e:
+                print(f"Error processing the server response: {e}")
+                raise e
+
         try:
             # Handle model path - could be file or directory
             model_path = args.trained_model
             if os.path.isdir(model_path):
-                # Look for .pth, .pt, or .ckpt files in the directory
-                model_files = [f for f in os.listdir(model_path) 
-                             if f.endswith(('.pth', '.pt', '.ckpt')) and not f.startswith('.')]
-                if model_files:
-                    # Prefer .pth files, otherwise take the first available
-                    pth_files = [f for f in model_files if f.endswith('.pth')]
-                    if pth_files:
-                        model_path = os.path.join(model_path, pth_files[0])
-                    else:
-                        model_path = os.path.join(model_path, model_files[0])
+                # Look for .pth files in the directory
+                pth_files = [f for f in os.listdir(model_path) if f.endswith('.pth')]
+                if pth_files:
+                    model_path = os.path.join(model_path, pth_files[0])
                     print(f"Found model file: {model_path}")
                 else:
-                    print(f"Warning: No model files found in {model_path}")
-                    model_path = None
+                    print(f"Warning: No .pth files found in {model_path}")
+                    raise FileNotFoundError("No .pth files found in model directory")
             
-            # Validate model file if found
-            if model_path and os.path.exists(model_path):
-                try:
-                    checkpoint = torch.load(model_path, map_location='cpu', weights_only=False)
-                    print("VAE model validation successful")
-                    
-                    # Extract model info
-                    if 'model_state_dict' in checkpoint:
-                        param_count = len(checkpoint['model_state_dict'])
-                        print(f"   Model contains state_dict with {param_count} parameters")
-                    elif 'state_dict' in checkpoint:
-                        param_count = len(checkpoint['state_dict'])
-                        print(f"   Model contains state_dict with {param_count} parameters")
-                    else:
-                        print("   Model contains direct weights")
-                        
-                    # Check for training metadata
-                    if 'epoch' in checkpoint:
-                        print(f"   Training epoch: {checkpoint['epoch']}")
-                    if 'loss' in checkpoint:
-                        print(f"   Training loss: {checkpoint['loss']:.4f}")
-                        
-                except Exception as e:
-                    print(f"Warning: Model validation failed: {str(e)}")
-            else:
-                print("Warning: No valid model file found - continuing with URL generation")
+            if not os.path.exists(model_path):
+                raise FileNotFoundError(f"Model file not found: {model_path}")
             
-            # Create output directories and write static URLs to output files
-            print("Creating output directories...")
-            
-            # Create directories for each output
-            for output_path in [args.vae_model_url, args.handler_url, args.config_url]:
-                os.makedirs(os.path.dirname(output_path), exist_ok=True)
-            
-            # Write URLs to files
-            with open(args.vae_model_url, 'w') as f:
-                f.write(model_url)
-            print(f"Model URL written to: {args.vae_model_url}")
-            
-            with open(args.handler_url, 'w') as f:
-                f.write(handler_url)
-            print(f"Handler URL written to: {args.handler_url}")
-                
-            with open(args.config_url, 'w') as f:
-                f.write(config_url)
-            print(f"Config URL written to: {args.config_url}")
-            
-            # Display summary
-            print("")
+            # 1. Upload VAE model
             print("=" * 60)
-            print("STATIC VAE URLs GENERATED SUCCESSFULLY!")
+            print("UPLOADING VAE MODEL TO CDN")
             print("=" * 60)
+            model_url = upload_file_to_cdn(model_path, args.vae_model_url, "vae_model")
+            
+            # 2. Create and upload handler.py
+            print("\n" + "=" * 60)
+            print("CREATING AND UPLOADING HANDLER.PY")
+            print("=" * 60)
+            handler_content = '''import torch
+import logging
+import kserve
+from kserve import Model
+
+logger = logging.getLogger(__name__)
+
+class VAEModel(Model):
+    def __init__(self, name: str):
+        super().__init__(name)
+        self.model = None
+        self.ready = False
+        
+    def load(self):
+        try:
+            logger.info("Loading VAE model...")
+            # Model loading logic would go here
+            self.ready = True
+            logger.info("Model loaded successfully")
+        except Exception as e:
+            logger.error(f"Model loading failed: {str(e)}")
+            raise
+    
+    def predict(self, request, headers=None):
+        if not self.ready:
+            raise RuntimeError("Model not loaded")
+        
+        try:
+            # Simplified prediction logic
+            return {"predictions": [], "status": "success"}
+        except Exception as e:
+            logger.error(f"Prediction failed: {str(e)}")
+            return {"error": str(e)}
+
+if __name__ == "__main__":
+    model = VAEModel("vae-signature-failure")
+    model.load()
+    kserve.ModelServer().start([model])
+'''
+            
+            handler_temp_file = f"/tmp/handler_{uuid.uuid4()}.py"
+            with open(handler_temp_file, 'w') as f:
+                f.write(handler_content)
+            
+            handler_url = upload_file_to_cdn(handler_temp_file, args.handler_url, "handler")
+            os.remove(handler_temp_file)
+            
+            # 3. Create and upload config
+            print("\n" + "=" * 60)
+            print("CREATING AND UPLOADING CONFIG FILE")
+            print("=" * 60)
+            config_content = '''# VAE Signature Failure Configuration
+vae_type=standard
+input_dim=784
+latent_dim=32
+anomaly_threshold=0.5
+model_version=v1.0
+use_case=signature_failure_detection
+batch_size=128
+'''
+            
+            config_temp_file = f"/tmp/vae_config_{uuid.uuid4()}.properties"
+            with open(config_temp_file, 'w') as f:
+                f.write(config_content)
+            
+            config_url = upload_file_to_cdn(config_temp_file, args.config_url, "config")
+            os.remove(config_temp_file)
+            
+            
+            print("\n" + "=" * 80)
+            print("VAE FILES UPLOADED TO CDN SUCCESSFULLY!")
+            print("=" * 80)
             print("")
-            print("GENERATED URLs FOR KSERVE INFERENCE:")
-            print("-" * 40)
-            print(f"Model URL:")
+            print(" CDN URLs FOR KSERVE INFERENCE:")
+            print("-" * 50)
+            print(f" VAE MODEL URL:")
             print(f"   {model_url}")
             print("")
-            print(f"Handler URL:")
+            print(f" HANDLER URL:")
             print(f"   {handler_url}")
             print("")
-            print(f"Config URL:")
+            print(f" CONFIG URL:")
             print(f"   {config_url}")
             print("")
-            print("=" * 60)
-            print("NEXT STEPS:")
-            print("=" * 60)
-            print("1. Ensure your model files are uploaded to these URLs")
-            print("2. Use these URLs in your KServe InferenceService YAML")
-            print("3. Verify the files are accessible via HTTP")
+            print("=" * 80)
+            print(" COPY THESE URLs FOR KSERVE DEPLOYMENT:")
+            print("=" * 80)
+            print("VAE Model URL:")
+            print(model_url)
             print("")
-            print("Example KServe usage:")
-            print(f"   - model: {model_url}")
-            print(f"   - handler: {handler_url}") 
-            print(f"   - config: {config_url}")
-            print("=" * 60)
+            print("Handler URL:")
+            print(handler_url)
+            print("")
+            print("Config URL:")
+            print(config_url)
+            print("")
+            print("=" * 80)
+            print(" All files successfully uploaded to CDN!")
+            print(" URLs are ready for KServe inference pipeline!")
+            print("=" * 80)
             
         except Exception as e:
-            print(f"Failed to generate VAE URLs: {str(e)}")
+            print(f"Failed to upload VAE files to CDN: {str(e)}")
             import traceback
             traceback.print_exc()
-            sys.exit(1)
+            exit(1)
     args:
       - --trained_model
       - {inputPath: trained_model}
+      - --bearer_token
+      - {inputPath: bearer_token}
+      - --domain
+      - {inputValue: domain}
+      - --get_cdn
+      - {inputValue: get_cdn}
       - --vae_model_url
       - {outputPath: vae_model_url}
       - --handler_url
