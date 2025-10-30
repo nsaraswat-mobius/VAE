@@ -38,7 +38,7 @@ implementation:
         print("Model path:", args.trained_model)
         
         # Static hardcoded URLs - modify these to point to your actual CDN/storage
-        base_url = "https://your-cdn.com/vae-models/signature-failure"
+        base_url = "https://storage.googleapis.com/vae-signature-failure-models/vae-models/v1.0/signature-failure"
         model_url = f"{base_url}/trained_vae_model.pth"
         handler_url = f"{base_url}/handler.py"
         config_url = f"{base_url}/vae_config.properties"
@@ -47,29 +47,45 @@ implementation:
             # Handle model path - could be file or directory
             model_path = args.trained_model
             if os.path.isdir(model_path):
-                # Look for .pth files in the directory
-                pth_files = [f for f in os.listdir(model_path) if f.endswith('.pth')]
-                if pth_files:
-                    model_path = os.path.join(model_path, pth_files[0])
+                # Look for .pth, .pt, or .ckpt files in the directory
+                model_files = [f for f in os.listdir(model_path) 
+                             if f.endswith(('.pth', '.pt', '.ckpt')) and not f.startswith('.')]
+                if model_files:
+                    # Prefer .pth files, otherwise take the first available
+                    pth_files = [f for f in model_files if f.endswith('.pth')]
+                    if pth_files:
+                        model_path = os.path.join(model_path, pth_files[0])
+                    else:
+                        model_path = os.path.join(model_path, model_files[0])
                     print(f"Found model file: {model_path}")
                 else:
-                    print(f"Warning: No .pth files found in {model_path}")
+                    print(f"Warning: No model files found in {model_path}")
                     model_path = None
             
             # Validate model file if found
             if model_path and os.path.exists(model_path):
                 try:
                     checkpoint = torch.load(model_path, map_location='cpu', weights_only=False)
-                    print(" VAE model validation successful")
+                    print("VAE model validation successful")
+                    
+                    # Extract model info
                     if 'model_state_dict' in checkpoint:
-                        print(f"Model contains state_dict with {len(checkpoint['model_state_dict'])} parameters")
+                        param_count = len(checkpoint['model_state_dict'])
+                        print(f"   Model contains state_dict with {param_count} parameters")
                     elif 'state_dict' in checkpoint:
-                        print(f"Model contains state_dict with {len(checkpoint['state_dict'])} parameters")
+                        param_count = len(checkpoint['state_dict'])
+                        print(f"   Model contains state_dict with {param_count} parameters")
                     else:
-                        print("Model contains direct weights")
+                        print("   Model contains direct weights")
+                        
+                    # Check for training metadata
+                    if 'epoch' in checkpoint:
+                        print(f"   Training epoch: {checkpoint['epoch']}")
+                    if 'loss' in checkpoint:
+                        print(f"   Training loss: {checkpoint['loss']:.4f}")
+                        
                 except Exception as e:
                     print(f"Warning: Model validation failed: {str(e)}")
-                    # Continue anyway - might be a custom format
             else:
                 print("Warning: No valid model file found - continuing with URL generation")
             
@@ -77,77 +93,51 @@ implementation:
             print("Creating output directories...")
             
             # Create directories for each output
-            os.makedirs(os.path.dirname(args.vae_model_url), exist_ok=True)
-            os.makedirs(os.path.dirname(args.handler_url), exist_ok=True)
-            os.makedirs(os.path.dirname(args.config_url), exist_ok=True)
+            for output_path in [args.vae_model_url, args.handler_url, args.config_url]:
+                os.makedirs(os.path.dirname(output_path), exist_ok=True)
             
             # Write URLs to files
             with open(args.vae_model_url, 'w') as f:
                 f.write(model_url)
-            print(f"✓ Model URL written to: {args.vae_model_url}")
-            print(f"   Content: {model_url}")
+            print(f"Model URL written to: {args.vae_model_url}")
             
             with open(args.handler_url, 'w') as f:
                 f.write(handler_url)
-            print(f"✓ Handler URL written to: {args.handler_url}")
-            print(f"   Content: {handler_url}")
+            print(f"Handler URL written to: {args.handler_url}")
                 
             with open(args.config_url, 'w') as f:
                 f.write(config_url)
-            print(f"✓ Config URL written to: {args.config_url}")
-            print(f"   Content: {config_url}")
+            print(f"Config URL written to: {args.config_url}")
             
-            # Also read back and verify the files
+            # Display summary
             print("")
-            print(" VERIFYING OUTPUT FILES:")
-            try:
-                with open(args.vae_model_url, 'r') as f:
-                    content = f.read().strip()
-                    print(f"Model URL file contains: {content}")
-                
-                with open(args.handler_url, 'r') as f:
-                    content = f.read().strip()
-                    print(f"Handler URL file contains: {content}")
-                    
-                with open(args.config_url, 'r') as f:
-                    content = f.read().strip()
-                    print(f"Config URL file contains: {content}")
-            except Exception as e:
-                print(f"Warning: Could not verify files: {e}")
-            
-            print("=" * 80)
+            print("=" * 60)
             print("STATIC VAE URLs GENERATED SUCCESSFULLY!")
-            print("=" * 80)
+            print("=" * 60)
             print("")
-            print(" GENERATED URLs FOR KSERVE INFERENCE:")
-            print("-" * 50)
-            print(f" MODEL URL:")
+            print("GENERATED URLs FOR KSERVE INFERENCE:")
+            print("-" * 40)
+            print(f"Model URL:")
             print(f"   {model_url}")
             print("")
-            print(f" HANDLER URL:")
+            print(f"Handler URL:")
             print(f"   {handler_url}")
             print("")
-            print(f" CONFIG URL:")
+            print(f"Config URL:")
             print(f"   {config_url}")
             print("")
-            print("=" * 80)
-            print(" COPY THESE URLs FOR KSERVE DEPLOYMENT:")
-            print("=" * 80)
-            print("Model URL (for download component):")
-            print(model_url)
+            print("=" * 60)
+            print("NEXT STEPS:")
+            print("=" * 60)
+            print("1. Ensure your model files are uploaded to these URLs")
+            print("2. Use these URLs in your KServe InferenceService YAML")
+            print("3. Verify the files are accessible via HTTP")
             print("")
-            print("Handler URL (for download component):")
-            print(handler_url)
-            print("")
-            print("Config URL (for download component):")
-            print(config_url)
-            print("")
-            print("=" * 80)
-            print(" NEXT STEPS:")
-            print("1. Copy the URLs above")
-            print("2. Use them in your KServe inference pipeline")
-            print("3. Make sure files are uploaded to these locations")
-            print("=" * 80)
+            print("Example KServe usage:")
+            print(f"   - model: {model_url}")
+            print(f"   - handler: {handler_url}") 
+            print(f"   - config: {config_url}")
+            print("=" * 60)
             
         except Exception as e:
             print(f"Failed to generate VAE URLs: {str(e)}")
