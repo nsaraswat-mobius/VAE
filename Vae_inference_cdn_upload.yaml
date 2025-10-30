@@ -1,240 +1,126 @@
-name: VAE CDN Download Files
-description: Downloads handler.py, trained_vae_model.pth, and vae_config.properties files from CDN URLs for VAE signature failure inference and saves them locally with proper directory structure.
+name: CDN Download Files
+description: Downloads handler.py, trained_model.pth, and config.properties files from CDN URLs and saves them locally with proper directory structure.
 inputs:
-  - {name: handler_url, type: String, description: "URL to fetch the VAE handler.py file from"}
-  - {name: vae_model_url, type: String, description: "URL to fetch the trained_vae_model.pth model file from"}
-  - {name: config_url, type: String, description: "URL to fetch the vae_config.properties file from"}
+  - {name: handler_url, type: String, description: "URL to fetch the handler.py file from"}
+  - {name: pth_url, type: String, description: "URL to fetch the trained_model.pth model file from"}
+  - {name: config_url, type: String, description: "URL to fetch the config.properties file from"}
 outputs:
-  - {name: handler_file, type: String, description: "Downloaded VAE handler.py file"}
-  - {name: vae_model_file, type: Model, description: "Downloaded trained_vae_model.pth model file"}
-  - {name: config_file, type: String, description: "Downloaded vae_config.properties file"}
+  - {name: handler_file, type: String, description: "Downloaded handler.py file"}
+  - {name: pth_file, type: Model, description: "Downloaded trained_model.pth model file"}
+  - {name: config_file, type: String, description: "Downloaded config.properties file"}
 implementation:
   container:
-    image: nikhilv215/nesy-factory:v22
+    image: python:3.9
     command:
       - sh
       - -c
-    args:
       - |
-        set -e
-        
-        # Install requests if needed
-        PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet requests 2>/dev/null || \
-        PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet requests --user 2>/dev/null || true
-        
-        # Create Python script
-        cat > /tmp/download_script.py << 'EOF'
+        PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet requests || \
+        PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet requests --user
+        exec "$0" "$@"
+      - python3
+      - -u
+      - -c
+      - |
         import argparse
         import os
         import requests
-        import torch
         
         parser = argparse.ArgumentParser()
         parser.add_argument('--handler_url', type=str, required=True)
         parser.add_argument('--handler_file', type=str, required=True)
-        parser.add_argument('--vae_model_url', type=str, required=True)
-        parser.add_argument('--vae_model_file', type=str, required=True)
+        parser.add_argument('--pth_url', type=str, required=True)
+        parser.add_argument('--pth_file', type=str, required=True)
         parser.add_argument('--config_url', type=str, required=True)
         parser.add_argument('--config_file', type=str, required=True)
         
         args = parser.parse_args()
         
-        print("VAE Signature Failure CDN Download Started")
         print("Received handler_url:", args.handler_url)
-        print("Received vae_model_url:", args.vae_model_url)
+        print("Received pth_url:", args.pth_url)
         print("Received config_url:", args.config_url)
         
-        def download_with_fallback(url, output_dir, filename, file_type):
-            print(f"Attempting to download {file_type} from CDN: {url}")
-            
-            try:
-                resp = requests.get(url, timeout=120)
-                print(f"Response status: {resp.status_code}")
-                
-                if resp.status_code == 200:
-                    os.makedirs(output_dir, exist_ok=True)
-                    file_path = os.path.join(output_dir, filename)
-                    
-                    if file_type == "model":
-                        with open(file_path, "wb") as f:
-                            f.write(resp.content)
-                        print(f"✓ {file_type} downloaded: {len(resp.content)} bytes")
-                    else:
-                        with open(file_path, "w", encoding='utf-8') as f:
-                            f.write(resp.text)
-                        print(f"✓ {file_type} downloaded: {len(resp.text)} characters")
-                    
-                    return file_path
-                    
-                elif resp.status_code == 404:
-                    print(f" {file_type} not found at CDN (404)")
-                    return create_fallback_file(output_dir, filename, file_type)
-                    
-                elif resp.status_code == 500:
-                    print(f" CDN server error (500) for {file_type}")
-                    return create_fallback_file(output_dir, filename, file_type)
-                    
-                else:
-                    print(f" CDN error {resp.status_code} for {file_type}")
-                    return create_fallback_file(output_dir, filename, file_type)
-                    
-            except requests.exceptions.Timeout:
-                print(f" Timeout downloading {file_type}")
-                return create_fallback_file(output_dir, filename, file_type)
-            except requests.exceptions.RequestException as e:
-                print(f" Network error downloading {file_type}: {e}")
-                return create_fallback_file(output_dir, filename, file_type)
-
-        def create_fallback_file(output_dir, filename, file_type):
-            print(f"Creating fallback {file_type} file...")
-            os.makedirs(output_dir, exist_ok=True)
-            file_path = os.path.join(output_dir, filename)
-            
-            if file_type == "handler":
-                fallback_content = """import logging
-        logger = logging.getLogger(__name__)
-
-        class VAEModel:
-            def __init__(self, name):
-                self.name = name
-                self.ready = True
-                logger.info(f"Fallback VAE model {name} initialized")
-                
-            def load(self):
-                logger.info("Fallback model loaded")
-                
-            def predict(self, request, headers=None):
-                logger.info("Fallback prediction - returning mock result")
-                return {"predictions": [], "status": "fallback", "message": "Using fallback handler"}
-
-        if __name__ == "__main__":
-            logger.info("Fallback handler started")
-        """
-                with open(file_path, "w") as f:
-                    f.write(fallback_content)
-                    
-            elif file_type == "config":
-                fallback_content = """# Fallback VAE Configuration
-        vae_type=standard
-        input_dim=784
-        latent_dim=32
-        anomaly_threshold=0.5
-        model_version=fallback
-        status=fallback_mode
-        """
-                with open(file_path, "w") as f:
-                    f.write(fallback_content)
-                    
-            elif file_type == "model":
-                # Create a minimal dummy file for model
-                with open(file_path, "wb") as f:
-                    f.write(b"FALLBACK_MODEL_PLACEHOLDER")
-                    
-            print(f"✓ Fallback {file_type} created at: {file_path}")
-            return file_path
-
         try:
-            # Download VAE handler.py with fallback
-            handler_path = download_with_fallback(
-                args.handler_url, 
-                args.handler_file, 
-                'handler.py', 
-                'handler'
-            )
+            # Download handler.py
+            print("Fetching handler.py from CDN:", args.handler_url)
+            resp_handler = requests.get(args.handler_url, timeout=120)
+            resp_handler.raise_for_status()
             
-            # Download VAE model with fallback
-            model_path = download_with_fallback(
-                args.vae_model_url, 
-                args.vae_model_file, 
-                'trained_vae_model.pth', 
-                'model'
-            )
+            os.makedirs(args.handler_file, exist_ok=True)
+            handler_path = os.path.join(args.handler_file, 'handler.py')
+            with open(handler_path, "w") as f:
+                f.write(resp_handler.text)
+            print("Handler file saved at:", handler_path)
+            print("Handler size:", len(resp_handler.text), "characters")
             
-            # Validate model file if it's not a fallback
-            if os.path.getsize(model_path) > 100:  # Real model should be larger than fallback
-                try:
-                    checkpoint = torch.load(model_path, map_location='cpu')
-                    print("✓ VAE model validation successful - PyTorch checkpoint loaded")
-                    if 'model_state_dict' in checkpoint:
-                        print("Model contains state_dict with keys:", list(checkpoint['model_state_dict'].keys())[:5])
-                    elif 'state_dict' in checkpoint:
-                        print("Model contains state_dict with keys:", list(checkpoint['state_dict'].keys())[:5])
-                    else:
-                        print("Model contains direct state dict with keys:", list(checkpoint.keys())[:5])
-                except Exception as e:
-                    print("Warning: VAE model validation failed:", str(e))
-            else:
-                print("  Using fallback model placeholder")
+            # Download trained_model.pth model file
+            print("Fetching trained_model.pth from CDN:", args.pth_url)
+            resp_pth = requests.get(args.pth_url, timeout=300)
+            resp_pth.raise_for_status()
             
-            # Download config with fallback
-            config_path = download_with_fallback(
-                args.config_url, 
-                args.config_file, 
-                'vae_config.properties', 
-                'config'
-            )
+            os.makedirs(args.pth_file, exist_ok=True)
+            pth_path = os.path.join(args.pth_file, 'trained_model.pth')
+            with open(pth_path, "wb") as f:
+                f.write(resp_pth.content)
+            print("PTH model file saved at:", pth_path)
+            print("PTH model size:", len(resp_pth.content), "bytes")
             
-            print("\n" + "="*80)
-            print("VAE SIGNATURE FAILURE FILES PROCESSING COMPLETED!")
-            print("="*80)
+            # Download config.properties
+            print("Fetching config.properties from CDN:", args.config_url)
+            resp_config = requests.get(args.config_url, timeout=120)
+            resp_config.raise_for_status()
+            
+            os.makedirs(args.config_file, exist_ok=True)
+            config_path = os.path.join(args.config_file, 'config.properties')
+            with open(config_path, "w") as f:
+                f.write(resp_config.text)
+            print("Config file saved at:", config_path)
+            print("Config size:", len(resp_config.text), "characters")
+            
+            print("All files downloaded successfully!")
             print("Output structure:")
-            print("  - handler_file/handler.py (VAE inference handler)")
-            print("  - vae_model_file/trained_vae_model.pth (VAE model weights)")
-            print("  - config_file/vae_config.properties (VAE configuration)")
+            print("  - handler_file/handler.py")
+            print("  - pth_file/trained_model.pth")
+            print("  - config_file/config.properties")
             
-            # Verify all files exist
-            files_status = []
-            
+            # Verify files exist and have content
             if os.path.exists(handler_path) and os.path.getsize(handler_path) > 0:
-                files_status.append("✓ handler.py: OK")
-                print("✓ VAE handler.py ready")
+                print("handler.py downloaded and verified")
             else:
-                files_status.append(" handler.py: MISSING")
+                raise Exception("handler.py download verification failed")
                 
-            if os.path.exists(model_path) and os.path.getsize(model_path) > 0:
-                size_mb = os.path.getsize(model_path) / (1024*1024)
-                files_status.append(f"✓ trained_vae_model.pth: OK ({size_mb:.2f} MB)")
-                print("✓ VAE model file ready")
+            if os.path.exists(pth_path) and os.path.getsize(pth_path) > 0:
+                print("trained_model.pth downloaded and verified")
             else:
-                files_status.append(" trained_vae_model.pth: MISSING")
+                raise Exception("trained_model.pth download verification failed")
                 
             if os.path.exists(config_path) and os.path.getsize(config_path) > 0:
-                files_status.append("✓ vae_config.properties: OK")
-                print("✓ VAE config file ready")
+                print("config.properties downloaded and verified")
             else:
-                files_status.append(" vae_config.properties: MISSING")
-                
-            print("\n FILES STATUS SUMMARY:")
-            for status in files_status:
-                print(f"   {status}")
-                
-            print("\n VAE signature failure inference files ready for KServe deployment!")
-            print("="*80)
+                raise Exception("config.properties download verification failed")
                 
         except requests.exceptions.Timeout:
-            print("Error: Request timed out while downloading VAE files from CDN")
+            print("Error: Request timed out while downloading from CDN")
             exit(1)
         except requests.exceptions.RequestException as e:
-            print("Error: Network error during VAE download:", str(e))
+            print("Error: Network error during download:", str(e))
             exit(1)
         except Exception as e:
-            print("Error: Failed to download VAE files:", str(e))
+            print("Error: Failed to download files:", str(e))
             import traceback
             traceback.print_exc()
             exit(1)
-        EOF
-        
-        # Run the Python script with all arguments
-        python3 /tmp/download_script.py \
-          --handler_url "$0" \
-          --handler_file "$1" \
-          --vae_model_url "$2" \
-          --vae_model_file "$3" \
-          --config_url "$4" \
-          --config_file "$5"
+
+    args:
+      - --handler_url
       - {inputValue: handler_url}
+      - --handler_file
       - {outputPath: handler_file}
-      - {inputValue: vae_model_url}
-      - {outputPath: vae_model_file}
+      - --pth_url
+      - {inputValue: pth_url}
+      - --pth_file
+      - {outputPath: pth_file}
+      - --config_url
       - {inputValue: config_url}
+      - --config_file
       - {outputPath: config_file}
