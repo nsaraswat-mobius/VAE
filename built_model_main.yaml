@@ -33,8 +33,20 @@ implementation:
 
         config = json.loads(args.config)
 
+        print(f"Received config: {json.dumps(config, indent=2)}")
+
+        # Use processed_input_dim if available (after one-hot encoding), otherwise feature count
+        if 'processed_input_dim' in config:
+            input_dim = config['processed_input_dim']
+        elif 'input_dim' in config:
+            input_dim = config['input_dim']
+        else:
+            input_dim = len(config['feature_columns'])
+        
+        print(f"Using input_dim: {input_dim}")
+
         model_config = {
-            'input_dim': len(config['feature_columns']),
+            'input_dim': input_dim,
             'latent_dim': config['latent_dim'],
             'hidden_dim': config['hidden_dim'],
             'num_layers': config['num_layers'],
@@ -45,14 +57,20 @@ implementation:
             'loss_function': 'ELBO'
         }
 
-        if config['model_type'] == 'StandardVAE':
+        model_type = config.get('model_type', 'StandardVAE')
+        print(f"Model type: '{model_type}'")
+
+        if model_type in ['StandardVAE', 'VAE', 'standard_vae', 'vae']:
             model_obj = StandardVAE(model_config)
-        elif config['model_type'] == 'BetaVAE':
+            print("Initialized StandardVAE")
+        elif model_type in ['BetaVAE', 'beta_vae']:
             model_obj = BetaVAE(model_config)
-        elif config['model_type'] == 'ConditionalVAE':
+            print("Initialized BetaVAE")
+        elif model_type in ['ConditionalVAE', 'conditional_vae', 'CVAE']:
             model_obj = ConditionalVAE(model_config)
+            print("Initialized ConditionalVAE")
         else:
-            raise ValueError("Invalid model type specified")
+            raise ValueError(f"Invalid model type '{model_type}'. Use: StandardVAE, BetaVAE, or ConditionalVAE")
 
         os.makedirs(os.path.dirname(args.model), exist_ok=True)
         with open(args.model, "wb") as f:
