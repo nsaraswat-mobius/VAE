@@ -1,0 +1,307 @@
+name: Genericloaddataset123
+description: Loads data and handles different model types automatically with enhanced validation
+inputs:
+  - name: cdn_url
+    type: String
+    description: 'CDN URL to download CSV file'
+  
+  - name: target_column
+    type: String
+    description: 'Target column name for prediction'
+  
+  - name: train_split
+    type: Float
+    description: 'Train split ratio'
+  
+  - name: shuffle_seed
+    type: Integer
+    description: 'Random seed for shuffling'
+  
+  - name: model_type
+    type: String
+    description: 'Type of model to use'
+
+outputs:
+  - name: train_data
+    type: Dataset
+  - name: test_data
+    type: Dataset
+  - name: dataset_info
+    type: DatasetInfo
+  - name: model_config
+    type: String
+
+implementation:
+  container:
+    image: python:3.9
+    command:
+      - sh
+      - -c
+      - |
+        pip install pandas numpy requests scikit-learn >/dev/null 2>&1
+        python -c "
+        import os
+        import sys
+        import io
+        import pandas as pd
+        import numpy as np
+        import requests
+        import pickle
+        import json
+        from urllib.parse import unquote
+        from sklearn.model_selection import train_test_split
+
+        # Enhanced model configurations
+        MODEL_CONFIGS = {
+            'linear_regression': {
+                'model_type': 'linear_regression',
+                'transformation': 'log_target',
+                'normalize': True,
+                'description': 'Linear Regression with log transformation for salary prediction',
+                'problem_type': 'regression',
+                'preprocessing': {
+                    'handle_missing': 'mean',
+                    'encode_categorical': 'onehot'
+                }
+            },
+            'logistic_regression': {
+                'model_type': 'logistic_regression',
+                'normalize': True,
+                'max_iter': 1000,
+                'random_state': 42,
+                'description': 'Logistic Regression for classification tasks',
+                'problem_type': 'classification',
+                'preprocessing': {
+                    'handle_missing': 'mode',
+                    'encode_categorical': 'onehot'
+                }
+            },
+            'random_forest': {
+                'model_type': 'random_forest',
+                'n_estimators': 100,
+                'max_depth': 10,
+                'random_state': 42,
+                'description': 'Random Forest for robust predictions',
+                'problem_type': 'auto',
+                'preprocessing': {
+                    'handle_missing': 'median',
+                    'encode_categorical': 'label'
+                }
+            },
+            'xgboost': {
+                'model_type': 'xgboost',
+                'n_estimators': 100,
+                'max_depth': 6,
+                'learning_rate': 0.1,
+                'random_state': 42,
+                'description': 'XGBoost for high performance',
+                'problem_type': 'auto',
+                'preprocessing': {
+                    'handle_missing': 'zero',
+                    'encode_categorical': 'label'
+                }
+            }
+        }
+
+        # Get input arguments
+        cdn_url = sys.argv[1]
+        target_column = sys.argv[2]
+        train_split = float(sys.argv[3])
+        shuffle_seed = int(sys.argv[4])
+        model_type = sys.argv[5]
+        train_data_path = sys.argv[6]
+        test_data_path = sys.argv[7]
+        dataset_info_path = sys.argv[8]
+        model_config_path = sys.argv[9]
+
+        print('ENHANCED GENERIC DATA LOADER')
+        print(f'Model Type: {model_type}')
+        print(f'Target Column: {target_column}')
+
+        # Validate model type
+        if model_type not in MODEL_CONFIGS:
+            print(f'Warning: Unknown model type {model_type}. Using linear_regression.')
+            model_type = 'linear_regression'
+
+        # Download and load data with enhanced error handling
+        decoded_url = unquote(cdn_url)
+        try:
+            print('Downloading dataset...')
+            response = requests.get(decoded_url, timeout=30)
+            response.raise_for_status()
+            
+            # Try different encodings
+            encodings = ['utf-8', 'latin-1', 'iso-8859-1', 'cp1252']
+            for encoding in encodings:
+                try:
+                    df = pd.read_csv(io.BytesIO(response.content), encoding=encoding)
+                    print(f'Successfully loaded with encoding: {encoding}')
+                    break
+                except UnicodeDecodeError:
+                    continue
+            else:
+                df = pd.read_csv(io.BytesIO(response.content), encoding='utf-8', errors='replace')
+                print('Used error replacement for encoding issues')
+                
+            print(f'Loaded dataset with shape: {df.shape}')
+            
+        except Exception as e:
+            print(f'Failed to load dataset: {e}')
+            sys.exit(1)
+
+        # Enhanced data validation
+        if target_column not in df.columns:
+            print(f'ERROR: Target column {target_column} not found in dataset')
+            print(f'Available columns: {list(df.columns)}')
+            sys.exit(1)
+
+        # Check for missing values
+        missing_values = df.isnull().sum()
+        if missing_values.any():
+            print(f'Missing values detected:')
+            for col, count in missing_values[missing_values > 0].items():
+                print(f'  {col}: {count} ({count/len(df)*100:.1f}%)')
+
+        # Enhanced target handling
+        original_target_type = df[target_column].dtype
+        unique_values = df[target_column].nunique()
+        
+        print(f'Target analysis:')
+        print(f'  - Original type: {original_target_type}')
+        print(f'  - Unique values: {unique_values}')
+        print(f'  - Sample values: {df[target_column].head(3).tolist()}')
+
+        # Determine problem type and handle target
+        problem_type = None
+        target_encoding = 'direct'
+        
+        if model_type == 'logistic_regression':
+            problem_type = 'classification'
+            if df[target_column].dtype in ['object', 'category'] or unique_values <= 10:
+                print('Encoding categorical target for classification')
+                df[target_column] = df[target_column].astype('category').cat.codes
+                target_encoding = 'label_encoded'
+            else:
+                print('Warning: Many unique values for classification')
+                target_encoding = 'direct'
+                
+        elif model_type == 'linear_regression':
+            problem_type = 'regression'
+            target_encoding = 'direct'
+            
+        else:  # random_forest, xgboost - auto-detect
+            if df[target_column].dtype in ['object', 'category'] or unique_values <= 10:
+                problem_type = 'classification'
+                if df[target_column].dtype in ['object', 'category']:
+                    df[target_column] = df[target_column].astype('category').cat.codes
+                    target_encoding = 'label_encoded'
+            else:
+                problem_type = 'regression'
+                target_encoding = 'direct'
+                
+        MODEL_CONFIGS[model_type]['problem_type'] = problem_type
+        print(f'Determined problem type: {problem_type}')
+
+        # Enhanced feature analysis
+        feature_columns = [col for col in df.columns if col != target_column]
+        numeric_features = df[feature_columns].select_dtypes(include=[np.number]).columns.tolist()
+        categorical_features = df[feature_columns].select_dtypes(include=['object', 'category']).columns.tolist()
+
+        # Data splitting with enhanced stratification
+        stratify = None
+        if problem_type == 'classification' and unique_values > 1:
+            # Ensure we have enough samples per class for stratification
+            min_class_size = df[target_column].value_counts().min()
+            if min_class_size >= 2:  # At least 2 samples per class
+                stratify = df[target_column]
+                print('Using stratified sampling for classification')
+            else:
+                print('Warning: Some classes have too few samples for stratification')
+
+        train_df, test_df = train_test_split(
+            df, 
+            train_size=train_split, 
+            random_state=shuffle_seed,
+            stratify=stratify
+        )
+
+        print(f'Train set: {train_df.shape}, Test set: {test_df.shape}')
+
+        # Enhanced dataset info
+        dataset_info = {
+            'metadata': {
+                'total_samples': len(df),
+                'train_samples': len(train_df),
+                'test_samples': len(test_df),
+                'target_column': target_column,
+                'feature_columns': feature_columns,
+                'numeric_features': numeric_features,
+                'categorical_features': categorical_features,
+                'train_split_ratio': train_split,
+                'shuffle_seed': shuffle_seed,
+                'model_type': model_type,
+                'target_encoding': target_encoding,
+                'original_target_type': str(original_target_type),
+                'problem_type': problem_type,
+                'missing_values': missing_values[missing_values > 0].to_dict()
+            },
+            'target_analysis': {
+                'n_unique': int(unique_values),
+                'value_counts': df[target_column].value_counts().to_dict(),
+                'target_mean': float(df[target_column].mean()) if df[target_column].dtype in [np.number] else None,
+                'target_std': float(df[target_column].std()) if df[target_column].dtype in [np.number] else None,
+                'target_min': float(df[target_column].min()) if df[target_column].dtype in [np.number] else None,
+                'target_max': float(df[target_column].max()) if df[target_column].dtype in [np.number] else None
+            },
+            'feature_analysis': {
+                'total_features': len(feature_columns),
+                'numeric_count': len(numeric_features),
+                'categorical_count': len(categorical_features),
+                'columns': list(df.columns),
+                'dtypes': {col: str(df[col].dtype) for col in df.columns},
+                'feature_stats': {
+                    col: {
+                        'mean': float(df[col].mean()) if df[col].dtype in [np.number] else None,
+                        'std': float(df[col].std()) if df[col].dtype in [np.number] else None,
+                        'min': float(df[col].min()) if df[col].dtype in [np.number] else None,
+                        'max': float(df[col].max()) if df[col].dtype in [np.number] else None,
+                        'n_unique': int(df[col].nunique())
+                    } for col in feature_columns
+                }
+            }
+        }
+
+        # Get model configuration
+        model_config = MODEL_CONFIGS.get(model_type, MODEL_CONFIGS['linear_regression'])
+
+        # Save outputs
+        os.makedirs(os.path.dirname(train_data_path) or '.', exist_ok=True)
+        train_df.to_csv(train_data_path, index=False)
+
+        os.makedirs(os.path.dirname(test_data_path) or '.', exist_ok=True)
+        test_df.to_csv(test_data_path, index=False)
+
+        os.makedirs(os.path.dirname(dataset_info_path) or '.', exist_ok=True)
+        with open(dataset_info_path, 'wb') as f:
+            pickle.dump(dataset_info, f)
+
+        os.makedirs(os.path.dirname(model_config_path) or '.', exist_ok=True)
+        with open(model_config_path, 'w') as f:
+            json.dump(model_config, f, indent=2)
+
+        print('Data loading complete!')
+        print(f'Problem type: {problem_type}')
+        print(f'Target encoding: {target_encoding}')
+        print(f'Train data saved: {train_data_path}')
+        print(f'Test data saved: {test_data_path}')
+        " "$0" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8"
+    args:
+      - {inputValue: cdn_url}
+      - {inputValue: target_column}
+      - {inputValue: train_split}
+      - {inputValue: shuffle_seed}
+      - {inputValue: model_type}
+      - {outputPath: train_data}
+      - {outputPath: test_data}
+      - {outputPath: dataset_info}
+      - {outputPath: model_config}
