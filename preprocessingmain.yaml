@@ -6,6 +6,7 @@ inputs:
 outputs:
   - {name: train_loader, type: Dataset}
   - {name: test_loader, type: Dataset}
+  - {name: processed_data, type: Dataset}
 implementation:
   container:
     image: nikhilv215/nesy-factory:v22
