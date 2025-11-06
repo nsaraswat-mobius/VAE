@@ -185,6 +185,7 @@ implementation:
         parser.add_argument('--config', type=str, required=True)
         parser.add_argument('--train_loader', type=str, required=True)
         parser.add_argument('--test_loader', type=str, required=True)
+        parser.add_argument('--processed_data', type=str, required=True)
         args = parser.parse_args()
 
         config = json.loads(args.config)
@@ -319,10 +320,25 @@ implementation:
         with open(args.test_loader, "wb") as f:
             pickle.dump(test_data, f)
 
+        # Create DataWrapper for processed_data output (similar to LSTM preprocessing)
+        class DataWrapper:
+            def __init__(self, train_loader, test_loader, input_dim, metadata):
+                self.train_loader = train_loader
+                self.test_loader = test_loader
+                self.input_dim = input_dim
+                self.metadata = metadata
+        
+        data_to_save = DataWrapper(train_loader_obj, test_loader_obj, processed_input_dim, metadata)
+        os.makedirs(os.path.dirname(args.processed_data), exist_ok=True)
+        with open(args.processed_data, "wb") as f:
+            pickle.dump(data_to_save, f)
+
         print(f"Saved train_loader to {args.train_loader}")
         print(f"Saved test_loader to {args.test_loader}")
+        print(f"Saved processed_data to {args.processed_data}")
         print(f"Train batches: {len(train_loader_obj)}")
         print(f"Test batches: {len(test_loader_obj)}")
+        print(f"Processed input dimension: {processed_input_dim}")
     args:
       - --json_data
       - {inputPath: json_data}
@@ -332,3 +348,5 @@ implementation:
       - {outputPath: train_loader}
       - --test_loader
       - {outputPath: test_loader}
+      - --processed_data
+      - {outputPath: processed_data}
