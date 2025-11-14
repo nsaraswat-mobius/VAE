@@ -277,7 +277,7 @@ implementation:
                             "containers": [
                                 {
                                     "name": "training-container",
-                                    "image": "sanram00/vae-image:v2",
+                                    "image": "sanram00/vae-image:v3",
                                     "command": ["python3"],
                                     "args": ["train_vae.py"] + trial_args,
                                     "resources": {
