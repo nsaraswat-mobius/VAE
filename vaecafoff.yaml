@@ -1,5 +1,5 @@
 name: Train VAE Model Enhanced
-description: Trains the VAE model with Traditional, CAFO, or Forward Forward methods for anomaly detection.
+description: Trains VAE model with Traditional CAFO or Forward Forward methods
 inputs:
   - {name: model, type: Model}
   - {name: train_loader, type: Dataset}
@@ -11,10 +11,6 @@ implementation:
   container:
     image: gurpreetgandhi/nesy-factory:v29
     command:
-      - sh
-      - -c
-      - |
-        exec "$0" "$@"
       - python3
       - -u
       - -c
@@ -43,32 +39,27 @@ implementation:
 
         config = json.loads(args.config)
 
-        # Load the model
         with open(args.model, 'rb') as f:
             model_obj = pickle.load(f)
 
-        # Load the training data (handle new format with metadata)
         with open(args.train_loader, 'rb') as f:
             train_data = pickle.load(f)
             
-        # Handle both old format (just loader) and new format (with metadata)
         if isinstance(train_data, dict) and 'loader' in train_data:
             train_loader_obj = train_data['loader']
             metadata = train_data['metadata']
-            print(f"Loaded training data with metadata:")
-            print(f"  - Input dimension: {metadata['processed_input_dim']}")
-            print(f"  - Train samples: {metadata['train_samples']}")
-            print(f"  - Batch size: {metadata['batch_size']}")
+            print("Loaded training data with metadata")
+            print("Input dimension:", metadata['processed_input_dim'])
+            print("Train samples:", metadata['train_samples'])
+            print("Batch size:", metadata['batch_size'])
         else:
-            # Old format compatibility or direct loader
             train_loader_obj = train_data
             metadata = None
-            print("Loaded training data (legacy format without metadata)")
+            print("Loaded training data legacy format without metadata")
 
         print("Starting VAE Model Training")
         epoch_loss_data = []
 
-        # Handle backward compatibility for old models
         if not hasattr(model_obj, 'use_cafo'):
             model_obj.use_cafo = False
             print("Backward compatibility: Setting use_cafo=False for existing model")
@@ -77,15 +68,12 @@ implementation:
             model_obj.use_forward_forward = False
             print("Backward compatibility: Setting use_forward_forward=False for existing model")
 
-        # Check training method from config
         use_cafo_from_config = config.get('use_cafo', False)
         use_ff_from_config = config.get('use_forward_forward', False)
         
-        # Validate only one training method is selected
         if sum([use_cafo_from_config, use_ff_from_config]) > 1:
             raise ValueError("Only one training method can be selected: use_cafo or use_forward_forward")
         
-        # Handle CAFO model creation/compatibility
         if use_cafo_from_config and not model_obj.use_cafo:
             print("Warning: Config requests CAFO but model was created without CAFO support.")
             print("Creating new CAFO VAE model with same architecture...")
@@ -103,9 +91,8 @@ implementation:
             }
             
             model_obj = StandardVAE(new_config)
-            print(f"Created new CAFO VAE model with {new_config['cafo_blocks']} blocks")
+            print("Created new CAFO VAE model with", new_config['cafo_blocks'], "blocks")
         
-        # Handle Forward Forward model creation/compatibility
         elif use_ff_from_config and not model_obj.use_forward_forward:
             print("Warning: Config requests Forward Forward but model was created without FF support.")
             print("Creating new Forward Forward VAE model with same architecture...")
@@ -124,12 +111,10 @@ implementation:
             }
             
             model_obj = StandardVAE(new_config)
-            print(f"Created new Forward Forward VAE model with {new_config['ff_blocks']} blocks")
+            print("Created new Forward Forward VAE model with", new_config['ff_blocks'], "blocks")
 
-        # Extract data from train_loader for CAFO/FF training
         X_train_list = []
         for batch_data in train_loader_obj:
-            # Extract data from batch
             if isinstance(batch_data, (list, tuple)) and len(batch_data) >= 1:
                 data = batch_data[0]
             else:
@@ -137,83 +122,74 @@ implementation:
             X_train_list.append(data)
         
         X_train = torch.cat(X_train_list, dim=0)
-        print(f"Training data shape: X={X_train.shape}")
+        print("Training data shape: X=", X_train.shape)
 
-        # Set up training parameters
         learning_rate = config.get('learning_rate', 0.001)
         epochs = config.get('epochs', 100)
         beta = config.get('beta', 1.0)
         
-        # Move model to device
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         model_obj = model_obj.to(device)
         X_train = X_train.to(device)
         
-        print(f"Training VAE on device: {device}")
-        print(f"Training configuration:")
-        print(f"  - Learning rate: {learning_rate}")
-        print(f"  - Epochs: {epochs}")
-        print(f"  - Beta (KL weight): {beta}")
+        print("Training VAE on device:", device)
+        print("Training configuration:")
+        print("Learning rate:", learning_rate)
+        print("Epochs:", epochs)
+        print("Beta KL weight:", beta)
 
-        # Validate model input dimension
         print("Validating model architecture against data dimensions...")
         
-        # Check if sample_data is a tensor
         if hasattr(X_train, 'shape'):
             actual_input_dim = X_train.shape[1]
-            print(f"Actual data input dimension: {actual_input_dim}")
+            print("Actual data input dimension:", actual_input_dim)
         else:
-            print(f"Error: X_train is not a tensor. Type: {type(X_train)}")
-            raise ValueError(f"Expected tensor data but got {type(X_train)}")
+            print("Error: X_train is not a tensor. Type:", type(X_train))
+            raise ValueError("Expected tensor data but got " + str(type(X_train)))
         
-        # Test forward pass for traditional models
         if not (hasattr(model_obj, 'use_cafo') and model_obj.use_cafo) and not (hasattr(model_obj, 'use_forward_forward') and model_obj.use_forward_forward):
             try:
                 model_obj.eval()
                 with torch.no_grad():
                     test_output = model_obj(X_train[:1])
-                    print(f"Model output type: {type(test_output)}")
+                    print("Model output type:", type(test_output))
                     if isinstance(test_output, tuple):
-                        print(f"Model output length: {len(test_output)}")
+                        print("Model output length:", len(test_output))
                 print("Model architecture validation: PASSED")
                 model_obj.train()
             except RuntimeError as e:
                 if "cannot be multiplied" in str(e):
-                    raise RuntimeError(f"Model input dimension mismatch: {e}")
+                    raise RuntimeError("Model input dimension mismatch: " + str(e))
                 else:
                     raise e
 
-        # Training logic based on method
         if hasattr(model_obj, 'use_forward_forward') and model_obj.use_forward_forward:
-            print("🚀 Using Forward Forward training mode")
-            print(f"FF blocks: {getattr(model_obj, 'ff_blocks', 'unknown')}")
-            print(f"FF threshold: {getattr(model_obj, 'ff_threshold', 'unknown')}")
-            print(f"Epochs per FF block: {getattr(model_obj, 'ff_epochs_per_block', 'unknown')}")
-            print(f"FF learning rate: {getattr(model_obj, 'ff_lr', 'unknown')}")
+            print("Using Forward Forward training mode")
+            print("FF blocks:", getattr(model_obj, 'ff_blocks', 'unknown'))
+            print("FF threshold:", getattr(model_obj, 'ff_threshold', 'unknown'))
+            print("Epochs per FF block:", getattr(model_obj, 'ff_epochs_per_block', 'unknown'))
+            print("FF learning rate:", getattr(model_obj, 'ff_lr', 'unknown'))
             
-            # Forward Forward training
             ff_results = model_obj.train_forward_forward(X_train, verbose=True)
             
-            # Extract loss information from Forward Forward results
             for i, block_result in enumerate(ff_results['encoder_results']):
                 for epoch, loss in enumerate(block_result['losses']):
                     epoch_loss_data.append({
                         'epoch': epoch + 1,
                         'loss': float(loss),
-                        'accuracy': 0.0,  # VAE doesn't have traditional accuracy
+                        'accuracy': 0.0,
                         'validation_loss': float(loss),
                         'validation_accuracy': 0.0,
                         'custom_metrics': {
                             'block': i + 1,
                             'block_type': 'encoder',
                             'training_mode': 'forward_forward',
-                            'recon_loss': 0.0,  # FF doesn't separate recon/KL
+                            'recon_loss': 0.0,
                             'kl_loss': 0.0,
                             'total_loss': float(loss)
                         }
                     })
             
-            # Add decoder results
             for i, block_result in enumerate(ff_results['decoder_results']):
                 for epoch, loss in enumerate(block_result['losses']):
                     epoch_loss_data.append({
@@ -232,19 +208,17 @@ implementation:
                         }
                     })
             
-            print(f"Forward Forward training completed in {ff_results['total_training_time']:.2f} seconds")
-            print(f"Total encoder blocks trained: {len(ff_results['encoder_results'])}")
-            print(f"Total decoder blocks trained: {len(ff_results['decoder_results'])}")
+            print("Forward Forward training completed in", ff_results['total_training_time'], "seconds")
+            print("Total encoder blocks trained:", len(ff_results['encoder_results']))
+            print("Total decoder blocks trained:", len(ff_results['decoder_results']))
             
         elif hasattr(model_obj, 'use_cafo') and model_obj.use_cafo:
-            print(" Using CAFO (Cascaded Forward) training mode")
-            print(f"CAFO blocks: {getattr(model_obj, 'cafo_blocks', 'unknown')}")
-            print(f"Epochs per block: {getattr(model_obj, 'epochs_per_block', 'unknown')}")
+            print("Using CAFO Cascaded Forward training mode")
+            print("CAFO blocks:", getattr(model_obj, 'cafo_blocks', 'unknown'))
+            print("Epochs per block:", getattr(model_obj, 'epochs_per_block', 'unknown'))
             
-            # CAFO training
             cafo_results = model_obj.train_cafo(X_train, verbose=True)
             
-            # Extract loss information from CAFO results
             for i, block_result in enumerate(cafo_results['encoder_results']):
                 for epoch, loss in enumerate(block_result['train_losses']):
                     epoch_loss_data.append({
@@ -257,13 +231,12 @@ implementation:
                             'block': i + 1,
                             'block_type': 'encoder',
                             'training_mode': 'cafo',
-                            'recon_loss': 0.0,  # CAFO uses local losses
+                            'recon_loss': 0.0,
                             'kl_loss': 0.0,
                             'total_loss': float(loss)
                         }
                     })
             
-            # Add decoder results
             for i, block_result in enumerate(cafo_results['decoder_results']):
                 for epoch, loss in enumerate(block_result['train_losses']):
                     epoch_loss_data.append({
@@ -282,19 +255,17 @@ implementation:
                         }
                     })
             
-            print(f"CAFO training completed in {cafo_results['total_training_time']:.2f} seconds")
-            print(f"Total encoder blocks trained: {len(cafo_results['encoder_results'])}")
-            print(f"Total decoder blocks trained: {len(cafo_results['decoder_results'])}")
+            print("CAFO training completed in", cafo_results['total_training_time'], "seconds")
+            print("Total encoder blocks trained:", len(cafo_results['encoder_results']))
+            print("Total decoder blocks trained:", len(cafo_results['decoder_results']))
             
         else:
-            print(" Using traditional VAE training mode")
+            print("Using traditional VAE training mode")
             
-            # Set up optimizer for traditional training
             optimizer = optim.Adam(model_obj.parameters(), lr=learning_rate)
             
-            print(f"Training for {epochs} epochs")
+            print("Training for", epochs, "epochs")
             
-            # Traditional VAE training loop
             model_obj.train()
             for epoch in range(epochs):
                 total_loss = 0
@@ -303,7 +274,6 @@ implementation:
                 num_batches = 0
                 
                 for batch_data in train_loader_obj:
-                    # Extract data from batch
                     if isinstance(batch_data, (list, tuple)) and len(batch_data) >= 1:
                         data = batch_data[0]
                     else:
@@ -312,38 +282,31 @@ implementation:
                     data = data.to(device)
                     optimizer.zero_grad()
                     
-                    # Forward pass with flexible output handling
                     vae_output = model_obj(data)
                     
-                    # Handle different VAE output formats
                     if isinstance(vae_output, dict):
-                        # Dictionary output format - extract keys
                         possible_recon_keys = ['reconstruction', 'recon', 'x_recon', 'decoded', 'output']
                         possible_mu_keys = ['mu', 'mean', 'latent_mean', 'z_mean']
                         possible_logvar_keys = ['logvar', 'log_var', 'latent_logvar', 'z_logvar', 'log_variance']
                         
-                        # Find reconstruction
                         recon_data = None
                         for key in possible_recon_keys:
                             if key in vae_output:
                                 recon_data = vae_output[key]
                                 break
                         
-                        # Find mu
                         mu = None
                         for key in possible_mu_keys:
                             if key in vae_output:
                                 mu = vae_output[key]
                                 break
                         
-                        # Find logvar
                         logvar = None
                         for key in possible_logvar_keys:
                             if key in vae_output:
                                 logvar = vae_output[key]
                                 break
                         
-                        # Use defaults if not found
                         if recon_data is None:
                             recon_data = list(vae_output.values())[0] if vae_output else data
                         if mu is None:
@@ -353,54 +316,41 @@ implementation:
                             
                     elif isinstance(vae_output, tuple):
                         if len(vae_output) == 3:
-                            # Standard format: (recon_data, mu, logvar)
                             recon_data, mu, logvar = vae_output
                         else:
-                            # Handle other tuple formats
                             recon_data = vae_output[0]
                             mu = vae_output[1] if len(vae_output) > 1 else torch.zeros(data.size(0), getattr(model_obj, 'latent_dim', 16)).to(device)
                             logvar = vae_output[2] if len(vae_output) > 2 else torch.zeros(data.size(0), getattr(model_obj, 'latent_dim', 16)).to(device)
                     else:
-                        # Single output - assume it's reconstructed data
                         recon_data = vae_output
                         mu = torch.zeros(data.size(0), getattr(model_obj, 'latent_dim', 16)).to(device)
                         logvar = torch.zeros(data.size(0), getattr(model_obj, 'latent_dim', 16)).to(device)
                     
-                    # Calculate losses
                     recon_loss = nn.MSELoss()(recon_data, data)
                     kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
-                    kl_loss = kl_loss / data.size(0)  # Normalize by batch size
+                    kl_loss = kl_loss / data.size(0)
                     
-                    # Total loss
                     loss = recon_loss + beta * kl_loss
                     
-                    # Backward pass and optimization
                     loss.backward()
                     optimizer.step()
                     
-                    # Accumulate losses for logging
                     total_loss += loss.item()
                     total_recon_loss += recon_loss.item()
                     total_kl_loss += kl_loss.item()
                     num_batches += 1
                 
-                # Calculate average losses
                 if num_batches > 0:
                     avg_loss = total_loss / num_batches
                     avg_recon_loss = total_recon_loss / num_batches
                     avg_kl_loss = total_kl_loss / num_batches
                     
-                    # Print training progress
-                    print(f"Epoch {epoch+1:3d}/{epochs} | " +
-                          f"Total Loss: {avg_loss:.6f} | " +
-                          f"Recon Loss: {avg_recon_loss:.6f} | " +
-                          f"KL Loss: {avg_kl_loss:.6f}")
+                    print("Epoch", epoch+1, "/", epochs, "| Total Loss:", avg_loss, "| Recon Loss:", avg_recon_loss, "| KL Loss:", avg_kl_loss)
                     
-                    # Store epoch loss data
                     epoch_loss_data.append({
                         'epoch': epoch + 1,
                         'loss': avg_loss,
-                        'accuracy': 0.0,  # VAE doesn't have traditional accuracy
+                        'accuracy': 0.0,
                         'validation_loss': avg_loss,
                         'validation_accuracy': 0.0,
                         'custom_metrics': {
@@ -411,24 +361,19 @@ implementation:
                         }
                     })
                 
-                # Simple divergence check
                 if epoch > 10 and avg_loss > 1000:
                     print("Warning: Loss is diverging, stopping training early")
                     break
 
-        # Training completion summary
-        training_mode = 'forward_forward' if (hasattr(model_obj, 'use_forward_forward') and model_obj.use_forward_forward) else \
-                       'cafo' if (hasattr(model_obj, 'use_cafo') and model_obj.use_cafo) else 'traditional'
+        training_mode = 'forward_forward' if (hasattr(model_obj, 'use_forward_forward') and model_obj.use_forward_forward) else 'cafo' if (hasattr(model_obj, 'use_cafo') and model_obj.use_cafo) else 'traditional'
         
-        print(f"\\n VAE Model Training Completed - Mode: {training_mode.upper()}")
-        print(f" Loss entries recorded: {len(epoch_loss_data)}")
+        print("VAE Model Training Completed - Mode:", training_mode.upper())
+        print("Loss entries recorded:", len(epoch_loss_data))
 
-        # Save epoch loss data
         output_dir_epoch_loss = os.path.dirname(args.epoch_loss)
         if output_dir_epoch_loss and not os.path.exists(output_dir_epoch_loss):
             os.makedirs(output_dir_epoch_loss, exist_ok=True)
 
-        # Create training summary for model schema integration
         training_summary = {
             'training_mode': training_mode,
             'total_loss_entries': len(epoch_loss_data),
@@ -455,27 +400,25 @@ implementation:
         with open(args.epoch_loss, 'w') as f:
             json.dump(training_summary, f, indent=2)
         
-        print(f"Training Summary: Final Loss = {training_summary['final_total_loss']:.6f}")
-        print(f"Convergence: {'Yes' if training_summary['convergence_achieved'] else 'No'}")
+        print("Training Summary: Final Loss =", training_summary['final_total_loss'])
+        print("Convergence:", 'Yes' if training_summary['convergence_achieved'] else 'No')
         
-        # Save the trained model
         output_dir_trained_model = os.path.dirname(args.trained_model)
         if output_dir_trained_model and not os.path.exists(output_dir_trained_model):
             os.makedirs(output_dir_trained_model, exist_ok=True)
         with open(args.trained_model, 'wb') as f:
             pickle.dump(model_obj.cpu(), f)
         
-        print(f" Saved trained VAE model to {args.trained_model}")
-        print(f" Saved training summary to {args.epoch_loss}")
-        print(f" Training method used: {training_mode.upper()}")
+        print("Saved trained VAE model to", args.trained_model)
+        print("Saved training summary to", args.epoch_loss)
+        print("Training method used:", training_mode.upper())
         
-        # Print final model statistics
         total_params = sum(p.numel() for p in model_obj.parameters())
         trainable_params = sum(p.numel() for p in model_obj.parameters() if p.requires_grad)
-        print(f"Model statistics:")
-        print(f"  - Total parameters: {total_params}")
-        print(f"  - Trainable parameters: {trainable_params}")
-        print(f"  - Training method: {training_mode}")
+        print("Model statistics:")
+        print("Total parameters:", total_params)
+        print("Trainable parameters:", trainable_params)
+        print("Training method:", training_mode)
     args:
       - --model
       - {inputPath: model}
