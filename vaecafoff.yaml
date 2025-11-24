@@ -170,94 +170,265 @@ implementation:
             print("Epochs per FF block:", getattr(model_obj, 'ff_epochs_per_block', 'unknown'))
             print("FF learning rate:", getattr(model_obj, 'ff_lr', 'unknown'))
             
-            ff_results = model_obj.train_forward_forward(X_train, verbose=True)
+            try:
+                print("Starting Forward Forward training with enhanced error handling...")
+                ff_results = model_obj.train_forward_forward(X_train, verbose=True)
+            except Exception as e:
+                print("ERROR in Forward Forward training:", str(e))
+                print("Falling back to traditional VAE training...")
+                
+                # Fallback to traditional training
+                model_obj.use_forward_forward = False
+                optimizer = optim.Adam(model_obj.parameters(), lr=learning_rate)
+                
+                print("Training for", epochs, "epochs using traditional method")
+                
+                model_obj.train()
+                for epoch in range(epochs):
+                    total_loss = 0
+                    total_recon_loss = 0
+                    total_kl_loss = 0
+                    num_batches = 0
+                    
+                    for batch_data in train_loader_obj:
+                        if isinstance(batch_data, (list, tuple)) and len(batch_data) >= 1:
+                            data = batch_data[0]
+                        else:
+                            data = batch_data
+                        
+                        data = data.to(device)
+                        optimizer.zero_grad()
+                        
+                        vae_output = model_obj(data)
+                        
+                        if isinstance(vae_output, tuple) and len(vae_output) == 3:
+                            recon_data, mu, logvar = vae_output
+                        else:
+                            recon_data = vae_output
+                            mu = torch.zeros(data.size(0), getattr(model_obj, 'latent_dim', 16)).to(device)
+                            logvar = torch.zeros(data.size(0), getattr(model_obj, 'latent_dim', 16)).to(device)
+                        
+                        recon_loss = nn.MSELoss()(recon_data, data)
+                        kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
+                        kl_loss = kl_loss / data.size(0)
+                        
+                        loss = recon_loss + beta * kl_loss
+                        
+                        loss.backward()
+                        optimizer.step()
+                        
+                        total_loss += loss.item()
+                        total_recon_loss += recon_loss.item()
+                        total_kl_loss += kl_loss.item()
+                        num_batches += 1
+                    
+                    if num_batches > 0:
+                        avg_loss = total_loss / num_batches
+                        avg_recon_loss = total_recon_loss / num_batches
+                        avg_kl_loss = total_kl_loss / num_batches
+                        
+                        print("Epoch", epoch+1, "/", epochs, "| Total Loss:", avg_loss, "| Recon Loss:", avg_recon_loss, "| KL Loss:", avg_kl_loss)
+                        
+                        epoch_loss_data.append({
+                            'epoch': epoch + 1,
+                            'loss': avg_loss,
+                            'accuracy': 0.0,
+                            'validation_loss': avg_loss,
+                            'validation_accuracy': 0.0,
+                            'custom_metrics': {
+                                'training_mode': 'traditional_fallback',
+                                'recon_loss': avg_recon_loss,
+                                'kl_loss': avg_kl_loss,
+                                'total_loss': avg_loss,
+                                'ff_error': str(e)[:100]  # First 100 chars of error
+                            }
+                        })
+                    
+                    if epoch > 10 and avg_loss > 1000:
+                        print("Warning: Loss is diverging, stopping training early")
+                        break
+                
+                print("Fallback training completed successfully")
+                ff_results = None  # Set to None to skip FF results processing
             
-            for i, block_result in enumerate(ff_results['encoder_results']):
-                for epoch, loss in enumerate(block_result['losses']):
-                    epoch_loss_data.append({
-                        'epoch': epoch + 1,
-                        'loss': float(loss),
-                        'accuracy': 0.0,
-                        'validation_loss': float(loss),
-                        'validation_accuracy': 0.0,
-                        'custom_metrics': {
-                            'block': i + 1,
-                            'block_type': 'encoder',
-                            'training_mode': 'forward_forward',
-                            'recon_loss': 0.0,
-                            'kl_loss': 0.0,
-                            'total_loss': float(loss)
-                        }
-                    })
-            
-            for i, block_result in enumerate(ff_results['decoder_results']):
-                for epoch, loss in enumerate(block_result['losses']):
-                    epoch_loss_data.append({
-                        'epoch': epoch + 1,
-                        'loss': float(loss),
-                        'accuracy': 0.0,
-                        'validation_loss': float(loss),
-                        'validation_accuracy': 0.0,
-                        'custom_metrics': {
-                            'block': i + 1,
-                            'block_type': 'decoder',
-                            'training_mode': 'forward_forward',
-                            'recon_loss': 0.0,
-                            'kl_loss': 0.0,
-                            'total_loss': float(loss)
-                        }
-                    })
-            
-            print("Forward Forward training completed in", ff_results['total_training_time'], "seconds")
-            print("Total encoder blocks trained:", len(ff_results['encoder_results']))
-            print("Total decoder blocks trained:", len(ff_results['decoder_results']))
+            # Only process FF results if training was successful
+            if ff_results is not None:
+                for i, block_result in enumerate(ff_results['encoder_results']):
+                    for epoch, loss in enumerate(block_result['losses']):
+                        epoch_loss_data.append({
+                            'epoch': epoch + 1,
+                            'loss': float(loss),
+                            'accuracy': 0.0,
+                            'validation_loss': float(loss),
+                            'validation_accuracy': 0.0,
+                            'custom_metrics': {
+                                'block': i + 1,
+                                'block_type': 'encoder',
+                                'training_mode': 'forward_forward',
+                                'recon_loss': 0.0,
+                                'kl_loss': 0.0,
+                                'total_loss': float(loss)
+                            }
+                        })
+                
+                for i, block_result in enumerate(ff_results['decoder_results']):
+                    for epoch, loss in enumerate(block_result['losses']):
+                        epoch_loss_data.append({
+                            'epoch': epoch + 1,
+                            'loss': float(loss),
+                            'accuracy': 0.0,
+                            'validation_loss': float(loss),
+                            'validation_accuracy': 0.0,
+                            'custom_metrics': {
+                                'block': i + 1,
+                                'block_type': 'decoder',
+                                'training_mode': 'forward_forward',
+                                'recon_loss': 0.0,
+                                'kl_loss': 0.0,
+                                'total_loss': float(loss)
+                            }
+                        })
+                
+                print("Forward Forward training completed in", ff_results['total_training_time'], "seconds")
+                print("Total encoder blocks trained:", len(ff_results['encoder_results']))
+                print("Total decoder blocks trained:", len(ff_results['decoder_results']))
+            else:
+                print("Forward Forward training failed, used fallback traditional training")
             
         elif hasattr(model_obj, 'use_cafo') and model_obj.use_cafo:
             print("Using CAFO Cascaded Forward training mode")
             print("CAFO blocks:", getattr(model_obj, 'cafo_blocks', 'unknown'))
             print("Epochs per block:", getattr(model_obj, 'epochs_per_block', 'unknown'))
             
-            cafo_results = model_obj.train_cafo(X_train, verbose=True)
+            try:
+                # Add error handling for CAFO training
+                print("Starting CAFO training with enhanced error handling...")
+                cafo_results = model_obj.train_cafo(X_train, verbose=True)
+            except RuntimeError as e:
+                if "size of tensor" in str(e) and "must match the size" in str(e):
+                    print("ERROR: Tensor dimension mismatch in CAFO training")
+                    print("This is likely due to architecture incompatibility")
+                    print("Falling back to traditional VAE training...")
+                    
+                    # Fallback to traditional training
+                    model_obj.use_cafo = False
+                    optimizer = optim.Adam(model_obj.parameters(), lr=learning_rate)
+                    
+                    print("Training for", epochs, "epochs using traditional method")
+                    
+                    model_obj.train()
+                    for epoch in range(epochs):
+                        total_loss = 0
+                        total_recon_loss = 0
+                        total_kl_loss = 0
+                        num_batches = 0
+                        
+                        for batch_data in train_loader_obj:
+                            if isinstance(batch_data, (list, tuple)) and len(batch_data) >= 1:
+                                data = batch_data[0]
+                            else:
+                                data = batch_data
+                            
+                            data = data.to(device)
+                            optimizer.zero_grad()
+                            
+                            vae_output = model_obj(data)
+                            
+                            if isinstance(vae_output, tuple) and len(vae_output) == 3:
+                                recon_data, mu, logvar = vae_output
+                            else:
+                                recon_data = vae_output
+                                mu = torch.zeros(data.size(0), getattr(model_obj, 'latent_dim', 16)).to(device)
+                                logvar = torch.zeros(data.size(0), getattr(model_obj, 'latent_dim', 16)).to(device)
+                            
+                            recon_loss = nn.MSELoss()(recon_data, data)
+                            kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
+                            kl_loss = kl_loss / data.size(0)
+                            
+                            loss = recon_loss + beta * kl_loss
+                            
+                            loss.backward()
+                            optimizer.step()
+                            
+                            total_loss += loss.item()
+                            total_recon_loss += recon_loss.item()
+                            total_kl_loss += kl_loss.item()
+                            num_batches += 1
+                        
+                        if num_batches > 0:
+                            avg_loss = total_loss / num_batches
+                            avg_recon_loss = total_recon_loss / num_batches
+                            avg_kl_loss = total_kl_loss / num_batches
+                            
+                            print("Epoch", epoch+1, "/", epochs, "| Total Loss:", avg_loss, "| Recon Loss:", avg_recon_loss, "| KL Loss:", avg_kl_loss)
+                            
+                            epoch_loss_data.append({
+                                'epoch': epoch + 1,
+                                'loss': avg_loss,
+                                'accuracy': 0.0,
+                                'validation_loss': avg_loss,
+                                'validation_accuracy': 0.0,
+                                'custom_metrics': {
+                                    'training_mode': 'traditional_fallback',
+                                    'recon_loss': avg_recon_loss,
+                                    'kl_loss': avg_kl_loss,
+                                    'total_loss': avg_loss,
+                                    'cafo_error': 'tensor_dimension_mismatch'
+                                }
+                            })
+                        
+                        if epoch > 10 and avg_loss > 1000:
+                            print("Warning: Loss is diverging, stopping training early")
+                            break
+                    
+                    print("Fallback training completed successfully")
+                    cafo_results = None  # Set to None to skip CAFO results processing
+                else:
+                    raise e  # Re-raise if it's a different error
             
-            for i, block_result in enumerate(cafo_results['encoder_results']):
-                for epoch, loss in enumerate(block_result['train_losses']):
-                    epoch_loss_data.append({
-                        'epoch': epoch + 1,
-                        'loss': float(loss),
-                        'accuracy': 0.0,
-                        'validation_loss': float(block_result.get('val_losses', [loss])[epoch] if epoch < len(block_result.get('val_losses', [])) else loss),
-                        'validation_accuracy': 0.0,
-                        'custom_metrics': {
-                            'block': i + 1,
-                            'block_type': 'encoder',
-                            'training_mode': 'cafo',
-                            'recon_loss': 0.0,
-                            'kl_loss': 0.0,
-                            'total_loss': float(loss)
-                        }
-                    })
-            
-            for i, block_result in enumerate(cafo_results['decoder_results']):
-                for epoch, loss in enumerate(block_result['train_losses']):
-                    epoch_loss_data.append({
-                        'epoch': epoch + 1,
-                        'loss': float(loss),
-                        'accuracy': 0.0,
-                        'validation_loss': float(block_result.get('val_losses', [loss])[epoch] if epoch < len(block_result.get('val_losses', [])) else loss),
-                        'validation_accuracy': 0.0,
-                        'custom_metrics': {
-                            'block': i + 1,
-                            'block_type': 'decoder',
-                            'training_mode': 'cafo',
-                            'recon_loss': 0.0,
-                            'kl_loss': 0.0,
-                            'total_loss': float(loss)
-                        }
-                    })
-            
-            print("CAFO training completed in", cafo_results['total_training_time'], "seconds")
-            print("Total encoder blocks trained:", len(cafo_results['encoder_results']))
-            print("Total decoder blocks trained:", len(cafo_results['decoder_results']))
+            # Only process CAFO results if training was successful
+            if cafo_results is not None:
+                for i, block_result in enumerate(cafo_results['encoder_results']):
+                    for epoch, loss in enumerate(block_result['train_losses']):
+                        epoch_loss_data.append({
+                            'epoch': epoch + 1,
+                            'loss': float(loss),
+                            'accuracy': 0.0,
+                            'validation_loss': float(block_result.get('val_losses', [loss])[epoch] if epoch < len(block_result.get('val_losses', [])) else loss),
+                            'validation_accuracy': 0.0,
+                            'custom_metrics': {
+                                'block': i + 1,
+                                'block_type': 'encoder',
+                                'training_mode': 'cafo',
+                                'recon_loss': 0.0,
+                                'kl_loss': 0.0,
+                                'total_loss': float(loss)
+                            }
+                        })
+                
+                for i, block_result in enumerate(cafo_results['decoder_results']):
+                    for epoch, loss in enumerate(block_result['train_losses']):
+                        epoch_loss_data.append({
+                            'epoch': epoch + 1,
+                            'loss': float(loss),
+                            'accuracy': 0.0,
+                            'validation_loss': float(block_result.get('val_losses', [loss])[epoch] if epoch < len(block_result.get('val_losses', [])) else loss),
+                            'validation_accuracy': 0.0,
+                            'custom_metrics': {
+                                'block': i + 1,
+                                'block_type': 'decoder',
+                                'training_mode': 'cafo',
+                                'recon_loss': 0.0,
+                                'kl_loss': 0.0,
+                                'total_loss': float(loss)
+                            }
+                        })
+                
+                print("CAFO training completed in", cafo_results['total_training_time'], "seconds")
+                print("Total encoder blocks trained:", len(cafo_results['encoder_results']))
+                print("Total decoder blocks trained:", len(cafo_results['decoder_results']))
+            else:
+                print("CAFO training failed, used fallback traditional training")
             
         else:
             print("Using traditional VAE training mode")
@@ -365,7 +536,12 @@ implementation:
                     print("Warning: Loss is diverging, stopping training early")
                     break
 
-        training_mode = 'forward_forward' if (hasattr(model_obj, 'use_forward_forward') and model_obj.use_forward_forward) else 'cafo' if (hasattr(model_obj, 'use_cafo') and model_obj.use_cafo) else 'traditional'
+        # Determine actual training mode used (including fallbacks)
+        if epoch_loss_data:
+            last_custom_metrics = epoch_loss_data[-1].get('custom_metrics', {})
+            training_mode = last_custom_metrics.get('training_mode', 'traditional')
+        else:
+            training_mode = 'forward_forward' if (hasattr(model_obj, 'use_forward_forward') and model_obj.use_forward_forward) else 'cafo' if (hasattr(model_obj, 'use_cafo') and model_obj.use_cafo) else 'traditional'
         
         print("VAE Model Training Completed - Mode:", training_mode.upper())
         print("Loss entries recorded:", len(epoch_loss_data))
