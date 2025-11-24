@@ -78,6 +78,13 @@ implementation:
             print("Warning: Config requests CAFO but model was created without CAFO support.")
             print("Creating new CAFO VAE model with same architecture...")
             
+            print("🔍 DEBUGGING ORIGINAL MODEL:")
+            print(f"  Original input_dim: {model_obj.input_dim}")
+            print(f"  Original latent_dim: {model_obj.latent_dim}")
+            print(f"  Original hidden_dims: {model_obj.hidden_dims}")
+            print(f"  Original hidden_dims type: {type(model_obj.hidden_dims)}")
+            print(f"  Original hidden_dims length: {len(model_obj.hidden_dims) if hasattr(model_obj.hidden_dims, '__len__') else 'Not iterable'}")
+            
             new_config = {
                 'input_dim': model_obj.input_dim,
                 'latent_dim': model_obj.latent_dim,
@@ -90,8 +97,23 @@ implementation:
                 'block_lr': config.get('block_lr', 0.001)
             }
             
+            print("🔧 NEW CAFO CONFIG:")
+            for key, value in new_config.items():
+                print(f"  {key}: {value}")
+            
             model_obj = StandardVAE(new_config)
             print("Created new CAFO VAE model with", new_config['cafo_blocks'], "blocks")
+            
+            # Verify the created model
+            print("🔍 VERIFYING CREATED CAFO MODEL:")
+            print(f"  Model type: {type(model_obj).__name__}")
+            print(f"  Has use_cafo: {hasattr(model_obj, 'use_cafo')} = {getattr(model_obj, 'use_cafo', 'N/A')}")
+            print(f"  Has encoder_blocks: {hasattr(model_obj, 'encoder_blocks')}")
+            print(f"  Has decoder_blocks: {hasattr(model_obj, 'decoder_blocks')}")
+            if hasattr(model_obj, 'encoder_blocks'):
+                print(f"  Encoder blocks count: {len(model_obj.encoder_blocks)}")
+            if hasattr(model_obj, 'decoder_blocks'):
+                print(f"  Decoder blocks count: {len(model_obj.decoder_blocks)}")
         
         elif use_ff_from_config and not model_obj.use_forward_forward:
             print("Warning: Config requests Forward Forward but model was created without FF support.")
@@ -323,12 +345,65 @@ implementation:
             print("Epochs per block:", getattr(model_obj, 'epochs_per_block', 'unknown'))
             
             try:
-                # Add error handling for CAFO training
-                print("Starting CAFO training with enhanced error handling...")
+                # Add detailed debugging for CAFO training
+                print("Starting CAFO training with enhanced error handling and debugging...")
+                print("🔍 DEBUGGING CAFO ARCHITECTURE:")
+                print(f"  Model input_dim: {model_obj.input_dim}")
+                print(f"  Model latent_dim: {model_obj.latent_dim}")
+                print(f"  Model hidden_dims: {getattr(model_obj, 'hidden_dims', 'Not found')}")
+                print(f"  CAFO blocks count: {getattr(model_obj, 'cafo_blocks', 'Not found')}")
+                print(f"  Training data shape: {X_train.shape}")
+                
+                # Check if CAFO blocks exist and their configuration
+                if hasattr(model_obj, 'encoder_blocks'):
+                    print(f"  Number of encoder blocks: {len(model_obj.encoder_blocks)}")
+                    for i, block in enumerate(model_obj.encoder_blocks):
+                        print(f"    Encoder Block {i+1}: {block}")
+                        if hasattr(block, 'input_dim') and hasattr(block, 'output_dim'):
+                            print(f"      Input dim: {block.input_dim}, Output dim: {block.output_dim}")
+                else:
+                    print("  ❌ No encoder_blocks found!")
+                
+                if hasattr(model_obj, 'decoder_blocks'):
+                    print(f"  Number of decoder blocks: {len(model_obj.decoder_blocks)}")
+                    for i, block in enumerate(model_obj.decoder_blocks):
+                        print(f"    Decoder Block {i+1}: {block}")
+                        if hasattr(block, 'input_dim') and hasattr(block, 'output_dim'):
+                            print(f"      Input dim: {block.input_dim}, Output dim: {block.output_dim}")
+                else:
+                    print("  ❌ No decoder_blocks found!")
+                
+                print("🚀 Starting CAFO training...")
                 cafo_results = model_obj.train_cafo(X_train, verbose=True)
             except RuntimeError as e:
                 if "size of tensor" in str(e) and "must match the size" in str(e):
-                    print("ERROR: Tensor dimension mismatch in CAFO training")
+                    print("🚨 ERROR: Tensor dimension mismatch in CAFO training")
+                    print(f"🔍 Full error message: {str(e)}")
+                    print("📊 DEBUGGING TENSOR DIMENSIONS:")
+                    
+                    # Extract dimension information from error message
+                    import re
+                    size_match = re.search(r'size of tensor a \((\d+)\) must match the size of tensor b \((\d+)\)', str(e))
+                    if size_match:
+                        dim_a, dim_b = size_match.groups()
+                        print(f"  Tensor A dimension: {dim_a}")
+                        print(f"  Tensor B dimension: {dim_b}")
+                        print(f"  Expected flow: 21 → 512 → 256 → 8")
+                        print(f"  Actual conflict: {dim_a} vs {dim_b}")
+                    
+                    # Try to inspect the current model state
+                    try:
+                        if hasattr(model_obj, 'encoder_blocks') and len(model_obj.encoder_blocks) > 1:
+                            print("🔧 ENCODER BLOCK ANALYSIS:")
+                            for i, block in enumerate(model_obj.encoder_blocks):
+                                print(f"  Block {i+1}: {type(block).__name__}")
+                                if hasattr(block, 'layers'):
+                                    for j, layer in enumerate(block.layers):
+                                        if hasattr(layer, 'in_features') and hasattr(layer, 'out_features'):
+                                            print(f"    Layer {j+1}: {layer.in_features} → {layer.out_features}")
+                    except Exception as inspect_error:
+                        print(f"  Could not inspect model blocks: {inspect_error}")
+                    
                     print("This is likely due to architecture incompatibility")
                     print("Falling back to traditional VAE training...")
                     
