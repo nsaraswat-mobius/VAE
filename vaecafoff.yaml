@@ -177,8 +177,21 @@ implementation:
                 print("ERROR in Forward Forward training:", str(e))
                 print("Falling back to traditional VAE training...")
                 
-                # Fallback to traditional training
-                model_obj.use_forward_forward = False
+                # Create a new traditional VAE model for fallback
+                print("Creating new traditional VAE model for fallback...")
+                
+                fallback_config = {
+                    'input_dim': model_obj.input_dim,
+                    'latent_dim': model_obj.latent_dim,
+                    'hidden_dims': getattr(model_obj, 'hidden_dims', [512, 256]),
+                    'learning_rate': learning_rate,
+                    'beta': beta,
+                    'use_cafo': False,
+                    'use_forward_forward': False
+                }
+                
+                # Create new traditional model
+                model_obj = StandardVAE(fallback_config).to(device)
                 optimizer = optim.Adam(model_obj.parameters(), lr=learning_rate)
                 
                 print("Training for", epochs, "epochs using traditional method")
@@ -199,28 +212,37 @@ implementation:
                         data = data.to(device)
                         optimizer.zero_grad()
                         
-                        vae_output = model_obj(data)
-                        
-                        if isinstance(vae_output, tuple) and len(vae_output) == 3:
-                            recon_data, mu, logvar = vae_output
-                        else:
-                            recon_data = vae_output
-                            mu = torch.zeros(data.size(0), getattr(model_obj, 'latent_dim', 16)).to(device)
-                            logvar = torch.zeros(data.size(0), getattr(model_obj, 'latent_dim', 16)).to(device)
-                        
-                        recon_loss = nn.MSELoss()(recon_data, data)
-                        kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
-                        kl_loss = kl_loss / data.size(0)
-                        
-                        loss = recon_loss + beta * kl_loss
-                        
-                        loss.backward()
-                        optimizer.step()
-                        
-                        total_loss += loss.item()
-                        total_recon_loss += recon_loss.item()
-                        total_kl_loss += kl_loss.item()
-                        num_batches += 1
+                        try:
+                            vae_output = model_obj(data)
+                            
+                            if isinstance(vae_output, tuple) and len(vae_output) == 3:
+                                recon_data, mu, logvar = vae_output
+                            elif isinstance(vae_output, dict):
+                                recon_data = vae_output.get('reconstruction', vae_output.get('recon', data))
+                                mu = vae_output.get('mu', torch.zeros(data.size(0), model_obj.latent_dim).to(device))
+                                logvar = vae_output.get('logvar', torch.zeros(data.size(0), model_obj.latent_dim).to(device))
+                            else:
+                                recon_data = vae_output
+                                mu = torch.zeros(data.size(0), model_obj.latent_dim).to(device)
+                                logvar = torch.zeros(data.size(0), model_obj.latent_dim).to(device)
+                            
+                            recon_loss = nn.MSELoss()(recon_data, data)
+                            kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
+                            kl_loss = kl_loss / data.size(0)
+                            
+                            loss = recon_loss + beta * kl_loss
+                            
+                            loss.backward()
+                            optimizer.step()
+                            
+                            total_loss += loss.item()
+                            total_recon_loss += recon_loss.item()
+                            total_kl_loss += kl_loss.item()
+                            num_batches += 1
+                            
+                        except Exception as inner_e:
+                            print("Error in fallback training batch:", str(inner_e))
+                            continue
                     
                     if num_batches > 0:
                         avg_loss = total_loss / num_batches
@@ -310,8 +332,21 @@ implementation:
                     print("This is likely due to architecture incompatibility")
                     print("Falling back to traditional VAE training...")
                     
-                    # Fallback to traditional training
-                    model_obj.use_cafo = False
+                    # Create a new traditional VAE model for fallback
+                    print("Creating new traditional VAE model for fallback...")
+                    
+                    fallback_config = {
+                        'input_dim': model_obj.input_dim,
+                        'latent_dim': model_obj.latent_dim,
+                        'hidden_dims': getattr(model_obj, 'hidden_dims', [512, 256]),
+                        'learning_rate': learning_rate,
+                        'beta': beta,
+                        'use_cafo': False,
+                        'use_forward_forward': False
+                    }
+                    
+                    # Create new traditional model
+                    model_obj = StandardVAE(fallback_config).to(device)
                     optimizer = optim.Adam(model_obj.parameters(), lr=learning_rate)
                     
                     print("Training for", epochs, "epochs using traditional method")
@@ -332,28 +367,37 @@ implementation:
                             data = data.to(device)
                             optimizer.zero_grad()
                             
-                            vae_output = model_obj(data)
-                            
-                            if isinstance(vae_output, tuple) and len(vae_output) == 3:
-                                recon_data, mu, logvar = vae_output
-                            else:
-                                recon_data = vae_output
-                                mu = torch.zeros(data.size(0), getattr(model_obj, 'latent_dim', 16)).to(device)
-                                logvar = torch.zeros(data.size(0), getattr(model_obj, 'latent_dim', 16)).to(device)
-                            
-                            recon_loss = nn.MSELoss()(recon_data, data)
-                            kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
-                            kl_loss = kl_loss / data.size(0)
-                            
-                            loss = recon_loss + beta * kl_loss
-                            
-                            loss.backward()
-                            optimizer.step()
-                            
-                            total_loss += loss.item()
-                            total_recon_loss += recon_loss.item()
-                            total_kl_loss += kl_loss.item()
-                            num_batches += 1
+                            try:
+                                vae_output = model_obj(data)
+                                
+                                if isinstance(vae_output, tuple) and len(vae_output) == 3:
+                                    recon_data, mu, logvar = vae_output
+                                elif isinstance(vae_output, dict):
+                                    recon_data = vae_output.get('reconstruction', vae_output.get('recon', data))
+                                    mu = vae_output.get('mu', torch.zeros(data.size(0), model_obj.latent_dim).to(device))
+                                    logvar = vae_output.get('logvar', torch.zeros(data.size(0), model_obj.latent_dim).to(device))
+                                else:
+                                    recon_data = vae_output
+                                    mu = torch.zeros(data.size(0), model_obj.latent_dim).to(device)
+                                    logvar = torch.zeros(data.size(0), model_obj.latent_dim).to(device)
+                                
+                                recon_loss = nn.MSELoss()(recon_data, data)
+                                kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
+                                kl_loss = kl_loss / data.size(0)
+                                
+                                loss = recon_loss + beta * kl_loss
+                                
+                                loss.backward()
+                                optimizer.step()
+                                
+                                total_loss += loss.item()
+                                total_recon_loss += recon_loss.item()
+                                total_kl_loss += kl_loss.item()
+                                num_batches += 1
+                                
+                            except Exception as inner_e:
+                                print("Error in fallback training batch:", str(inner_e))
+                                continue
                         
                         if num_batches > 0:
                             avg_loss = total_loss / num_batches
