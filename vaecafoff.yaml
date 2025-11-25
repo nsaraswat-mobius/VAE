@@ -78,42 +78,62 @@ implementation:
             print("Warning: Config requests CAFO but model was created without CAFO support.")
             print("Creating new CAFO VAE model with same architecture...")
             
-            print(" DEBUGGING ORIGINAL MODEL:")
-            print(f"  Original input_dim: {model_obj.input_dim}")
-            print(f"  Original latent_dim: {model_obj.latent_dim}")
-            print(f"  Original hidden_dims: {model_obj.hidden_dims}")
-            print(f"  Original hidden_dims type: {type(model_obj.hidden_dims)}")
-            print(f"  Original hidden_dims length: {len(model_obj.hidden_dims) if hasattr(model_obj.hidden_dims, '__len__') else 'Not iterable'}")
+            # Handle CAFO configuration based on user preference
+            requested_cafo_blocks = config.get('cafo_blocks', len(model_obj.hidden_dims))
+            current_hidden_dims = model_obj.hidden_dims
+            
+            print(f"🎯 USER WANTS: {requested_cafo_blocks} CAFO blocks")
+            print(f"📐 CURRENT ARCHITECTURE: {current_hidden_dims} (supports {len(current_hidden_dims)} blocks)")
+            
+            # If user wants more blocks than current architecture supports, create a suitable architecture
+            if requested_cafo_blocks > len(current_hidden_dims):
+                print(f"🔧 EXPANDING ARCHITECTURE: Creating {requested_cafo_blocks} blocks")
+                
+                # Create progressive dimension reduction for requested blocks
+                start_dim = current_hidden_dims[0] if current_hidden_dims else 512
+                end_dim = model_obj.latent_dim
+                
+                # Generate progressive dimensions
+                new_hidden_dims = []
+                for i in range(requested_cafo_blocks):
+                    # Progressive reduction: start_dim -> end_dim over requested_cafo_blocks steps
+                    ratio = (requested_cafo_blocks - i - 1) / (requested_cafo_blocks - 1) if requested_cafo_blocks > 1 else 0
+                    dim = int(start_dim * ratio + end_dim * (1 - ratio))
+                    dim = max(dim, end_dim)  # Don't go below latent_dim
+                    new_hidden_dims.append(dim)
+                
+                print(f"📈 NEW ARCHITECTURE: {new_hidden_dims}")
+                use_hidden_dims = new_hidden_dims
+            else:
+                print(f"✅ USING EXISTING ARCHITECTURE: {current_hidden_dims}")
+                use_hidden_dims = current_hidden_dims
+                requested_cafo_blocks = len(current_hidden_dims)  # Match architecture
             
             new_config = {
                 'input_dim': model_obj.input_dim,
                 'latent_dim': model_obj.latent_dim,
-                'hidden_dims': model_obj.hidden_dims,
+                'hidden_dims': use_hidden_dims,
                 'learning_rate': config.get('learning_rate', 0.001),
                 'beta': config.get('beta', 1.0),
                 'use_cafo': True,
-                'cafo_blocks': config.get('cafo_blocks', len(model_obj.hidden_dims)),
+                'cafo_blocks': requested_cafo_blocks,
                 'epochs_per_block': config.get('epochs_per_block', 50),
                 'block_lr': config.get('block_lr', 0.001)
             }
             
-            print(" NEW CAFO CONFIG:")
+            print("🔧 FINAL CAFO CONFIG:")
             for key, value in new_config.items():
                 print(f"  {key}: {value}")
             
+            print("🎯 EXPECTED CAFO ARCHITECTURE:")
+            print(f"  Input: {new_config['input_dim']}")
+            for i, dim in enumerate(new_config['hidden_dims']):
+                print(f"  Block {i+1}: → {dim}")
+            print(f"  Output: {new_config['latent_dim']}")
+            print(f"  Total blocks needed: {len(new_config['hidden_dims'])}")
+            
             model_obj = StandardVAE(new_config)
             print("Created new CAFO VAE model with", new_config['cafo_blocks'], "blocks")
-            
-            # Verify the created model
-            print(" VERIFYING CREATED CAFO MODEL:")
-            print(f"  Model type: {type(model_obj).__name__}")
-            print(f"  Has use_cafo: {hasattr(model_obj, 'use_cafo')} = {getattr(model_obj, 'use_cafo', 'N/A')}")
-            print(f"  Has encoder_blocks: {hasattr(model_obj, 'encoder_blocks')}")
-            print(f"  Has decoder_blocks: {hasattr(model_obj, 'decoder_blocks')}")
-            if hasattr(model_obj, 'encoder_blocks'):
-                print(f"  Encoder blocks count: {len(model_obj.encoder_blocks)}")
-            if hasattr(model_obj, 'decoder_blocks'):
-                print(f"  Decoder blocks count: {len(model_obj.decoder_blocks)}")
         
         elif use_ff_from_config and not model_obj.use_forward_forward:
             print("Warning: Config requests Forward Forward but model was created without FF support.")
@@ -394,7 +414,7 @@ implementation:
                     # Try to inspect the current model state
                     try:
                         if hasattr(model_obj, 'encoder_blocks') and len(model_obj.encoder_blocks) > 1:
-                            print(" ENCODER BLOCK ANALYSIS:")
+                            print("🔧 ENCODER BLOCK ANALYSIS:")
                             for i, block in enumerate(model_obj.encoder_blocks):
                                 print(f"  Block {i+1}: {type(block).__name__}")
                                 if hasattr(block, 'layers'):
