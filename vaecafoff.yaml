@@ -903,43 +903,43 @@ implementation:
         print("Trainable parameters:", trainable_params)
         print("Training method:", training_mode)
         
-        # FINAL DIAGNOSTIC SUMMARY
-        print("\n" + "="*60)
-        print(" TRAINING DIAGNOSTIC SUMMARY")
-        print("="*60)
-        print(f" Data shape: {X_train.shape if hasattr(X_train, 'shape') else 'unknown'}")
-        print(f" Model input dim: {getattr(model_obj, 'input_dim', 'unknown')}")
-        print(f" Model latent dim: {getattr(model_obj, 'latent_dim', 'unknown')}")
-        print(f" Training method: {training_mode}")
-        print(f" CAFO blocks: {getattr(model_obj, 'cafo_blocks', 'N/A')}")
-        print(f" Architecture: {getattr(model_obj, 'hidden_dims', 'N/A')}")
+        # FINAL DIAGNOSTIC SUMMARY - SIMPLIFIED TO AVOID YAML ERRORS
+        print("=" * 60)
+        print("TRAINING DIAGNOSTIC SUMMARY")
+        print("=" * 60)
+        print("Data shape:", X_train.shape if hasattr(X_train, 'shape') else 'unknown')
+        print("Model input dim:", getattr(model_obj, 'input_dim', 'unknown'))
+        print("Model latent dim:", getattr(model_obj, 'latent_dim', 'unknown'))
+        print("Training method:", training_mode)
+        print("CAFO blocks:", getattr(model_obj, 'cafo_blocks', 'N/A'))
+        print("Architecture:", getattr(model_obj, 'hidden_dims', 'N/A'))
         
         if training_mode == 'cafo':
-            print(" CAFO training completed successfully - no tensor errors!")
-            print(" YOUR REQUEST FULFILLED: CAFO ran full 3 blocks successfully!")
+            print("CAFO training completed successfully - no tensor errors!")
+            print("YOUR REQUEST FULFILLED: CAFO ran full 3 blocks successfully!")
         elif training_mode == 'forward_forward':
-            print(" Forward Forward training completed successfully - no tensor errors!")
-            print(" YOUR REQUEST FULFILLED: Forward Forward ran successfully!")
+            print("Forward Forward training completed successfully - no tensor errors!")
+            print("YOUR REQUEST FULFILLED: Forward Forward ran successfully!")
         elif training_mode == 'traditional_fallback':
-            print("  Advanced training failed, used traditional training as fallback")
-            print(" Check logs above to see why CAFO/FF failed")
+            print("Advanced training failed, used traditional training as fallback")
+            print("Check logs above to see why CAFO/FF failed")
         else:
-            print("  Used traditional training method by choice")
+            print("Used traditional training method by choice")
         
         # FINAL SUCCESS/FAILURE SUMMARY  
         config_wanted_cafo = config.get('use_cafo', False)
         config_wanted_ff = config.get('use_forward_forward', False)
         
         if config_wanted_cafo and training_mode == 'cafo':
-            print(" SUCCESS: You wanted CAFO and got CAFO!")
+            print("SUCCESS: You wanted CAFO and got CAFO!")
         elif config_wanted_ff and training_mode == 'forward_forward': 
-            print(" SUCCESS: You wanted Forward Forward and got Forward Forward!")
+            print("SUCCESS: You wanted Forward Forward and got Forward Forward!")
         elif config_wanted_cafo and training_mode != 'cafo':
-            print(" PARTIAL FAILURE: You wanted CAFO but it fell back to traditional")
+            print("PARTIAL FAILURE: You wanted CAFO but it fell back to traditional")
         elif config_wanted_ff and training_mode != 'forward_forward':
-            print(" PARTIAL FAILURE: You wanted Forward Forward but it fell back to traditional")
+            print("PARTIAL FAILURE: You wanted Forward Forward but it fell back to traditional")
         
-        print("="*60)
+        print("=" * 60)
     args:
       - --model
       - {inputPath: model}
