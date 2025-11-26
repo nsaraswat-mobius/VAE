@@ -100,14 +100,15 @@ implementation:
             if requested_cafo_blocks == 1:
                 new_hidden_dims = [max(start_dim // 2, end_dim)]
             elif requested_cafo_blocks == 2:
-                mid_dim = max(start_dim // 2, end_dim * 2)
-                new_hidden_dims = [mid_dim, max(mid_dim // 2, end_dim)]
-            else:  # 3 or more blocks
-                ratio = (end_dim / start_dim) ** (1.0 / requested_cafo_blocks)
+                # Better progression for 2 blocks: 21 -> 18 -> 16
+                dim1 = int((start_dim + end_dim) / 2) + 2  # Closer to middle, slightly higher
+                new_hidden_dims = [max(dim1, end_dim + 2), end_dim]
+            else:  # 3 or more blocks - use linear interpolation instead of geometric
                 new_hidden_dims = []
+                step = (start_dim - end_dim) / (requested_cafo_blocks + 1)
                 for i in range(requested_cafo_blocks):
-                    dim = int(start_dim * (ratio ** (i + 1)))
-                    dim = max(dim, end_dim)
+                    dim = int(start_dim - step * (i + 1))
+                    dim = max(dim, end_dim)  # Don't go below latent_dim
                     new_hidden_dims.append(dim)
             
             new_config = {
@@ -198,6 +199,19 @@ implementation:
                 print(f"Forward Forward training failed: {str(e)}")
                 print("Falling back to traditional VAE training...")
                 use_ff_from_config = False
+                
+                # Create new traditional VAE model for fallback
+                fallback_config = {
+                    'input_dim': actual_input_dim,
+                    'latent_dim': model_obj.latent_dim,
+                    'hidden_dims': [256, 128],  # Use simple, working architecture
+                    'learning_rate': config.get('learning_rate', 0.001),
+                    'beta': config.get('beta', 1.0),
+                    'use_cafo': False,
+                    'use_forward_forward': False
+                }
+                model_obj = StandardVAE(fallback_config).to(device)
+                print("Created new traditional VAE model for fallback")
         
         if hasattr(model_obj, 'use_cafo') and model_obj.use_cafo and use_cafo_from_config:
             print("Using CAFO Cascaded Forward training mode")
@@ -236,6 +250,19 @@ implementation:
                 print(f"CAFO training failed: {str(e)}")
                 print("Falling back to traditional VAE training...")
                 use_cafo_from_config = False
+                
+                # Create new traditional VAE model for fallback
+                fallback_config = {
+                    'input_dim': actual_input_dim,
+                    'latent_dim': model_obj.latent_dim,
+                    'hidden_dims': [256, 128],  # Use simple, working architecture
+                    'learning_rate': config.get('learning_rate', 0.001),
+                    'beta': config.get('beta', 1.0),
+                    'use_cafo': False,
+                    'use_forward_forward': False
+                }
+                model_obj = StandardVAE(fallback_config).to(device)
+                print("Created new traditional VAE model for fallback")
         
         # Traditional VAE training (default or fallback)
         if not use_cafo_from_config and not use_ff_from_config:
