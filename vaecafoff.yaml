@@ -9,7 +9,7 @@ outputs:
   - {name: epoch_loss, type: String}
 implementation:
   container:
-    image: gurpreetgandhi/nesy-factory:v29
+    image: gurpreetgandhi/nesy-factory:v30
     command:
       - python3
       - -u
