@@ -100,9 +100,14 @@ implementation:
             if requested_cafo_blocks == 1:
                 new_hidden_dims = [max(start_dim // 2, end_dim)]
             elif requested_cafo_blocks == 2:
-                # Better progression for 2 blocks: 21 -> 18 -> 16
-                dim1 = int((start_dim + end_dim) / 2) + 2  # Closer to middle, slightly higher
-                new_hidden_dims = [max(dim1, end_dim + 2), end_dim]
+                # For 2 blocks: need exactly 2 hidden dimensions
+                # Create smooth progression: 21 -> dim1 -> dim2 -> latent_dim
+                dim1 = int(start_dim * 0.8)  # 21 * 0.8 = ~17
+                dim2 = int(start_dim * 0.6)  # 21 * 0.6 = ~13
+                dim1 = max(dim1, end_dim + 4)  # Ensure > latent_dim
+                dim2 = max(dim2, end_dim + 2)  # Ensure > latent_dim
+                new_hidden_dims = [dim1, dim2]
+                print(f"CAFO 2-block architecture: {start_dim} -> {dim1} -> {dim2} -> {end_dim}")
             else:  # 3 or more blocks - use linear interpolation instead of geometric
                 new_hidden_dims = []
                 step = (start_dim - end_dim) / (requested_cafo_blocks + 1)
@@ -125,6 +130,11 @@ implementation:
             
             model_obj = StandardVAE(new_config)
             print(f"Created new CAFO model with {new_config['cafo_blocks']} blocks")
+            print(f"CAFO Config: input_dim={new_config['input_dim']}, hidden_dims={new_config['hidden_dims']}, latent_dim={new_config['latent_dim']}")
+            
+            # Verify the architecture makes sense
+            expected_flow = [new_config['input_dim']] + new_config['hidden_dims'] + [new_config['latent_dim']]
+            print(f"Expected CAFO flow: {' -> '.join(map(str, expected_flow))}")
         
         # Handle Forward Forward model creation/compatibility
         elif use_ff_from_config and not model_obj.use_forward_forward:
