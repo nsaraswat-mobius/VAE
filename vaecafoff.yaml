@@ -98,7 +98,13 @@ implementation:
             end_dim = model_obj.latent_dim
             
             if requested_cafo_blocks == 1:
-                new_hidden_dims = [max(start_dim // 2, end_dim)]
+                # For 1 block: ensure hidden_dim is different from latent_dim
+                # Use a fixed, safe dimension that's between input and latent
+                hidden_dim = int((start_dim + end_dim) / 2) + 2  # Average + buffer
+                if hidden_dim <= end_dim:
+                    hidden_dim = end_dim + 5  # Force significant separation
+                new_hidden_dims = [hidden_dim]
+                print(f"CAFO 1-block architecture: {start_dim} -> {hidden_dim} -> {end_dim}")
             elif requested_cafo_blocks == 2:
                 # For 2 blocks: need exactly 2 hidden dimensions
                 # Create smooth progression: 21 -> dim1 -> dim2 -> latent_dim
