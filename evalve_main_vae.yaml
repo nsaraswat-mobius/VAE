@@ -9,7 +9,7 @@ outputs:
   - {name: eval_metrics_json, type: String}
 implementation:
   container:
-    image: nikhilv215/nesy-factory:v22
+    image: gurpreetgandhi/nesy-factory:v30
     command:
       - sh
       - -c
