@@ -1,0 +1,429 @@
+name: Preprocess Data
+description: Processes raw data and creates training and testing dataloaders. Now supports Reddit adoption chasm classification with PESTLE/JTBD features.
+inputs:
+  - {name: json_data, type: Dataset}
+  - {name: config, type: String}
+outputs:
+  - {name: train_loader, type: Dataset}
+  - {name: test_loader, type: Dataset}
+  - {name: input_dim, type: String}
+  - {name: processed_data, type: Dataset}
+implementation:
+  container:
+    image: gurpreetgandhi/nesy-factory:v30
+    command:
+      - sh
+      - -c
+      - |
+        exec "$0" "$@"
+      - python3
+      - -u
+      - -c
+      - |
+        import argparse
+        import json
+        import os
+        import pickle
+        import numpy as np
+        import pandas as pd
+        import torch
+        import re
+        from datetime import datetime
+        from sklearn.preprocessing import MinMaxScaler, StandardScaler, LabelEncoder
+        from torch.utils.data import TensorDataset, DataLoader
+
+        # PESTLE Keywords for Reddit Signal Detection
+        PESTLE_KEYWORDS = {
+            'Political': ['regulation', 'policy', 'government', 'compliance', 'law', 'legal', 'regulatory', 'mandate', 'election', 'political'],
+            'Economic': ['cost', 'price', 'budget', 'roi', 'revenue', 'profit', 'margin', 'expense', 'investment', 'funding', 'economic', 'market'],
+            'Social': ['customer', 'user', 'adoption', 'acceptance', 'behavior', 'culture', 'social', 'community', 'employee', 'workforce', 'team'],
+            'Technological': ['technology', 'tech', 'digital', 'automation', 'ai', 'api', 'software', 'system', 'platform', 'integration', 'data'],
+            'Legal': ['contract', 'agreement', 'liability', 'insurance', 'audit', 'security', 'privacy', 'gdpr', 'compliance', 'risk'],
+            'Environmental': ['sustainability', 'green', 'carbon', 'environmental', 'eco', 'emission', 'climate', 'renewable', 'energy']
+        }
+
+        # Jobs-To-Be-Done Categories for Reddit
+        JTBD_KEYWORDS = {
+            'Efficiency': ['faster', 'speed', 'quick', 'efficient', 'optimize', 'streamline', 'automate', 'reduce', 'save', 'time'],
+            'Cost_Reduction': ['cheaper', 'save', 'cost', 'budget', 'affordable', 'economical', 'reduce', 'lower', 'cut', 'expense'],
+            'Risk_Management': ['risk', 'secure', 'safety', 'protect', 'compliance', 'audit', 'control', 'governance', 'oversight'],
+            'Scale_Growth': ['scale', 'grow', 'expand', 'increase', 'more', 'larger', 'bigger', 'capacity', 'volume', 'throughput'],
+            'Innovation': ['new', 'innovative', 'novel', 'cutting-edge', 'advanced', 'modern', 'latest', 'breakthrough', 'revolutionary'],
+            'Integration': ['connect', 'integrate', 'sync', 'combine', 'merge', 'unify', 'consolidate', 'centralize', 'bridge', 'link']
+        }
+
+        # Adoption Stage Keywords for Ground Truth
+        ADOPTION_STAGE_KEYWORDS = {
+            'Innovators': ['pilot', 'testing', 'experimental', 'proof of concept', 'poc', 'bleeding edge', 'early stage', 'beta', 'alpha'],
+            'Early_Adopters': ['early adopter', 'competitive advantage', 'market leader', 'differentiator', 'strategic', 'vision', 'forward-thinking'],
+            'Early_Majority': ['proven', 'established', 'best practice', 'industry standard', 'mainstream', 'widely adopted', 'common practice'],
+            'Late_Majority': ['finally', 'catching up', 'pressure', 'necessity', 'required', 'compliance', 'forced', 'lagging', 'behind'],
+            'Laggards': ['resistant', 'reluctant', 'skeptical', 'traditional', 'old school', 'not ready', 'waiting', 'cautious']
+        }
+
+        def extract_pestle_signals(text):
+            if not text:
+                return {f'pestle_{category.lower()}': 0.0 for category in PESTLE_KEYWORDS}
+            text_lower = text.lower()
+            signals = {}
+            for category, keywords in PESTLE_KEYWORDS.items():
+                count = sum(1 for keyword in keywords if keyword in text_lower)
+                signals[f'pestle_{category.lower()}'] = count / max(len(text.split()), 1)
+            return signals
+
+        def extract_jtbd_signals(text):
+            if not text:
+                return {f'jtbd_{category.lower()}': 0.0 for category in JTBD_KEYWORDS}
+            text_lower = text.lower()
+            signals = {}
+            for category, keywords in JTBD_KEYWORDS.items():
+                count = sum(1 for keyword in keywords if keyword in text_lower)
+                signals[f'jtbd_{category.lower()}'] = count / max(len(text.split()), 1)
+            return signals
+
+        def extract_adoption_stage_signals(text):
+            if not text:
+                return {f'stage_{stage.lower()}': 0.0 for stage in ADOPTION_STAGE_KEYWORDS}
+            text_lower = text.lower()
+            signals = {}
+            for stage, keywords in ADOPTION_STAGE_KEYWORDS.items():
+                count = sum(1 for keyword in keywords if keyword in text_lower)
+                signals[f'stage_{stage.lower()}'] = count / max(len(text.split()), 1)
+            return signals
+
+        def calculate_adoption_score(pestle_signals, jtbd_signals):
+            tech_readiness = pestle_signals['pestle_technological'] * 0.3
+            market_pressure = (pestle_signals['pestle_economic'] + pestle_signals['pestle_political']) * 0.2
+            innovation_drive = (jtbd_signals['jtbd_innovation'] + jtbd_signals['jtbd_efficiency']) * 0.3
+            social_acceptance = (pestle_signals['pestle_social'] + jtbd_signals['jtbd_integration']) * 0.2
+            adoption_score = tech_readiness + innovation_drive + social_acceptance - market_pressure
+            return max(0, min(1, adoption_score))
+
+        def assign_adoption_stage_label(row):
+            stage_scores = {
+                'Innovators': (row['stage_innovators'] * 0.4 + row['pestle_technological'] * 0.3 + row['jtbd_innovation'] * 0.3),
+                'Early_Adopters': (row['stage_early_adopters'] * 0.4 + row['adoption_score'] * 0.3 + row['jtbd_efficiency'] * 0.3),
+                'Early_Majority': (row['stage_early_majority'] * 0.4 + row['pestle_social'] * 0.3 + row['jtbd_integration'] * 0.3),
+                'Late_Majority': (row['stage_late_majority'] * 0.4 + row['pestle_economic'] * 0.3 + row['jtbd_cost_reduction'] * 0.3),
+                'Laggards': (row['stage_laggards'] * 0.4 + row['pestle_legal'] * 0.3 + row['jtbd_risk_management'] * 0.3)
+            }
+            
+            predicted_stage = max(stage_scores, key=stage_scores.get)
+            
+            # Fallback to adoption score if no clear signal
+            if max(stage_scores.values()) < 0.1:
+                if row['adoption_score'] > 0.8:
+                    predicted_stage = 'Innovators'
+                elif row['adoption_score'] > 0.6:
+                    predicted_stage = 'Early_Adopters'
+                elif row['adoption_score'] > 0.4:
+                    predicted_stage = 'Early_Majority'
+                elif row['adoption_score'] > 0.2:
+                    predicted_stage = 'Late_Majority'
+                else:
+                    predicted_stage = 'Laggards'
+            
+            return predicted_stage
+
+        def process_reddit_adoption_data(json_data):
+            records = []
+            for item in json_data:
+                try:
+                    created_utc = item.get('created_utc', 0)
+                    if not created_utc:
+                        continue
+                    dt = datetime.fromtimestamp(created_utc)
+                    
+                    title = item.get('title', '')
+                    selftext = item.get('selftext', '')
+                    combined_text = f"{title} {selftext}"
+                    
+                    # Extract comments for additional context
+                    comments_text = ""
+                    comments = item.get('comments', [])
+                    if isinstance(comments, list):
+                        for comment_section in comments:
+                            if isinstance(comment_section, dict) and 'data' in comment_section:
+                                children = comment_section['data'].get('children', [])
+                                for child in children[:3]:  # Limit to first 3 comments
+                                    if isinstance(child, dict) and 'data' in child:
+                                        comment_body = child['data'].get('body', '')
+                                        comments_text += f" {comment_body}"
+                    
+                    full_text = f"{combined_text} {comments_text}"
+                    
+                    record = {
+                        'timestamp': created_utc,
+                        'datetime': dt,
+                        'subreddit': item.get('subreddit', ''),
+                        'author': item.get('author', ''),
+                        'score': float(item.get('score', 0)),
+                        'num_comments': float(item.get('num_comments', 0)),
+                        'upvote_ratio': float(item.get('upvote_ratio', 1.0)),
+                        'total_awards': float(item.get('total_awards_received', 0)),
+                        'title_length': float(len(title)),
+                        'selftext_length': float(len(selftext)),
+                        'hour': float(dt.hour),
+                        'day_of_week': float(dt.weekday()),
+                        'is_weekend': 1.0 if dt.weekday() >= 5 else 0.0,
+                        'is_selfpost': 1.0 if item.get('is_self', False) else 0.0,
+                        'has_media': 1.0 if item.get('is_video', False) else 0.0,
+                    }
+                    
+                    # Extract PESTLE signals
+                    pestle_signals = extract_pestle_signals(full_text)
+                    record.update(pestle_signals)
+                    
+                    # Extract JTBD signals
+                    jtbd_signals = extract_jtbd_signals(full_text)
+                    record.update(jtbd_signals)
+                    
+                    # Extract adoption stage signals
+                    stage_signals = extract_adoption_stage_signals(full_text)
+                    record.update(stage_signals)
+                    
+                    # Calculate adoption score
+                    record['adoption_score'] = calculate_adoption_score(pestle_signals, jtbd_signals)
+                    
+                    # Derived features
+                    record['engagement_rate'] = record['num_comments'] / max(1, record['score'])
+                    record['title_word_count'] = float(len(title.split()))
+                    record['has_question'] = 1.0 if '?' in title else 0.0
+                    
+                    records.append(record)
+                    
+                except Exception as e:
+                    continue
+            
+            df = pd.DataFrame(records)
+            if len(df) > 0:
+                df['datetime'] = pd.to_datetime(df['timestamp'], unit='s')
+                df = df.sort_values(by='timestamp')
+                # Assign adoption stage labels
+                df['adoption_stage'] = df.apply(assign_adoption_stage_label, axis=1)
+            
+            return df
+
+        def process_total_metrics_data(json_data):
+            records = []
+            for item in json_data:
+                record = {
+                    'totalallocatable.cpu': float(item['totalallocatable']['cpu'].replace('c', '')),
+                    'totalallocatable.memory': float(item['totalallocatable']['memory'].replace('TB', '')) * 1e12,
+                    'totalallocatable.storage': float(item['totalallocatable']['storage'].replace('TB', '')) * 1e12,
+                    'timestamp': item['timestamp']
+                }
+                records.append(record)
+            df = pd.DataFrame(records)
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            df = df.sort_values(by='timestamp')
+            return df
+
+        def create_reddit_sequences_with_labels(data, seq_length, config):
+            X, y = [], []
+            stage_labels = []
+            
+            # Reddit feature columns with PESTLE/JTBD
+            feature_columns = [
+                'num_comments', 'upvote_ratio', 'total_awards', 'title_length',
+                'selftext_length', 'hour', 'day_of_week', 'is_weekend',
+                'is_selfpost', 'has_media', 'engagement_rate', 'title_word_count',
+                'has_question', 'pestle_political', 'pestle_economic', 'pestle_social',
+                'pestle_technological', 'pestle_legal', 'pestle_environmental',
+                'jtbd_efficiency', 'jtbd_cost_reduction', 'jtbd_risk_management',
+                'jtbd_scale_growth', 'jtbd_innovation', 'jtbd_integration', 'adoption_score'
+            ]
+            
+            # Filter available columns
+            available_columns = [col for col in feature_columns if col in data.columns]
+            
+            # Group by subreddit for meaningful sequences
+            for subreddit in data['subreddit'].unique():
+                sub_data = data[data['subreddit'] == subreddit].copy()
+                if len(sub_data) < seq_length + 1:
+                    continue
+                
+                for i in range(len(sub_data) - seq_length):
+                    sequence_data = sub_data[available_columns].iloc[i:i+seq_length].values
+                    
+                    if config.get('task_type') == 'adoption_stage_classification':
+                        target = sub_data['adoption_score'].iloc[i+seq_length]
+                        stage_label = sub_data['adoption_stage'].iloc[i+seq_length]
+                        stage_labels.append(stage_label)
+                    else:
+                        target = sub_data['score'].iloc[i+seq_length]  # Default target
+                        stage_labels.append('default')
+                    
+                    X.append(sequence_data)
+                    y.append(target)
+            
+            return np.array(X), np.array(y), stage_labels
+
+        def create_sequences_with_labels(data, labels, seq_length):
+            X, y = [], []
+            for i in range(len(data) - seq_length):
+                X.append(data[i:i+seq_length])
+                y.append(labels[i+seq_length-1])
+            return np.array(X), np.array(y)
+
+        parser = argparse.ArgumentParser()
+        parser.add_argument('--json_data', type=str, required=True)
+        parser.add_argument('--config', type=str, required=True)
+        parser.add_argument('--train_loader', type=str, required=True)
+        parser.add_argument('--test_loader', type=str, required=True)
+        parser.add_argument('--input_dim', type=str, required=True)
+        parser.add_argument('--processed_data', type=str, required=True)
+        args = parser.parse_args()
+
+        config = json.loads(args.config)
+
+        # Smart data loading - handle both pickle and JSON
+        try:
+            if args.json_data.endswith('.json') or 'reddit' in args.json_data.lower():
+                with open(args.json_data, 'r', encoding='utf-8') as f:
+                    json_data = json.load(f)
+                print(f"Loaded Reddit JSON data. Length: {len(json_data)}")
+            else:
+                with open(args.json_data, 'rb') as f:
+                    json_data = pickle.load(f)
+                print(f"Loaded pickled data. Length: {len(json_data)}")
+        except:
+            # Fallback loading
+            with open(args.json_data, 'rb') as f:
+                json_data = pickle.load(f)
+            print(f"Loaded data using fallback method. Length: {len(json_data)}")
+
+        # Process data based on use case
+        if config.get('use_case') == "Reddit_Adoption_Chasm" or config.get('task_type') == 'adoption_stage_classification':
+            print("Processing Reddit data for Adoption Chasm Classification...")
+            df = process_reddit_adoption_data(json_data)
+            print(f"Processed Reddit data with PESTLE/JTBD features. Shape: {df.shape}")
+            
+            if len(df) == 0:
+                raise ValueError("No valid records processed from Reddit data")
+            
+            # Create Reddit sequences
+            X, y, stage_labels = create_reddit_sequences_with_labels(df, config['seq_length'], config)
+            print(f"Created Reddit adoption sequences. X shape: {X.shape}, y shape: {y.shape}")
+            
+            # Handle stage labels for classification tasks
+            stage_classes = None
+            if config.get('task_type') == 'adoption_stage_classification':
+                label_encoder = LabelEncoder()
+                stage_labels_encoded = label_encoder.fit_transform(stage_labels)
+                stage_classes = label_encoder.classes_.tolist()
+                print(f"Stage classes: {stage_classes}")
+            
+        elif config['use_case'] == "Fine-Grained Build Cost Metering Loops":
+            df = process_total_metrics_data(json_data)
+            print(f"Processed metrics data. Shape: {df.shape}")
+            
+            all_columns = config['feature_columns'] + [config['target_column']]
+            for col in all_columns:
+                if '.' not in col:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+            df.dropna(subset=all_columns, inplace=True)
+            print(f"DataFrame shape after dropping NA: {df.shape}")
+            
+            features = config['feature_columns']
+            scaler = MinMaxScaler()
+            data_for_sequencing = scaler.fit_transform(df[features].astype(float).values)
+            y_labels = df[config['target_column']].astype(float).values
+            
+            X, y = create_sequences_with_labels(data_for_sequencing, y_labels, config['seq_length'])
+            print(f"Created sequences. X shape: {X.shape}, y shape: {y.shape}")
+            stage_classes = None
+            
+        else:
+            # Generic processing for other use cases
+            df = pd.DataFrame(json_data)
+            print(f"Created DataFrame. Shape: {df.shape}")
+            
+            all_columns = config.get('feature_columns', []) + [config.get('target_column', 'score')]
+            for col in all_columns:
+                if col in df.columns and '.' not in col:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+            
+            df.dropna(subset=[col for col in all_columns if col in df.columns], inplace=True)
+            print(f"DataFrame shape after dropping NA: {df.shape}")
+            
+            features = config.get('feature_columns', [])
+            if not features:
+                # Auto-select numeric features
+                features = [col for col in df.select_dtypes(include=[np.number]).columns if col != config.get('target_column', 'score')][:10]
+            
+            scaler = MinMaxScaler()
+            data_for_sequencing = scaler.fit_transform(df[features].astype(float).values)
+            y_labels = df[config.get('target_column', 'score')].astype(float).values
+            
+            X, y = create_sequences_with_labels(data_for_sequencing, y_labels, config['seq_length'])
+            print(f"Created sequences. X shape: {X.shape}, y shape: {y.shape}")
+            stage_classes = None
+
+        # Data splitting and PyTorch tensor creation (unchanged)
+        permutation = np.random.permutation(len(X))
+        X = X[permutation]
+        y = y[permutation]
+
+        train_size = int(len(X) * 0.8)
+        X_train, X_test = X[:train_size], X[train_size:]
+        y_train, y_test = y[:train_size], y[train_size:]
+        print(f"Train data shape: {X_train.shape}, Test data shape: {X_test.shape}")
+
+        X_train = torch.tensor(X_train, dtype=torch.float32)
+        y_train = torch.tensor(y_train, dtype=torch.float32).unsqueeze(1)
+        X_test = torch.tensor(X_test, dtype=torch.float32)
+        y_test = torch.tensor(y_test, dtype=torch.float32).unsqueeze(1)
+
+        train_dataset = TensorDataset(X_train, y_train)
+        test_dataset = TensorDataset(X_test, y_test)
+
+        train_loader_obj = DataLoader(train_dataset, batch_size=config.get('batch_size', 32), shuffle=True)
+        test_loader_obj = DataLoader(test_dataset, batch_size=config.get('batch_size', 32), shuffle=False)
+
+        # Save outputs (unchanged)
+        os.makedirs(os.path.dirname(args.train_loader), exist_ok=True)
+        with open(args.train_loader, "wb") as f:
+            pickle.dump(train_loader_obj, f)
+
+        os.makedirs(os.path.dirname(args.test_loader), exist_ok=True)
+        with open(args.test_loader, "wb") as f:
+            pickle.dump(test_loader_obj, f)
+
+        input_dim = X_train.shape[2]
+        os.makedirs(os.path.dirname(args.input_dim), exist_ok=True)
+        with open(args.input_dim, "w") as f:
+            f.write(str(input_dim))
+
+        class DataWrapper:
+            def __init__(self, train_loader, test_loader, input_dim, stage_classes=None):
+                self.train_loader = train_loader
+                self.test_loader = test_loader
+                self.input_dim = input_dim
+                self.stage_classes = stage_classes
+        
+        data_to_save = DataWrapper(train_loader_obj, test_loader_obj, input_dim, stage_classes)
+        os.makedirs(os.path.dirname(args.processed_data), exist_ok=True)
+        with open(args.processed_data, "wb") as f:
+            pickle.dump(data_to_save, f)
+
+        print(f"Saved train_loader to {args.train_loader}")
+        print(f"Saved test_loader to {args.test_loader}")
+        print(f"Saved input_dim ({input_dim}) to {args.input_dim}")
+        print(f"Saved processed_data to {args.processed_data}")
+        
+        if stage_classes:
+            print(f"Available adoption stages: {stage_classes}")
+    args:
+      - --json_data
+      - {inputPath: json_data}
+      - --config
+      - {inputValue: config}
+      - --train_loader
+      - {outputPath: train_loader}
+      - --test_loader
+      - {outputPath: test_loader}
+      - --input_dim
+      - {outputPath: input_dim}
+      - --processed_data
+      - {outputPath: processed_data}
