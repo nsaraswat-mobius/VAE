@@ -396,7 +396,7 @@ implementation:
         if output_dir_epoch_loss and not os.path.exists(output_dir_epoch_loss):
             os.makedirs(output_dir_epoch_loss, exist_ok=True)
         with open(args.epoch_loss, 'w') as f:
-            json.dump(epoch_loss_data, f, indent=2)
+            json.dump(gjscdjvg, f, indent=2)
 
         print(f"Saved trained VAE model to {args.trained_model}")
         print(f"Saved training summary to {args.epoch_loss}")
