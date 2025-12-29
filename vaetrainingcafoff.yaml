@@ -1,0 +1,414 @@
+name: Train VAE Model
+description: Trains the VAE model with Traditional, CAFO, or Forward Forward methods.
+inputs:
+  - {name: model, type: Model}
+  - {name: train_loader, type: Dataset}
+  - {name: config, type: String}
+outputs:
+  - {name: trained_model, type: Model}
+  - {name: epoch_loss, type: String}
+implementation:
+  container:
+    image: gurpreetgandhi/nesy-factory:v30
+    command:
+      - python3
+      - -u
+      - -c
+      - |
+        import argparse
+        import json
+        import os
+        import pickle
+        import sys
+        import torch
+        import torch.nn as nn
+        import torch.optim as optim
+        
+        from nesy_factory.VAE.standard_vae import StandardVAE
+
+        parser = argparse.ArgumentParser()
+        parser.add_argument('--model', type=str, required=True)
+        parser.add_argument('--train_loader', type=str, required=True)
+        parser.add_argument('--config', type=str, required=True)
+        parser.add_argument('--trained_model', type=str, required=True)
+        parser.add_argument('--epoch_loss', type=str, required=True)
+        args = parser.parse_args()
+
+        config = json.loads(args.config)
+
+        with open(args.model, 'rb') as f:
+            model_obj = pickle.load(f)
+
+        with open(args.train_loader, 'rb') as f:
+            train_data = pickle.load(f)
+            
+        if isinstance(train_data, dict) and 'loader' in train_data:
+            train_loader_obj = train_data['loader']
+            metadata = train_data['metadata']
+            print("Loaded training data with metadata")
+        else:
+            train_loader_obj = train_data
+            metadata = None
+            print("Loaded training data legacy format")
+
+        print("Starting VAE Model Training")
+        epoch_loss_data = []
+
+        # Handle backward compatibility for old models
+        if not hasattr(model_obj, 'use_cafo'):
+            model_obj.use_cafo = False
+            print("Backward compatibility: Setting use_cafo=False for existing model")
+        
+        if not hasattr(model_obj, 'use_forward_forward'):
+            model_obj.use_forward_forward = False
+            print("Backward compatibility: Setting use_forward_forward=False for existing model")
+
+        # Check training method from config
+        use_cafo_from_config = config.get('use_cafo', False)
+        use_ff_from_config = config.get('use_forward_forward', False)
+        
+        # Validate only one training method is selected
+        if sum([use_cafo_from_config, use_ff_from_config]) > 1:
+            raise ValueError("Only one training method can be selected: use_cafo or use_forward_forward")
+        
+        # Extract training data to determine actual input dimensions
+        X_train_list = []
+        for batch_data in train_loader_obj:
+            if isinstance(batch_data, (list, tuple)) and len(batch_data) >= 1:
+                data = batch_data[0]
+            else:
+                data = batch_data
+            X_train_list.append(data)
+        
+        X_train = torch.cat(X_train_list, dim=0)
+        actual_input_dim = X_train.shape[1]
+        print(f"Training data shape: X={X_train.shape}")
+        print(f"Actual input dimension: {actual_input_dim}")
+        
+        # Handle CAFO model creation/compatibility
+        if use_cafo_from_config and not model_obj.use_cafo:
+            print("Warning: Config requests CAFO but model was created without CAFO support.")
+            print("Creating new CAFO model with same architecture...")
+            
+            # Create architecture for requested CAFO blocks
+            requested_cafo_blocks = config.get('cafo_blocks', len(model_obj.hidden_dims))
+            
+            # Generate progressive dimensions for CAFO blocks
+            start_dim = actual_input_dim
+            end_dim = model_obj.latent_dim
+            
+            if requested_cafo_blocks == 1:
+                # CAFO FIX: Create a single intermediate dimension that works for both encoder and decoder
+                # Encoder: 21 -> hidden -> 12, Decoder: 12 -> hidden -> 21
+                # Use the geometric mean for smooth transitions
+                import math
+                hidden_dim = int(math.sqrt(start_dim * end_dim))  # sqrt(21 * 12) = sqrt(252) = ~16
+                if hidden_dim == start_dim or hidden_dim == end_dim:
+                    hidden_dim = int((start_dim + end_dim) / 2)  # Fallback to arithmetic mean
+                new_hidden_dims = [hidden_dim]
+                print(f"CAFO 1-block architecture: {start_dim} -> {hidden_dim} -> {end_dim}")
+                print(f"Encoder: {start_dim} -> {hidden_dim} -> {end_dim}")
+                print(f"Decoder: {end_dim} -> {hidden_dim} -> {start_dim}")
+            elif requested_cafo_blocks == 2:
+                # CAFO 2-block: Create symmetric progression
+                # Use geometric progression for smooth transitions
+                import math
+                ratio = (end_dim / start_dim) ** (1.0 / 3)  # 3 steps total: start -> dim1 -> dim2 -> end
+                dim1 = int(start_dim * ratio)
+                dim2 = int(start_dim * ratio * ratio)
+                
+                # Ensure dimensions are distinct and reasonable
+                dim1 = max(dim1, end_dim + 3)
+                dim2 = max(dim2, end_dim + 1)
+                if dim1 <= dim2:
+                    dim1 = dim2 + 2  # Force proper ordering
+                
+                new_hidden_dims = [dim1, dim2]
+                print(f"CAFO 2-block architecture: {start_dim} -> {dim1} -> {dim2} -> {end_dim}")
+                print(f"Encoder: {start_dim} -> {dim1} -> {dim2} -> {end_dim}")
+                print(f"Decoder: {end_dim} -> {dim2} -> {dim1} -> {start_dim}")
+            else:  # 3 or more blocks - use linear interpolation instead of geometric
+                new_hidden_dims = []
+                step = (start_dim - end_dim) / (requested_cafo_blocks + 1)
+                for i in range(requested_cafo_blocks):
+                    dim = int(start_dim - step * (i + 1))
+                    dim = max(dim, end_dim)  # Don't go below latent_dim
+                    new_hidden_dims.append(dim)
+            
+            new_config = {
+                'input_dim': actual_input_dim,
+                'latent_dim': model_obj.latent_dim,
+                'hidden_dims': new_hidden_dims,
+                'learning_rate': config.get('learning_rate', 0.001),
+                'beta': config.get('beta', 1.0),
+                'use_cafo': True,
+                'cafo_blocks': requested_cafo_blocks,
+                'epochs_per_block': config.get('epochs_per_block', 50),
+                'block_lr': config.get('block_lr', 0.001)
+            }
+            
+            model_obj = StandardVAE(new_config)
+            print(f"Created new CAFO model with {new_config['cafo_blocks']} blocks")
+            print(f"CAFO Config: input_dim={new_config['input_dim']}, hidden_dims={new_config['hidden_dims']}, latent_dim={new_config['latent_dim']}")
+            
+            # Verify the architecture makes sense
+            expected_flow = [new_config['input_dim']] + new_config['hidden_dims'] + [new_config['latent_dim']]
+            print(f"Expected CAFO flow: {' -> '.join(map(str, expected_flow))}")
+        
+        # Handle Forward Forward model creation/compatibility
+        elif use_ff_from_config and not model_obj.use_forward_forward:
+            print("Warning: Config requests Forward Forward but model was created without FF support.")
+            print("Creating new Forward Forward model with same architecture...")
+            
+            new_config = {
+                'input_dim': actual_input_dim,
+                'latent_dim': model_obj.latent_dim,
+                'hidden_dims': model_obj.hidden_dims,
+                'learning_rate': config.get('learning_rate', 0.001),
+                'beta': config.get('beta', 1.0),
+                'use_forward_forward': True,
+                'ff_blocks': config.get('ff_blocks', 3),
+                'ff_threshold': config.get('ff_threshold', 2.0),
+                'ff_epochs_per_block': config.get('ff_epochs_per_block', 100),
+                'ff_lr': config.get('ff_lr', 0.03)
+            }
+            
+            model_obj = StandardVAE(new_config)
+            print(f"Created new Forward Forward model with {new_config['ff_blocks']} blocks")
+        
+        # Update model input dimension if needed
+        if hasattr(model_obj, 'input_dim') and actual_input_dim != model_obj.input_dim:
+            print(f"Updating model input_dim from {model_obj.input_dim} to {actual_input_dim}")
+            model_obj.input_dim = actual_input_dim
+
+        # Move to device
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        model_obj = model_obj.to(device)
+        X_train = X_train.to(device)
+        
+        print(f"Training VAE on device: {device}")
+
+        # Training logic based on method
+        if hasattr(model_obj, 'use_forward_forward') and model_obj.use_forward_forward:
+            print("Using Forward Forward training mode")
+            print(f"FF blocks: {getattr(model_obj, 'ff_blocks', 'unknown')}")
+            print(f"FF threshold: {getattr(model_obj, 'ff_threshold', 'unknown')}")
+            print(f"Epochs per FF block: {getattr(model_obj, 'ff_epochs_per_block', 'unknown')}")
+            print(f"FF learning rate: {getattr(model_obj, 'ff_lr', 'unknown')}")
+            
+            try:
+                ff_results = model_obj.train_forward_forward(X_train, verbose=True)
+                
+                # Extract loss information from Forward Forward results
+                for i, block_result in enumerate(ff_results['encoder_results']):
+                    for epoch, loss in enumerate(block_result['losses']):
+                        epoch_loss_data.append({
+                            'block': i + 1,
+                            'block_type': 'encoder',
+                            'epoch': epoch + 1,
+                            'loss': float(loss),
+                            'training_mode': 'forward_forward'
+                        })
+                
+                for i, block_result in enumerate(ff_results['decoder_results']):
+                    for epoch, loss in enumerate(block_result['losses']):
+                        epoch_loss_data.append({
+                            'block': i + 1,
+                            'block_type': 'decoder',
+                            'epoch': epoch + 1,
+                            'loss': float(loss),
+                            'training_mode': 'forward_forward'
+                        })
+                
+                print(f"Forward Forward training completed in {ff_results['total_training_time']:.2f} seconds")
+                print(f"Total encoder blocks trained: {len(ff_results['encoder_results'])}")
+                print(f"Total decoder blocks trained: {len(ff_results['decoder_results'])}")
+                
+            except Exception as e:
+                print(f"Forward Forward training failed: {str(e)}")
+                print("Falling back to traditional VAE training...")
+                use_ff_from_config = False
+                
+                # Create new traditional VAE model for fallback
+                fallback_config = {
+                    'input_dim': actual_input_dim,
+                    'latent_dim': model_obj.latent_dim,
+                    'hidden_dims': [256, 128],  # Use simple, working architecture
+                    'learning_rate': config.get('learning_rate', 0.001),
+                    'beta': config.get('beta', 1.0),
+                    'use_cafo': False,
+                    'use_forward_forward': False
+                }
+                model_obj = StandardVAE(fallback_config).to(device)
+                print("Created new traditional VAE model for fallback")
+        
+        if hasattr(model_obj, 'use_cafo') and model_obj.use_cafo and use_cafo_from_config:
+            print("Using CAFO Cascaded Forward training mode")
+            print(f"CAFO blocks: {getattr(model_obj, 'cafo_blocks', 'unknown')}")
+            print(f"Epochs per block: {getattr(model_obj, 'epochs_per_block', 'unknown')}")
+            
+            try:
+                cafo_results = model_obj.train_cafo(X_train, verbose=True)
+                
+                # Extract loss information from CAFO results
+                for i, block_result in enumerate(cafo_results['encoder_results']):
+                    for epoch, loss in enumerate(block_result['train_losses']):
+                        epoch_loss_data.append({
+                            'block': i + 1,
+                            'block_type': 'encoder',
+                            'epoch': epoch + 1,
+                            'loss': float(loss),
+                            'training_mode': 'cafo'
+                        })
+                
+                for i, block_result in enumerate(cafo_results['decoder_results']):
+                    for epoch, loss in enumerate(block_result['train_losses']):
+                        epoch_loss_data.append({
+                            'block': i + 1,
+                            'block_type': 'decoder',
+                            'epoch': epoch + 1,
+                            'loss': float(loss),
+                            'training_mode': 'cafo'
+                        })
+                
+                print(f"CAFO training completed in {cafo_results['total_training_time']:.2f} seconds")
+                print(f"Total encoder blocks trained: {len(cafo_results['encoder_results'])}")
+                print(f"Total decoder blocks trained: {len(cafo_results['decoder_results'])}")
+                
+            except Exception as e:
+                print(f"CAFO training failed: {str(e)}")
+                print("Falling back to traditional VAE training...")
+                use_cafo_from_config = False
+                
+                # Create new traditional VAE model for fallback
+                fallback_config = {
+                    'input_dim': actual_input_dim,
+                    'latent_dim': model_obj.latent_dim,
+                    'hidden_dims': [256, 128],  # Use simple, working architecture
+                    'learning_rate': config.get('learning_rate', 0.001),
+                    'beta': config.get('beta', 1.0),
+                    'use_cafo': False,
+                    'use_forward_forward': False
+                }
+                model_obj = StandardVAE(fallback_config).to(device)
+                print("Created new traditional VAE model for fallback")
+        
+        # Traditional VAE training (default or fallback)
+        if not use_cafo_from_config and not use_ff_from_config:
+            print("Using traditional VAE training mode")
+            
+            learning_rate = config.get('learning_rate', 0.001)
+            epochs = config.get('epochs', 100)
+            beta = config.get('beta', 1.0)
+            
+            optimizer = optim.Adam(model_obj.parameters(), lr=learning_rate)
+            
+            print(f"Training for {epochs} epochs")
+            print(f"Learning rate: {learning_rate}")
+            print(f"Beta KL weight: {beta}")
+            
+            model_obj.train()
+            for epoch in range(epochs):
+                total_loss = 0
+                total_recon_loss = 0
+                total_kl_loss = 0
+                num_batches = 0
+                
+                for batch_data in train_loader_obj:
+                    if isinstance(batch_data, (list, tuple)) and len(batch_data) >= 1:
+                        data = batch_data[0]
+                    else:
+                        data = batch_data
+                    
+                    data = data.to(device)
+                    optimizer.zero_grad()
+                    
+                    vae_output = model_obj(data)
+                    
+                    if isinstance(vae_output, tuple) and len(vae_output) == 3:
+                        recon_data, mu, logvar = vae_output
+                    elif isinstance(vae_output, dict):
+                        recon_data = vae_output.get('reconstruction', vae_output.get('recon', data))
+                        mu = vae_output.get('mu', torch.zeros(data.size(0), model_obj.latent_dim).to(device))
+                        logvar = vae_output.get('logvar', torch.zeros(data.size(0), model_obj.latent_dim).to(device))
+                    else:
+                        recon_data = vae_output
+                        mu = torch.zeros(data.size(0), model_obj.latent_dim).to(device)
+                        logvar = torch.zeros(data.size(0), model_obj.latent_dim).to(device)
+                    
+                    recon_loss = nn.MSELoss()(recon_data, data)
+                    kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
+                    kl_loss = kl_loss / data.size(0)
+                    
+                    loss = recon_loss + beta * kl_loss
+                    
+                    loss.backward()
+                    optimizer.step()
+                    
+                    total_loss += loss.item()
+                    total_recon_loss += recon_loss.item()
+                    total_kl_loss += kl_loss.item()
+                    num_batches += 1
+                
+                if num_batches > 0:
+                    avg_loss = total_loss / num_batches
+                    avg_recon_loss = total_recon_loss / num_batches
+                    avg_kl_loss = total_kl_loss / num_batches
+                    
+                    print(f"Epoch [{epoch+1}/{epochs}] - Total Loss: {avg_loss:.6f} | Recon Loss: {avg_recon_loss:.6f} | KL Loss: {avg_kl_loss:.6f}")
+                    
+                    epoch_loss_data.append({
+                        'epoch': epoch + 1,
+                        'loss': avg_loss,
+                        'recon_loss': avg_recon_loss,
+                        'kl_loss': avg_kl_loss,
+                        'training_mode': 'traditional'
+                    })
+
+        # Training completion summary
+        training_mode = 'forward_forward' if (hasattr(model_obj, 'use_forward_forward') and model_obj.use_forward_forward and use_ff_from_config) else \
+                       'cafo' if (hasattr(model_obj, 'use_cafo') and model_obj.use_cafo and use_cafo_from_config) else 'traditional'
+        
+        print(f"\\nVAE Model Training Completed - Mode: {training_mode.upper()}")
+        print(f"Loss entries recorded: {len(epoch_loss_data)}")
+
+        # Save trained model
+        output_dir_trained_model = os.path.dirname(args.trained_model)
+        if output_dir_trained_model and not os.path.exists(output_dir_trained_model):
+            os.makedirs(output_dir_trained_model, exist_ok=True)
+        with open(args.trained_model, 'wb') as f:
+            pickle.dump(model_obj.cpu(), f)
+
+        # Save epoch loss data with training summary
+        training_summary = {
+            'training_mode': training_mode,
+            'total_loss_entries': len(epoch_loss_data),
+            'final_loss': epoch_loss_data[-1]['loss'] if epoch_loss_data else 0.0,
+            'model_config': {
+                'input_dim': model_obj.input_dim,
+                'latent_dim': model_obj.latent_dim,
+                'training_method': training_mode
+            },
+            'loss_history': epoch_loss_data
+        }
+
+        output_dir_epoch_loss = os.path.dirname(args.epoch_loss)
+        if output_dir_epoch_loss and not os.path.exists(output_dir_epoch_loss):
+            os.makedirs(output_dir_epoch_loss, exist_ok=True)
+        with open(args.epoch_loss, 'w') as f:
+            json.dump(epoch_loss_data, f, indent=2)
+
+        print(f"Saved trained VAE model to {args.trained_model}")
+        print(f"Saved training summary to {args.epoch_loss}")
+        print(f"Training method used: {training_mode.upper()}")
+    args:
+      - --model
+      - {inputPath: model}
+      - --train_loader
+      - {inputPath: train_loader}
+      - --config
+      - {inputValue: config}
+      - --trained_model
+      - {outputPath: trained_model}
+      - --epoch_loss
+      - {outputPath: epoch_loss}
