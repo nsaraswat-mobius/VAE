@@ -1,0 +1,408 @@
+name: Evaluate ff VAE Model
+description: Evaluates the trained VAE model for failure signature anomaly detection.
+inputs:
+  - {name: trained_model, type: Model}
+  - {name: test_loader, type: Dataset}
+  - {name: config, type: String}
+outputs:
+  - {name: eval_metrics, type: Metrics}
+  - {name: eval_metrics_json, type: String}
+implementation:
+  container:
+    image:gurpreetgandhi/nesy-factory:v30
+    command:
+      - sh
+      - -c
+      - |
+        exec "$0" "$@"
+      - python3
+      - -u
+      - -c
+      - |
+        import argparse
+        import json
+        import os
+        import pickle
+        import sys
+        import numpy as np
+        import torch
+        import torch.nn as nn
+        from sklearn.metrics import roc_auc_score, precision_recall_curve, auc
+        
+        from nesy_factory.VAE.standard_vae import StandardVAE
+        from nesy_factory.VAE.beta_vae import BetaVAE
+        from nesy_factory.VAE.conditional_vae import ConditionalVAE
+
+        def load_model(model_path, device):
+            try:
+                # Try standard PyTorch loading first
+                if model_path.endswith(('.pt', '.pth')):
+                    checkpoint = torch.load(model_path, map_location=device)
+                    if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+                        # Handle checkpoint dictionary
+                        model_state_dict = checkpoint['model_state_dict']
+                        # Reconstruct model architecture (this might need adjustment based on your model)
+                        model = StandardVAE(input_dim=784, hidden_dims=[512, 256], latent_dim=20)  # Example dimensions
+                        model.load_state_dict(model_state_dict)
+                    else:
+                        # Assume it's the model object itself
+                        model = checkpoint
+                else:
+                    # Fallback to pickle
+                    with open(model_path, 'rb') as f:
+                        model = pickle.load(f)
+                
+                model = model.to(device)
+                model.eval()  # Ensure evaluation mode
+                print(f"Successfully loaded model on {device}")
+                return model
+            except Exception as e:
+                print(f"Error loading model from {model_path}: {e}")
+                raise
+
+        def validate_batch(data_loader):
+            try:
+                data_iter = iter(data_loader)
+                sample_batch = next(data_iter)
+                if isinstance(sample_batch, (list, tuple)) and len(sample_batch) >= 1:
+                    batch_size = sample_batch[0].size(0)
+                else:
+                    batch_size = sample_batch.size(0)
+                print(f"Validated data loader with batch size: {batch_size}")
+                return True, batch_size
+            except Exception as e:
+                print(f"Invalid data loader: {e}")
+                return False, 0
+
+        def monitor_memory():
+            if torch.cuda.is_available():
+                allocated = torch.cuda.memory_allocated() / 1024**3
+                reserved = torch.cuda.memory_reserved() / 1024**3
+                print(f"GPU memory - Allocated: {allocated:.2f}GB, Reserved: {reserved:.2f}GB")
+
+        def calculate_reconstruction_error(model, data_loader, device):
+            # Calculate reconstruction error for anomaly detection
+            model.eval()
+            reconstruction_errors = []
+            total_batches = len(data_loader)
+            
+            with torch.no_grad():
+                for i, batch_data in enumerate(data_loader):
+                    if i % 10 == 0:  # Print progress every 10 batches
+                        print(f"Processing batch {i+1}/{total_batches}")
+                        monitor_memory()
+                    
+                    # Handle batch format
+                    if isinstance(batch_data, (list, tuple)) and len(batch_data) >= 1:
+                        data = batch_data[0]
+                    else:
+                        data = batch_data
+                    
+                    if data.numel() == 0:  # Skip empty batches
+                        continue
+                        
+                    data = data.to(device)
+                    
+                    # Forward pass
+                    try:
+                        vae_output = model(data)
+                    except Exception as e:
+                        print(f"Error in model forward pass: {e}")
+                        continue
+                    
+                    # Extract reconstruction from VAE output
+                    if isinstance(vae_output, dict):
+                        possible_recon_keys = ['reconstruction', 'recon', 'x_recon', 'decoded', 'output']
+                        recon_data = None
+                        for key in possible_recon_keys:
+                            if key in vae_output:
+                                recon_data = vae_output[key]
+                                break
+                        if recon_data is None:
+                            recon_data = list(vae_output.values())[0]
+                    elif isinstance(vae_output, tuple):
+                        recon_data = vae_output[0]  # First element is reconstruction
+                    else:
+                        recon_data = vae_output
+                    
+                    # Calculate reconstruction error per sample
+                    try:
+                        mse_per_sample = torch.mean((recon_data - data)**2, dim=1)
+                        reconstruction_errors.extend(mse_per_sample.cpu().numpy())
+                    except Exception as e:
+                        print(f"Error calculating reconstruction error: {e}")
+                        continue
+            
+            return np.array(reconstruction_errors)
+
+        def calculate_vae_losses(model, data_loader, device, beta=1.0):
+            # Calculate VAE-specific losses (ELBO, reconstruction, KL)
+            model.eval()
+            total_elbo = 0
+            total_recon = 0
+            total_kl = 0
+            num_samples = 0
+            
+            with torch.no_grad():
+                for i, batch_data in enumerate(data_loader):
+                    if i % 10 == 0:  # Print progress
+                        print(f"Calculating losses - batch {i+1}/{len(data_loader)}")
+                    
+                    # Handle batch format
+                    if isinstance(batch_data, (list, tuple)) and len(batch_data) >= 1:
+                        data = batch_data[0]
+                    else:
+                        data = batch_data
+                    
+                    if data.numel() == 0:  # Skip empty batches
+                        continue
+                        
+                    data = data.to(device)
+                    
+                    try:
+                        vae_output = model(data)
+                    except Exception as e:
+                        print(f"Error in model forward pass for losses: {e}")
+                        continue
+                    
+                    # Extract components
+                    if isinstance(vae_output, dict):
+                        possible_recon_keys = ['reconstruction', 'recon', 'x_recon', 'decoded', 'output']
+                        possible_mu_keys = ['mu', 'mean', 'latent_mean', 'z_mean']
+                        possible_logvar_keys = ['logvar', 'log_var', 'latent_logvar', 'z_logvar']
+                        
+                        recon_data = None
+                        for key in possible_recon_keys:
+                            if key in vae_output:
+                                recon_data = vae_output[key]
+                                break
+                        
+                        mu = None
+                        for key in possible_mu_keys:
+                            if key in vae_output:
+                                mu = vae_output[key]
+                                break
+                        
+                        logvar = None
+                        for key in possible_logvar_keys:
+                            if key in vae_output:
+                                logvar = vae_output[key]
+                                break
+                        
+                        # Default values if not found
+                        if recon_data is None:
+                            recon_data = list(vae_output.values())[0]
+                        if mu is None:
+                            mu = torch.zeros(data.size(0), getattr(model, 'latent_dim', 16)).to(device)
+                        if logvar is None:
+                            logvar = torch.zeros(data.size(0), getattr(model, 'latent_dim', 16)).to(device)
+                            
+                    elif isinstance(vae_output, tuple) and len(vae_output) >= 3:
+                        recon_data, mu, logvar = vae_output[0], vae_output[1], vae_output[2]
+                    else:
+                        # Fallback: use encode/decode methods
+                        if hasattr(model, 'encode') and hasattr(model, 'decode'):
+                            try:
+                                mu, logvar = model.encode(data)
+                                z = model.reparameterize(mu, logvar)
+                                recon_data = model.decode(z)
+                            except Exception as e:
+                                print(f"Error in encode/decode fallback: {e}")
+                                continue
+                        else:
+                            print("Warning: Cannot extract VAE components, skipping batch")
+                            continue
+                    
+                    # Calculate losses
+                    try:
+                        recon_loss = nn.MSELoss()(recon_data, data)
+                        kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp()) / data.size(0)
+                        elbo_loss = recon_loss + beta * kl_loss
+                        
+                        total_elbo += elbo_loss.item() * data.size(0)
+                        total_recon += recon_loss.item() * data.size(0)
+                        total_kl += kl_loss.item() * data.size(0)
+                        num_samples += data.size(0)
+                    except Exception as e:
+                        print(f"Error calculating losses: {e}")
+                        continue
+            
+            if num_samples == 0:
+                raise ValueError("No valid samples processed for loss calculation")
+            
+            return {
+                'avg_elbo_loss': total_elbo / num_samples,
+                'avg_reconstruction_loss': total_recon / num_samples,
+                'avg_kl_divergence': total_kl / num_samples
+            }
+
+        def detect_anomalies(reconstruction_errors, threshold_percentile=95):
+            # Detect anomalies based on reconstruction error threshold
+            if len(reconstruction_errors) == 0:
+                return {
+                    'threshold': 0.0,
+                    'num_anomalies': 0,
+                    'anomaly_rate': 0.0,
+                    'anomaly_indices': []
+                }
+                
+            threshold = np.percentile(reconstruction_errors, threshold_percentile)
+            anomalies = reconstruction_errors > threshold
+            
+            return {
+                'threshold': float(threshold),
+                'num_anomalies': int(np.sum(anomalies)),
+                'anomaly_rate': float(np.mean(anomalies)),
+                'anomaly_indices': np.where(anomalies)[0].tolist()
+            }
+
+        parser = argparse.ArgumentParser()
+        parser.add_argument('--trained_model', type=str, required=True)
+        parser.add_argument('--test_loader', type=str, required=True)
+        parser.add_argument('--config', type=str, required=True)
+        parser.add_argument('--eval_metrics', type=str, required=True)
+        parser.add_argument('--eval_metrics_json', type=str, required=True)
+        args = parser.parse_args()
+
+        try:
+            config = json.loads(args.config)
+        except json.JSONDecodeError as e:
+            print(f"Error parsing config JSON: {e}")
+            sys.exit(1)
+
+        # Load test data (handle new format with metadata)
+        try:
+            with open(args.test_loader, 'rb') as f:
+                test_data = pickle.load(f)
+                
+            if isinstance(test_data, dict) and 'loader' in test_data:
+                test_loader_obj = test_data['loader']
+                metadata = test_data['metadata']
+                print(f"Loaded test data with {metadata['test_samples']} samples")
+            else:
+                test_loader_obj = test_data
+                metadata = None
+                print("Loaded test data (legacy format)")
+        except Exception as e:
+            print(f"Error loading test data: {e}")
+            sys.exit(1)
+
+        # Validate data loader
+        is_valid, batch_size = validate_batch(test_loader_obj)
+        if not is_valid:
+            print("Invalid test data loader")
+            sys.exit(1)
+
+        # Set device
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        print(f"Using device: {device}")
+
+        # Load trained model
+        try:
+            model_obj = load_model(args.trained_model, device)
+        except Exception as e:
+            print(f"Failed to load model: {e}")
+            sys.exit(1)
+
+        print("--- Starting VAE Model Evaluation ---")
+        print(f"Evaluation device: {device}")
+        print(f"Model type: {type(model_obj).__name__}")
+        print(f"Model parameters: {sum(p.numel() for p in model_obj.parameters()):,}")
+
+        # Calculate VAE losses
+        print("Calculating VAE losses...")
+        beta = config.get('beta', 1.0)
+        try:
+            vae_losses = calculate_vae_losses(model_obj, test_loader_obj, device, beta)
+        except Exception as e:
+            print(f"Error calculating VAE losses: {e}")
+            sys.exit(1)
+
+        # Calculate reconstruction errors for anomaly detection
+        print("Calculating reconstruction errors...")
+        reconstruction_errors = calculate_reconstruction_error(model_obj, test_loader_obj, device)
+
+        if len(reconstruction_errors) == 0:
+            print("Error: No reconstruction errors calculated")
+            sys.exit(1)
+
+        # Detect anomalies using different thresholds
+        print("Performing anomaly detection...")
+        anomaly_thresholds = [90, 95, 99]
+        anomaly_results = {}
+        
+        for threshold in anomaly_thresholds:
+            anomaly_results[f'threshold_{threshold}'] = detect_anomalies(reconstruction_errors, threshold)
+
+        # Calculate summary statistics
+        recon_stats = {
+            'mean': float(np.mean(reconstruction_errors)),
+            'std': float(np.std(reconstruction_errors)),
+            'min': float(np.min(reconstruction_errors)),
+            'max': float(np.max(reconstruction_errors)),
+            'median': float(np.median(reconstruction_errors)),
+            'percentile_90': float(np.percentile(reconstruction_errors, 90)),
+            'percentile_95': float(np.percentile(reconstruction_errors, 95)),
+            'percentile_99': float(np.percentile(reconstruction_errors, 99))
+        }
+
+        # Compile all metrics
+        metrics = {
+            'model_type': config.get('model_type', 'VAE'),
+            'evaluation_config': {
+                'beta': beta,
+                'latent_dim': config.get('latent_dim', 16),
+                'test_samples': len(reconstruction_errors),
+                'batch_size': batch_size
+            },
+            'vae_losses': vae_losses,
+            'reconstruction_error_stats': recon_stats,
+            'anomaly_detection': anomaly_results,
+            'model_info': {
+                'total_parameters': sum(p.numel() for p in model_obj.parameters()),
+                'trainable_parameters': sum(p.numel() for p in model_obj.parameters() if p.requires_grad),
+                'model_class': type(model_obj).__name__
+            },
+            'device_info': str(device)
+        }
+
+        print("--- VAE Evaluation Results ---")
+        print(f"Average ELBO Loss: {vae_losses['avg_elbo_loss']:.6f}")
+        print(f"Average Reconstruction Loss: {vae_losses['avg_reconstruction_loss']:.6f}")
+        print(f"Average KL Divergence: {vae_losses['avg_kl_divergence']:.6f}")
+        print(f"Reconstruction Error - Mean: {recon_stats['mean']:.6f}, Std: {recon_stats['std']:.6f}")
+        
+        for threshold in anomaly_thresholds:
+            result = anomaly_results[f'threshold_{threshold}']
+            print(f"Anomalies at {threshold}th percentile: {result['num_anomalies']} ({result['anomaly_rate']:.2%})")
+
+        print("--- Finished VAE Evaluation ---")
+
+        # Save metrics
+        try:
+            os.makedirs(os.path.dirname(args.eval_metrics), exist_ok=True)
+            with open(args.eval_metrics, "w") as f:
+                json.dump(metrics, f, indent=2)
+
+            # Save metrics JSON (for schema update)
+            os.makedirs(os.path.dirname(args.eval_metrics_json), exist_ok=True)
+            with open(args.eval_metrics_json, "w") as f:
+                json.dump(metrics, f, indent=2)
+
+            print(f"Saved evaluation metrics to {args.eval_metrics}")
+            print(f"Saved evaluation metrics JSON to {args.eval_metrics_json}")
+        except Exception as e:
+            print(f"Error saving metrics: {e}")
+            sys.exit(1)
+
+    args:
+      - --trained_model
+      - {inputPath: trained_model}
+      - --test_loader
+      - {inputPath: test_loader}
+      - --config
+      - {inputValue: config}
+      - --eval_metrics
+      - {outputPath: eval_metrics}
+      - --eval_metrics_json
+      - {outputPath: eval_metrics_json}
