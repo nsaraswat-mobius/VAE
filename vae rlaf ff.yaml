@@ -27,6 +27,7 @@ implementation:
       - python3
       - -u
       - -c
+      - |
         import torch
         import os
         import json
@@ -42,8 +43,8 @@ implementation:
         from torch.utils.data import TensorDataset, DataLoader
 
         class DataWrapper:
-          def __init__(self, data_dict):
-              self.__dict__.update(data_dict)
+            def __init__(self, data_dict):
+                self.__dict__.update(data_dict)
 
         class StandardScaler():
             def __init__(self, mean, std):
@@ -55,63 +56,61 @@ implementation:
                 return (data * self.std) + self.mean
         
         class VAETemporalDataSplitter:
+            def __init__(self, data, config, strategy='temporal_split'):
+                self.data = data
+                self.config = config
+                self.strategy = strategy
+              
+            def create_continual_tasks(self, num_tasks: int = 3) -> List[Dict]:
+                return self._temporal_split(num_tasks)
           
-          def __init__(self, data, config, strategy='temporal_split'):
-              self.data = data
-              self.config = config
-              self.strategy = strategy
+            def _temporal_split(self, num_tasks: int) -> List[Dict]:
+                tasks = []
               
-          def create_continual_tasks(self, num_tasks: int = 3) -> List[Dict]:
-              return self._temporal_split(num_tasks)
-          
-          def _temporal_split(self, num_tasks: int) -> List[Dict]:
-              tasks = []
+                X_train = self.data['X_train']
+                X_test = self.data['X_test']
               
-              X_train = self.data['X_train']
-              X_test = self.data['X_test']
+                train_size = len(X_train)
+                test_size = len(X_test)
               
-              train_size = len(X_train)
-              test_size = len(X_test)
+                train_splits = np.array_split(range(train_size), num_tasks)
+                test_splits = np.array_split(range(test_size), num_tasks)
               
-              train_splits = np.array_split(range(train_size), num_tasks)
-              test_splits = np.array_split(range(test_size), num_tasks)
-              
-              for i in range(num_tasks):
-                  task_data = {
-                      'task_id': i,
-                      'X_train': X_train[train_splits[i]],
-                      'X_test': X_test[test_splits[i]],
-                      'description': f'Temporal Period {i+1}/{num_tasks}',
-                      'split_type': 'temporal'
-                  }
+                for i in range(num_tasks):
+                    task_data = {
+                        'task_id': i,
+                        'X_train': X_train[train_splits[i]],
+                        'X_test': X_test[test_splits[i]],
+                        'description': f'Temporal Period {i+1}/{num_tasks}',
+                        'split_type': 'temporal'
+                    }
                   
-                  # For VAE, input and target are the same (reconstruction task)
-                  train_dataset = TensorDataset(
-                      torch.tensor(task_data['X_train'], dtype=torch.float32), 
-                      torch.tensor(task_data['X_train'], dtype=torch.float32)
-                  )
-                  test_dataset = TensorDataset(
-                      torch.tensor(task_data['X_test'], dtype=torch.float32), 
-                      torch.tensor(task_data['X_test'], dtype=torch.float32)
-                  )
+                    # For VAE, input and target are the same (reconstruction task)
+                    train_dataset = TensorDataset(
+                        torch.tensor(task_data['X_train'], dtype=torch.float32), 
+                        torch.tensor(task_data['X_train'], dtype=torch.float32)
+                    )
+                    test_dataset = TensorDataset(
+                        torch.tensor(task_data['X_test'], dtype=torch.float32), 
+                        torch.tensor(task_data['X_test'], dtype=torch.float32)
+                    )
 
-                  task_data['train_loader'] = DataLoader(
-                      train_dataset, 
-                      batch_size=self.config.get('batch_size', 32), 
-                      shuffle=True
-                  )
-                  task_data['test_loader'] = DataLoader(
-                      test_dataset, 
-                      batch_size=self.config.get('batch_size', 32), 
-                      shuffle=False
-                  )
+                    task_data['train_loader'] = DataLoader(
+                        train_dataset, 
+                        batch_size=self.config.get('batch_size', 32), 
+                        shuffle=True
+                    )
+                    task_data['test_loader'] = DataLoader(
+                        test_dataset, 
+                        batch_size=self.config.get('batch_size', 32), 
+                        shuffle=False
+                    )
                   
-                  tasks.append(task_data)
+                    tasks.append(task_data)
               
-              return tasks
+                return tasks
 
         class ContinualVAETrainer:
-            
             def __init__(self, config: Dict[str, Any]):
                 self.config = config
                 self.results = {}
@@ -132,7 +131,6 @@ implementation:
                 return results
             
             def _train_single_strategy(self, tasks: List[Dict], strategy_name: str, model) -> Dict[str, Any]:
-                
                 task_metrics = []
                 all_task_performance = []
                 previous_task_data = []
@@ -393,7 +391,6 @@ implementation:
                 return result_dict
             
             def _calculate_continual_metrics(self, all_task_performance: List[List[Dict]]) -> Dict[str, float]:
-                
                 final_performance = all_task_performance[-1]
                 average_loss = np.mean([task['loss'] for task in final_performance])
                 average_f1 = np.mean([task.get('anomaly_f1', 0) for task in final_performance])
@@ -568,7 +565,7 @@ implementation:
             print(f"Get instance request URL: {url}, Headers: {headers}, Payload: {payload}")
             response = http.post(url, headers=headers, json=payload, timeout=30)
             response.raise_for_status()
-            print(f"Get instance. Status Code: {response.statusCode}, Full response: {response.json()}")
+            print(f"Get instance. Status Code: {response.status_code}, Full response: {response.json()}")
             return response.json()['content'][0]
 
         def update_instance_field(access_token, domain, schema_id, model_id, field, value):
@@ -585,7 +582,7 @@ implementation:
             print(f"curl -X PATCH '{url}' {headers_str} -d '{json.dumps(payload)}'")
             response = http.patch(url, headers=headers, data=json.dumps(payload), timeout=30)
             response.raise_for_status()
-            print(f"Update instance field. Status Code: {response.statusCode}, Full response: {response.json()}")
+            print(f"Update instance field. Status Code: {response.status_code}, Full response: {response.json()}")
             print(f"Successfully updated field '{field}' for model_id '{model_id}'")
 
         #  Core Logic 
