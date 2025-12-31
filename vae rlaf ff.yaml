@@ -27,7 +27,6 @@ implementation:
       - python3
       - -u
       - -c
-      - |
         import torch
         import os
         import json
@@ -569,7 +568,7 @@ implementation:
             print(f"Get instance request URL: {url}, Headers: {headers}, Payload: {payload}")
             response = http.post(url, headers=headers, json=payload, timeout=30)
             response.raise_for_status()
-            print(f"Get instance. Status Code: {response.status_code}, Full response: {response.json()}")
+            print(f"Get instance. Status Code: {response.statusCode}, Full response: {response.json()}")
             return response.json()['content'][0]
 
         def update_instance_field(access_token, domain, schema_id, model_id, field, value):
@@ -586,7 +585,7 @@ implementation:
             print(f"curl -X PATCH '{url}' {headers_str} -d '{json.dumps(payload)}'")
             response = http.patch(url, headers=headers, data=json.dumps(payload), timeout=30)
             response.raise_for_status()
-            print(f"Update instance field. Status Code: {response.status_code}, Full response: {response.json()}")
+            print(f"Update instance field. Status Code: {response.statusCode}, Full response: {response.json()}")
             print(f"Successfully updated field '{field}' for model_id '{model_id}'")
 
         #  Core Logic 
@@ -850,7 +849,7 @@ implementation:
                     }
                     for key, value in default_metrics.items():
                         cleaned_metrics[key] = value
-                        dqn_params.append({"key": key, "sign": "-", "mul": 1.0}")
+                        dqn_params.append({"key": key, "sign": "-", "mul": 1.0})
                 
                 # EXACTLY 3 metrics for DQN model compatibility (fc1.weight expects [64, 3])
                 if len(dqn_params) > 3:
