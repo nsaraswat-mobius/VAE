@@ -370,7 +370,7 @@ implementation:
         training_mode = 'forward_forward' if (hasattr(model_obj, 'use_forward_forward') and model_obj.use_forward_forward and use_ff_from_config) else \
                         'cafo' if (hasattr(model_obj, 'use_cafo') and model_obj.use_cafo and use_cafo_from_config) else 'traditional'
         
-        print(f"\nVAE Model Training Completed - Mode: {training_mode.upper()}")
+        print(f"\\nVAE Model Training Completed - Mode: {training_mode.upper()}")
         print(f"Loss entries recorded: {len(epoch_loss_data)}")
 
         # Save trained model
