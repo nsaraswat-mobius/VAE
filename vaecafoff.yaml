@@ -23,6 +23,7 @@ implementation:
         import torch
         import torch.nn as nn
         import torch.optim as optim
+        import uuid
         
         from nesy_factory.VAE.standard_vae import StandardVAE
 
@@ -367,9 +368,9 @@ implementation:
 
         # Training completion summary
         training_mode = 'forward_forward' if (hasattr(model_obj, 'use_forward_forward') and model_obj.use_forward_forward and use_ff_from_config) else \
-                       'cafo' if (hasattr(model_obj, 'use_cafo') and model_obj.use_cafo and use_cafo_from_config) else 'traditional'
+                        'cafo' if (hasattr(model_obj, 'use_cafo') and model_obj.use_cafo and use_cafo_from_config) else 'traditional'
         
-        print(f"\\nVAE Model Training Completed - Mode: {training_mode.upper()}")
+        print(f"\nVAE Model Training Completed - Mode: {training_mode.upper()}")
         print(f"Loss entries recorded: {len(epoch_loss_data)}")
 
         # Save trained model
@@ -391,6 +392,10 @@ implementation:
             },
             'loss_history': epoch_loss_data
         }
+
+        # Add UIDs to the epoch loss entries
+        for entry in epoch_loss_data:
+            entry['uid'] = str(uuid.uuid4())
 
         output_dir_epoch_loss = os.path.dirname(args.epoch_loss)
         if output_dir_epoch_loss and not os.path.exists(output_dir_epoch_loss):
