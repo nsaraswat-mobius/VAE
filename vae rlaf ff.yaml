@@ -141,7 +141,9 @@ implementation:
                 print(f"Learning {len(tasks)} sequential VAE tasks for failure signature detection")
                 
                 for task_idx, task_data in enumerate(tasks):
-                    print(f"Learning Task {task_idx + 1}: {task_data['description']}")
+                    # FIX: Use get() with default value for description
+                    description = task_data.get('description', f'Task {task_idx + 1}')
+                    print(f"Learning Task {task_idx + 1}: {description}")
                     
                     if strategy_name == 'naive':
                         training_loader = task_data['train_loader']
@@ -212,11 +214,13 @@ implementation:
                         eval_anomaly = self._evaluate_anomaly_detection(model, tasks[eval_task_idx]['test_loader'])
                         eval_metrics.update(eval_anomaly)
                         
+                        # FIX: Use get() with default value for description
+                        task_description = tasks[eval_task_idx].get('description', f'Task {eval_task_idx + 1}')
                         task_performance.append({
                             'task_id': eval_task_idx,
                             'loss': eval_metrics.get('loss', 0),
                             'anomaly_f1': eval_metrics.get('anomaly_f1', 0),
-                            'description': tasks[eval_task_idx]['description']
+                            'description': task_description
                         })
                     
                     all_task_performance.append(task_performance)
@@ -613,6 +617,17 @@ implementation:
             else:
                 tasks = tasks_data
             
+            # FIX: Validate tasks structure and limit number of tasks
+            print(f"Loaded {len(tasks)} tasks")
+            if len(tasks) > 100:  # Cap at reasonable number
+                print(f"Warning: Too many tasks ({len(tasks)}). Limiting to first 50 tasks.")
+                tasks = tasks[:50]
+            
+            # Ensure each task has required keys
+            for i, task in enumerate(tasks):
+                if 'description' not in task:
+                    task['description'] = f'Task {i + 1}'
+            
             config.update(action)
             
             # Determine input dimension from config or data
@@ -623,15 +638,22 @@ implementation:
                 sample_data = next(iter(tasks[0]['train_loader']))[0] if tasks else None
                 input_dim = sample_data.shape[1] if sample_data is not None else config.get('input_dim', 21)
             
-            # VAE model configuration
+            # VAE model configuration - handle hidden_dim as list
+            hidden_dim = config.get('hidden_dim', 128)
+            # Convert to list if it's a single integer
+            if isinstance(hidden_dim, (int, float)):
+                hidden_dim = [int(hidden_dim)]
+            
             model_config = {
                 'input_dim': input_dim,
-                'hidden_dim': config.get('hidden_dim', 128),
+                'hidden_dim': hidden_dim,  # Now can be list or int
                 'latent_dim': config.get('latent_dim', 32),
                 'learning_rate': config.get('learning_rate', 0.001),
                 'beta': config.get('beta', 1.0),  # For BetaVAE
                 'epochs': config.get('epochs', 50)
             }
+
+            print(f"VAE Model Config - hidden_dim: {hidden_dim}, input_dim: {input_dim}")
 
             # Initialize VAE model based on type
             model_type = config.get('model_type', 'StandardVAE')
@@ -828,7 +850,7 @@ implementation:
                     }
                     for key, value in default_metrics.items():
                         cleaned_metrics[key] = value
-                        dqn_params.append({"key": key, "sign": "-", "mul": 1.0})
+                        dqn_params.append({"key": key, "sign": "-", "mul": 1.0}")
                 
                 # EXACTLY 3 metrics for DQN model compatibility (fc1.weight expects [64, 3])
                 if len(dqn_params) > 3:
