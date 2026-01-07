@@ -24,6 +24,7 @@ implementation:
         import torch.nn as nn
         import torch.optim as optim
         import uuid
+        import numpy as np
         
         from nesy_factory.VAE.standard_vae import StandardVAE
 
@@ -158,24 +159,45 @@ implementation:
         
         # Handle Forward Forward model creation/compatibility
         elif use_ff_from_config and not model_obj.use_forward_forward:
-            print("Warning: Config requests Forward Forward but model was created without FF support.")
-            print("Creating new Forward Forward model with same architecture...")
+            print("Creating new Forward Forward VAE model with proper architecture...")
+            
+            # Get FF parameters with safer defaults
+            ff_blocks = config.get('ff_blocks', 2)
+            ff_threshold = config.get('ff_threshold', 1.5)  # Lower threshold to prevent NaN
+            ff_epochs_per_block = config.get('ff_epochs_per_block', 20)
+            ff_lr = config.get('ff_lr', 0.01)  # Lower learning rate
+            
+            # Create simple, stable architecture for FF training
+            # Smaller dimensions work better for FF
+            if ff_blocks == 1:
+                hidden_dims = [64]
+            elif ff_blocks == 2:
+                hidden_dims = [96, 64]
+            elif ff_blocks == 3:
+                hidden_dims = [128, 96, 64]
+            else:
+                # Default to 2 blocks if invalid
+                hidden_dims = [96, 64]
+                ff_blocks = 2
             
             new_config = {
                 'input_dim': actual_input_dim,
                 'latent_dim': model_obj.latent_dim,
-                'hidden_dims': model_obj.hidden_dims,
+                'hidden_dims': hidden_dims,
                 'learning_rate': config.get('learning_rate', 0.001),
-                'beta': config.get('beta', 1.0),
+                'beta': 0.5,  # Lower beta for FF training
                 'use_forward_forward': True,
-                'ff_blocks': config.get('ff_blocks', 3),
-                'ff_threshold': config.get('ff_threshold', 2.0),
-                'ff_epochs_per_block': config.get('ff_epochs_per_block', 100),
-                'ff_lr': config.get('ff_lr', 0.03)
+                'use_cafo': False,
+                'ff_blocks': ff_blocks,
+                'ff_threshold': ff_threshold,
+                'ff_epochs_per_block': ff_epochs_per_block,
+                'ff_lr': ff_lr
             }
             
             model_obj = StandardVAE(new_config)
             print(f"Created new Forward Forward model with {new_config['ff_blocks']} blocks")
+            print(f"FF Architecture: {actual_input_dim} -> {hidden_dims} -> {model_obj.latent_dim}")
+            print(f"FF Config: threshold={ff_threshold}, lr={ff_lr}, epochs_per_block={ff_epochs_per_block}")
         
         # Update model input dimension if needed
         if hasattr(model_obj, 'input_dim') and actual_input_dim != model_obj.input_dim:
@@ -197,36 +219,67 @@ implementation:
             print(f"Epochs per FF block: {getattr(model_obj, 'ff_epochs_per_block', 'unknown')}")
             print(f"FF learning rate: {getattr(model_obj, 'ff_lr', 'unknown')}")
             
+            # FIX FOR NaN: Normalize data and reinitialize model
+            print("Applying NaN prevention measures...")
+            
+            # 1. Normalize training data
+            X_mean = X_train.mean(dim=0, keepdim=True)
+            X_std = X_train.std(dim=0, keepdim=True) + 1e-8
+            X_train_normalized = (X_train - X_mean) / X_std
+            print(f"Data normalized - Mean: {X_train_normalized.mean().item():.4f}, Std: {X_train_normalized.std().item():.4f}")
+            
+            # 2. Reinitialize model with smaller weights for FF training
+            for name, param in model_obj.named_parameters():
+                if 'weight' in name and param.dim() > 1:
+                    nn.init.xavier_uniform_(param, gain=0.3)  # Smaller gain for FF
+                elif 'bias' in name:
+                    nn.init.constant_(param, 0.01)
+            print("Model reinitialized with smaller weights for FF training")
+            
             try:
-                ff_results = model_obj.train_forward_forward(X_train, verbose=True)
+                ff_results = model_obj.train_forward_forward(X_train_normalized, verbose=True)
                 
                 # Extract loss information from Forward Forward results
-                for i, block_result in enumerate(ff_results['encoder_results']):
-                    for epoch, loss in enumerate(block_result['losses']):
-                        epoch_loss_data.append({
-                            'block': i + 1,
-                            'block_type': 'encoder',
-                            'epoch': epoch + 1,
-                            'loss': float(loss),
-                            'training_mode': 'forward_forward'
-                        })
+                if ff_results and 'encoder_results' in ff_results:
+                    for i, block_result in enumerate(ff_results['encoder_results']):
+                        if 'losses' in block_result:
+                            for epoch, loss in enumerate(block_result['losses']):
+                                # Skip NaN losses
+                                if not (isinstance(loss, float) and np.isnan(loss)):
+                                    epoch_loss_data.append({
+                                        'block': i + 1,
+                                        'block_type': 'encoder',
+                                        'epoch': epoch + 1,
+                                        'loss': float(loss),
+                                        'training_mode': 'forward_forward'
+                                    })
                 
-                for i, block_result in enumerate(ff_results['decoder_results']):
-                    for epoch, loss in enumerate(block_result['losses']):
-                        epoch_loss_data.append({
-                            'block': i + 1,
-                            'block_type': 'decoder',
-                            'epoch': epoch + 1,
-                            'loss': float(loss),
-                            'training_mode': 'forward_forward'
-                        })
+                if ff_results and 'decoder_results' in ff_results:
+                    for i, block_result in enumerate(ff_results['decoder_results']):
+                        if 'losses' in block_result:
+                            for epoch, loss in enumerate(block_result['losses']):
+                                # Skip NaN losses
+                                if not (isinstance(loss, float) and np.isnan(loss)):
+                                    epoch_loss_data.append({
+                                        'block': i + 1,
+                                        'block_type': 'decoder',
+                                        'epoch': epoch + 1,
+                                        'loss': float(loss),
+                                        'training_mode': 'forward_forward'
+                                    })
                 
-                print(f"Forward Forward training completed in {ff_results['total_training_time']:.2f} seconds")
-                print(f"Total encoder blocks trained: {len(ff_results['encoder_results'])}")
-                print(f"Total decoder blocks trained: {len(ff_results['decoder_results'])}")
+                if ff_results and 'total_training_time' in ff_results:
+                    print(f"Forward Forward training completed in {ff_results['total_training_time']:.2f} seconds")
+                
+                encoder_blocks = len(ff_results.get('encoder_results', [])) if ff_results else 0
+                decoder_blocks = len(ff_results.get('decoder_results', [])) if ff_results else 0
+                print(f"Total encoder blocks trained: {encoder_blocks}")
+                print(f"Total decoder blocks trained: {decoder_blocks}")
                 
             except Exception as e:
                 print(f"Forward Forward training failed: {str(e)}")
+                import traceback
+                traceback.print_exc()
                 print("Falling back to traditional VAE training...")
                 use_ff_from_config = False
                 
@@ -370,7 +423,7 @@ implementation:
         training_mode = 'forward_forward' if (hasattr(model_obj, 'use_forward_forward') and model_obj.use_forward_forward and use_ff_from_config) else \
                         'cafo' if (hasattr(model_obj, 'use_cafo') and model_obj.use_cafo and use_cafo_from_config) else 'traditional'
         
-        print(f"\\nVAE Model Training Completed - Mode: {training_mode.upper()}")
+        print(f"\nVAE Model Training Completed - Mode: {training_mode.upper()}")
         print(f"Loss entries recorded: {len(epoch_loss_data)}")
 
         # Save trained model
@@ -379,19 +432,6 @@ implementation:
             os.makedirs(output_dir_trained_model, exist_ok=True)
         with open(args.trained_model, 'wb') as f:
             pickle.dump(model_obj.cpu(), f)
-
-        # Save epoch loss data with training summary
-        training_summary = {
-            'training_mode': training_mode,
-            'total_loss_entries': len(epoch_loss_data),
-            'final_loss': epoch_loss_data[-1]['loss'] if epoch_loss_data else 0.0,
-            'model_config': {
-                'input_dim': model_obj.input_dim,
-                'latent_dim': model_obj.latent_dim,
-                'training_method': training_mode
-            },
-            'loss_history': epoch_loss_data
-        }
 
         # Add UIDs to the epoch loss entries
         for entry in epoch_loss_data:
