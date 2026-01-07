@@ -1,4 +1,4 @@
-name: Initialize VAE Model 1
+name: Initialize VAE Model 2
 description: Initializes the VAE model for signature failure detection.
 inputs:
   - {name: config, type: String}
@@ -44,21 +44,20 @@ implementation:
         
         print(f"Using input_dim: {input_dim}")
 
-        # MINIMAL CHANGE: Resolve hidden dimension safely for all models
+        # FIXED: Using h_dim consistently to avoid NameError
         h_dim = config.get('hidden_dim', config.get('hidden_dims', [32, 16]))
 
         model_config = {
             'input_dim': input_dim,
             'latent_dim': config['latent_dim'],
-            'hidden_dim': h_dim,       # Standard/CAFO usually look here
-            'hidden_dims': h_dims if isinstance(h_dim, list) else [h_dim], # FF looks here
+            'hidden_dim': h_dim,
+            'hidden_dims': h_dim if isinstance(h_dim, list) else [h_dim],
             'num_layers': config.get('num_layers', 2),
             'dropout': config.get('dropout', 0.1),
             'optimizer': 'adam',
             'learning_rate': config.get('learning_rate', 0.001),
             'epochs': config.get('epochs', 1),
             'loss_function': 'ELBO',
-            # Pass FF flags if they exist in config
             'use_forward_forward': config.get('use_forward_forward', False),
             'use_cafo': config.get('use_cafo', False),
             'ff_threshold': config.get('ff_threshold', 2.0),
