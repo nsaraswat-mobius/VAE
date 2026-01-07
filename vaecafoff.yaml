@@ -216,7 +216,6 @@ implementation:
             
             # Custom FF training implementation
             def custom_ff_training(model, X, blocks=2, epochs_per_block=20, lr=0.005):
-                """Custom Forward Forward training that actually works"""
                 results = {
                     'encoder_results': [],
                     'decoder_results': [],
