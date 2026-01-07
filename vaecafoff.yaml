@@ -1,4 +1,4 @@
-name: Train VAE Model
+name: Train VAE Model 1
 description: Trains the VAE model with Traditional, CAFO, or Forward Forward methods.
 inputs:
   - {name: model, type: Model}
