@@ -1,4 +1,4 @@
-name: Initialize VAE Model
+name: Initialize VAE Model 1
 description: Initializes the VAE model for signature failure detection.
 inputs:
   - {name: config, type: String}
@@ -35,7 +35,6 @@ implementation:
 
         print(f"Received config: {json.dumps(config, indent=2)}")
 
-        # Use processed_input_dim if available (after one-hot encoding), otherwise feature count
         if 'processed_input_dim' in config:
             input_dim = config['processed_input_dim']
         elif 'input_dim' in config:
@@ -45,16 +44,25 @@ implementation:
         
         print(f"Using input_dim: {input_dim}")
 
+        # MINIMAL CHANGE: Resolve hidden dimension safely for all models
+        h_dim = config.get('hidden_dim', config.get('hidden_dims', [32, 16]))
+
         model_config = {
             'input_dim': input_dim,
             'latent_dim': config['latent_dim'],
-            'hidden_dim': config['hidden_dim'],
-            'num_layers': config['num_layers'],
-            'dropout': config['dropout'],
+            'hidden_dim': h_dim,       # Standard/CAFO usually look here
+            'hidden_dims': h_dims if isinstance(h_dim, list) else [h_dim], # FF looks here
+            'num_layers': config.get('num_layers', 2),
+            'dropout': config.get('dropout', 0.1),
             'optimizer': 'adam',
-            'learning_rate': config['learning_rate'],
-            'epochs': config['epochs'],
-            'loss_function': 'ELBO'
+            'learning_rate': config.get('learning_rate', 0.001),
+            'epochs': config.get('epochs', 1),
+            'loss_function': 'ELBO',
+            # Pass FF flags if they exist in config
+            'use_forward_forward': config.get('use_forward_forward', False),
+            'use_cafo': config.get('use_cafo', False),
+            'ff_threshold': config.get('ff_threshold', 2.0),
+            'ff_lr': config.get('ff_lr', 0.0001)
         }
 
         model_type = config.get('model_type', 'StandardVAE')
