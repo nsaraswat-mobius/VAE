@@ -1,4 +1,4 @@
-name: Train VAE Model 2
+name: Train VAE Model 3
 description: Trains the VAE model with Traditional, CAFO, or Forward Forward methods.
 inputs:
   - {name: model, type: Model}
@@ -200,24 +200,26 @@ implementation:
             try:
                 ff_results = model_obj.train_forward_forward(X_train, verbose=False)
                 
-                # Extract loss information from Forward Forward results
+                # Extract loss information from Forward Forward results - ONLY FINAL EPOCH PER BLOCK
                 for i, block_result in enumerate(ff_results['encoder_results']):
-                    for epoch, loss in enumerate(block_result['losses']):
+                    if block_result['losses']:  # Check if there are losses
+                        final_loss = block_result['losses'][-1]  # Get last epoch loss
                         epoch_loss_data.append({
                             'block': i + 1,
                             'block_type': 'encoder',
-                            'epoch': epoch + 1,
-                            'loss': float(loss),
+                            'epoch': len(block_result['losses']),  # Final epoch number
+                            'loss': float(final_loss),
                             'training_mode': 'forward_forward'
                         })
                 
                 for i, block_result in enumerate(ff_results['decoder_results']):
-                    for epoch, loss in enumerate(block_result['losses']):
+                    if block_result['losses']:  # Check if there are losses
+                        final_loss = block_result['losses'][-1]  # Get last epoch loss
                         epoch_loss_data.append({
                             'block': i + 1,
                             'block_type': 'decoder',
-                            'epoch': epoch + 1,
-                            'loss': float(loss),
+                            'epoch': len(block_result['losses']),  # Final epoch number
+                            'loss': float(final_loss),
                             'training_mode': 'forward_forward'
                         })
                 
@@ -251,24 +253,26 @@ implementation:
             try:
                 cafo_results = model_obj.train_cafo(X_train, verbose=False)
                 
-                # Extract loss information from CAFO results
+                # Extract loss information from CAFO results - ONLY FINAL EPOCH PER BLOCK
                 for i, block_result in enumerate(cafo_results['encoder_results']):
-                    for epoch, loss in enumerate(block_result['train_losses']):
+                    if block_result['train_losses']:  # Check if there are losses
+                        final_loss = block_result['train_losses'][-1]  # Get last epoch loss
                         epoch_loss_data.append({
                             'block': i + 1,
                             'block_type': 'encoder',
-                            'epoch': epoch + 1,
-                            'loss': float(loss),
+                            'epoch': len(block_result['train_losses']),  # Final epoch number
+                            'loss': float(final_loss),
                             'training_mode': 'cafo'
                         })
                 
                 for i, block_result in enumerate(cafo_results['decoder_results']):
-                    for epoch, loss in enumerate(block_result['train_losses']):
+                    if block_result['train_losses']:  # Check if there are losses
+                        final_loss = block_result['train_losses'][-1]  # Get last epoch loss
                         epoch_loss_data.append({
                             'block': i + 1,
                             'block_type': 'decoder',
-                            'epoch': epoch + 1,
-                            'loss': float(loss),
+                            'epoch': len(block_result['train_losses']),  # Final epoch number
+                            'loss': float(final_loss),
                             'training_mode': 'cafo'
                         })
                 
@@ -360,6 +364,8 @@ implementation:
                     if (epoch + 1) % 10 == 0 or epoch == 0 or epoch == epochs - 1:
                         print(f"Epoch [{epoch+1}/{epochs}] - Total Loss: {avg_loss:.6f} | Recon Loss: {avg_recon_loss:.6f} | KL Loss: {avg_kl_loss:.6f}")
                     
+                    # For traditional training, we still keep all epochs in the output
+                    # but we could also change this to just the final epoch if desired
                     epoch_loss_data.append({
                         'epoch': epoch + 1,
                         'loss': avg_loss,
@@ -372,7 +378,7 @@ implementation:
         training_mode = 'forward_forward' if (hasattr(model_obj, 'use_forward_forward') and model_obj.use_forward_forward and use_ff_from_config) else \
                         'cafo' if (hasattr(model_obj, 'use_cafo') and model_obj.use_cafo and use_cafo_from_config) else 'traditional'
         
-        print(f"\\nVAE Model Training Completed - Mode: {training_mode.upper()}")
+        print(f"\nVAE Model Training Completed - Mode: {training_mode.upper()}")
         print(f"Loss entries recorded: {len(epoch_loss_data)}")
 
         # Save trained model
