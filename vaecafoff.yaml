@@ -1,4 +1,4 @@
-name: Train VAE Model
+name: Train VAE Model 1
 description: Trains the VAE model with Traditional, CAFO, or Forward Forward methods.
 inputs:
   - {name: model, type: Model}
@@ -198,7 +198,7 @@ implementation:
             print(f"FF learning rate: {getattr(model_obj, 'ff_lr', 'unknown')}")
             
             try:
-                ff_results = model_obj.train_forward_forward(X_train, verbose=True)
+                ff_results = model_obj.train_forward_forward(X_train, verbose=False)
                 
                 # Extract loss information from Forward Forward results
                 for i, block_result in enumerate(ff_results['encoder_results']):
@@ -249,7 +249,7 @@ implementation:
             print(f"Epochs per block: {getattr(model_obj, 'epochs_per_block', 'unknown')}")
             
             try:
-                cafo_results = model_obj.train_cafo(X_train, verbose=True)
+                cafo_results = model_obj.train_cafo(X_train, verbose=False)
                 
                 # Extract loss information from CAFO results
                 for i, block_result in enumerate(cafo_results['encoder_results']):
@@ -356,7 +356,9 @@ implementation:
                     avg_recon_loss = total_recon_loss / num_batches
                     avg_kl_loss = total_kl_loss / num_batches
                     
-                    print(f"Epoch [{epoch+1}/{epochs}] - Total Loss: {avg_loss:.6f} | Recon Loss: {avg_recon_loss:.6f} | KL Loss: {avg_kl_loss:.6f}")
+                    # Only log every 10 epochs to reduce verbosity
+                    if (epoch + 1) % 10 == 0 or epoch == 0 or epoch == epochs - 1:
+                        print(f"Epoch [{epoch+1}/{epochs}] - Total Loss: {avg_loss:.6f} | Recon Loss: {avg_recon_loss:.6f} | KL Loss: {avg_kl_loss:.6f}")
                     
                     epoch_loss_data.append({
                         'epoch': epoch + 1,
@@ -370,7 +372,7 @@ implementation:
         training_mode = 'forward_forward' if (hasattr(model_obj, 'use_forward_forward') and model_obj.use_forward_forward and use_ff_from_config) else \
                         'cafo' if (hasattr(model_obj, 'use_cafo') and model_obj.use_cafo and use_cafo_from_config) else 'traditional'
         
-        print(f"\\nVAE Model Training Completed - Mode: {training_mode.upper()}")
+        print(f"\nVAE Model Training Completed - Mode: {training_mode.upper()}")
         print(f"Loss entries recorded: {len(epoch_loss_data)}")
 
         # Save trained model
