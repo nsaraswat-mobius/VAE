@@ -1,0 +1,65 @@
+name: cdn_downloader
+description: Downloads trained model, embeddings data, metadata CSV, and config files from CDN URLs and saves them locally with proper directory structure.
+inputs:
+  - {name: file, type: String}
+outputs:
+  - {name: file_path, type: String}
+implementation:
+  container:
+    image: python:3.9
+    command:
+      - sh
+      - -c
+      - |
+        PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet requests || \
+        PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet requests --user
+        exec "$0" "$@"
+      - python3
+      - -u
+      - -c
+      - |
+        import argparse
+        import os
+        import requests
+        parser = argparse.ArgumentParser()
+        parser.add_argument('--file', type=str, required=True)
+        parser.add_argument('--file_path', type=str, required=True)
+        args = parser.parse_args()
+        print("=" * 70)
+        print("DOWNLOADING file")
+        print("=" * 70)
+        print("Received URLs:")
+        print("  - Model URL:", args.file)
+        try:
+            print("1. Fetching file from CDN...")
+            print("   URL:", args.file)
+            resp_file = requests.get(args.file, timeout=300)
+            resp_file.raise_for_status()
+            
+            os.makedirs(args.file_path, exist_ok=True)
+            filename = os.path.basename(args.file)
+            full_path = os.path.join(args.file_path, filename)
+            with open(full_path, "wb") as f:
+                f.write(resp_file.content)
+            print("   Saved at:", full_path)
+            print("   Size:", len(resp_file.content), "bytes")
+            print()
+            print("=" * 70)
+            print("FILE DOWNLOADED SUCCESSFULLY!")
+            print("=" * 70)
+        except requests.exceptions.Timeout:
+            print("Error: Request timed out while downloading from CDN")
+            exit(1)
+        except requests.exceptions.RequestException as e:
+            print("Error: Network error during download:", str(e))
+            exit(1)
+        except Exception as e:
+            print("Error: Failed to download files:", str(e))
+            import traceback
+            traceback.print_exc()
+            exit(1)
+    args:
+      - --file
+      - {inputValue: file}
+      - --file_path
+      - {outputPath: file_path}
