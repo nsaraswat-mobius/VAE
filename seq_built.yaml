@@ -1,0 +1,135 @@
+name: build_sequential_vae_model
+description: Initializes Sequential VAE model with specified hyperparameters and saves architecture
+inputs:
+  - {name: num_features, type: Integer, description: "Number of input features", default: "16197"}
+  - {name: seq_length, type: Integer, description: "Sequence length (timesteps)", default: "25"}
+  - {name: hidden_dim, type: Integer, description: "Hidden dimension size", default: "256"}
+  - {name: latent_dim, type: Integer, description: "Latent dimension size", default: "128"}
+outputs:
+  - {name: model_path, type: String, description: "Path to saved model checkpoint"}
+  - {name: config_path, type: String, description: "Path to model config JSON"}
+
+implementation:
+  container:
+    image: kushagra4761/nesy-factory:latest
+    command:
+      - sh
+      - -c
+      - |
+        PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet torch numpy git+https://github.com/gaiangroup/nesy-factory-library.git || \
+        PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet torch numpy git+https://github.com/gaiangroup/nesy-factory-library.git --user
+        exec "$0" "$@"
+      - python3
+      - -u
+      - -c
+      - |
+        import argparse
+        import os
+        import json
+        import torch
+        from nesy_factory.VAE.sequential_vae import create_sequential_vae
+        
+        parser = argparse.ArgumentParser()
+        parser.add_argument('--num_features', type=int, default=16197)
+        parser.add_argument('--seq_length', type=int, default=25)
+        parser.add_argument('--hidden_dim', type=int, default=256)
+        parser.add_argument('--latent_dim', type=int, default=128)
+        parser.add_argument('--model_path', type=str, required=True)
+        parser.add_argument('--config_path', type=str, required=True)
+        args = parser.parse_args()
+        
+        print("=" * 70)
+        print("BUILDING SEQUENTIAL VAE MODEL (from nesy-factory)")
+        print("=" * 70)
+        
+        try:
+            print("\\n[1/3] Creating model from nesy-factory library...")
+            print(f"   Input features: {args.num_features}")
+            print(f"   Sequence length: {args.seq_length}")
+            print(f"   Hidden dimension: {args.hidden_dim}")
+            print(f"   Latent dimension: {args.latent_dim}")
+            
+            # Use factory function from nesy-factory
+            model = create_sequential_vae(
+                input_dim=args.num_features,
+                latent_dim=args.latent_dim,
+                hidden_dim=args.hidden_dim,
+                seq_length=args.seq_length,
+                rnn_type='lstm',
+                num_layers=2
+            )
+            
+            # Count parameters
+            total_params = sum(p.numel() for p in model.parameters())
+            trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+            print(f"   Total parameters: {total_params:,}")
+            print(f"   Trainable parameters: {trainable_params:,}")
+            
+            # Save model
+            print("\\n[2/3] Saving model checkpoint...")
+            os.makedirs(args.model_path, exist_ok=True)
+            os.makedirs(args.config_path, exist_ok=True)
+            
+            model_file = os.path.join(args.model_path, "sequential_vae_init.pt")
+            torch.save(model.state_dict(), model_file)
+            print(f"   Model saved to: {model_file}")
+            print(f"   File size: {os.path.getsize(model_file) / 1e6:.2f} MB")
+            
+            # Write model path to file for Kubeflow
+            with open(os.path.join(args.model_path, "data"), "w") as f:
+                f.write(model_file)
+            
+            # Save configuration
+            print("\\n[3/3] Saving model configuration...")
+            config = {
+                "model_type": "SequentialVAE",
+                "library": "nesy-factory",
+                "input_dim": args.num_features,
+                "seq_length": args.seq_length,
+                "latent_dim": args.latent_dim,
+                "hidden_dim": args.hidden_dim,
+                "rnn_type": "lstm",
+                "num_layers": 2,
+                "total_parameters": total_params,
+                "trainable_parameters": trainable_params,
+                "model_file": model_file
+            }
+            
+            config_file = os.path.join(args.config_path, "model_config.json")
+            with open(config_file, 'w') as f:
+                json.dump(config, f, indent=2)
+            print(f"   Config saved to: {config_file}")
+            
+            # Write config path to file for Kubeflow
+            with open(os.path.join(args.config_path, "data"), "w") as f:
+                f.write(config_file)
+            
+            print("\\n" + "=" * 70)
+            print("MODEL INITIALIZATION COMPLETE!")
+            print("=" * 70)
+            print(f"\\nModel Summary:")
+            print(f"  Type: Sequential VAE (LSTM-based from nesy-factory)")
+            print(f"  Total params: {total_params:,}")
+            print(f"  Input shape: (batch_size, {args.seq_length}, {args.num_features})")
+            print(f"  Latent dim: {args.latent_dim}")
+            print(f"  Status: Ready for training")
+            
+        except Exception as e:
+            print(f"Error during model building: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            exit(1)
+    
+    args:
+      - --num_features
+      - {inputValue: num_features}
+      - --seq_length
+      - {inputValue: seq_length}
+      - --hidden_dim
+      - {inputValue: hidden_dim}
+      - --latent_dim
+      - {inputValue: latent_dim}
+      - --model_path
+      - {outputPath: model_path}
+      - --config_path
+      - {outputPath: config_path}
