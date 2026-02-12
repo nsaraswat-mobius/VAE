@@ -1,4 +1,4 @@
-name: preprocess_worldbank_tensor
+name: preprocess_worldbank_tensor 1
 description: Preprocesses World Bank parquet data - handles Inf values, normalizes, builds temporal sequences (country groups), pads to 25 timesteps, outputs torch tensor
 inputs:
   - {name: parquet_path, type: String, description: "Path to tensor_values.parquet"}
