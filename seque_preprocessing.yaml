@@ -150,7 +150,7 @@ implementation:
     
     args:
       - --parquet_path
-      - {inputValue: parquet_path}
+      - {inputPath: parquet_path}
       - --num_features
       - {inputValue: num_features}
       - --seq_length
