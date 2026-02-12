@@ -1,4 +1,4 @@
-name: preprocess_worldbank_tensor 1
+name: preprocess_worldbank_tensor
 description: Preprocesses World Bank parquet data - handles Inf values, normalizes, builds temporal sequences (country groups), pads to 25 timesteps, outputs torch tensor
 inputs:
   - {name: parquet_path, type: String, description: "Path to tensor_values.parquet"}
@@ -45,7 +45,20 @@ implementation:
         try:
             # Step 1: Load parquet
             print("\\n[1/5] Loading parquet file...")
-            pf = pq.ParquetFile(args.parquet_path)
+            
+            # Handle Kubeflow artifact directory structure
+            parquet_path = args.parquet_path
+            if os.path.isdir(parquet_path):
+                # Find .parquet file in directory
+                files = [f for f in os.listdir(parquet_path) if f.endswith('.parquet')]
+                if files:
+                    parquet_path = os.path.join(parquet_path, files[0])
+                    print(f"   Found parquet file: {parquet_path}")
+                else:
+                    raise FileNotFoundError(f"No .parquet files found in {parquet_path}")
+            
+            print(f"   Reading from: {parquet_path}")
+            pf = pq.ParquetFile(parquet_path)
             df = pf.read().to_pandas()
             print(f"   Loaded: {df.shape[0]} rows x {df.shape[1]} columns")
             
@@ -102,14 +115,21 @@ implementation:
             
             # Step 5: Save as torch tensor
             print("\\n[5/5] Saving preprocessed tensor...")
+            
+            # Ensure Kubeflow output directories exist
             os.makedirs(args.preprocessed_path, exist_ok=True)
             os.makedirs(args.metadata_path, exist_ok=True)
             
             tensor = torch.FloatTensor(sequences)
+            # Save tensor to output path
             output_file = os.path.join(args.preprocessed_path, "tensor_preprocessed.pt")
             torch.save(tensor, output_file)
             print(f"   Saved to: {output_file}")
             print(f"   File size: {os.path.getsize(output_file) / 1e9:.2f} GB")
+            
+            # Write output path to file for Kubeflow
+            with open(os.path.join(args.preprocessed_path, "data"), "w") as f:
+                f.write(output_file)
             
             # Save metadata
             metadata = {
@@ -128,6 +148,10 @@ implementation:
             with open(metadata_file, 'w') as f:
                 json.dump(metadata, f, indent=2)
             print(f"   Metadata saved: {metadata_file}")
+            
+            # Write metadata path to file for Kubeflow
+            with open(os.path.join(args.metadata_path, "data"), "w") as f:
+                f.write(metadata_file)
             
             print("\\n" + "=" * 70)
             print("PREPROCESSING COMPLETE!")
