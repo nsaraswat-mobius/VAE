@@ -1,4 +1,4 @@
-name: preprocess_worldbank_tensor
+name: preprocess_worldbank_tensor 2
 description: Preprocesses World Bank parquet data - handles Inf values, normalizes, builds temporal sequences (country groups), pads to 25 timesteps, outputs torch tensor
 inputs:
   - {name: parquet_path, type: String, description: "Path to tensor_values.parquet"}
@@ -61,6 +61,7 @@ implementation:
             pf = pq.ParquetFile(parquet_path)
             df = pf.read().to_pandas()
             print(f"   Loaded: {df.shape[0]} rows x {df.shape[1]} columns")
+            print(f"   Columns: {df.columns.tolist()[:10]}... (showing first 10)")
             
             # Get feature columns
             feature_cols = [c for c in df.columns if c.startswith('I')][:args.num_features]
@@ -85,7 +86,22 @@ implementation:
             # Step 4: Build sequences (group by country, sort by year)
             print("\\n[4/5] Building temporal sequences...")
             df_clean = pd.DataFrame(data_normalized, columns=feature_cols)
-            df_clean['market_id'] = df['index'].values
+            
+            # Check if 'index' column exists, otherwise use the dataframe index
+            if 'index' in df.columns:
+                df_clean['market_id'] = df['index'].values
+            else:
+                # Try other possible identifier columns
+                identifier_cols = [col for col in df.columns if col not in feature_cols]
+                if identifier_cols:
+                    print(f"   Available identifier columns: {identifier_cols}")
+                    market_id_col = identifier_cols[0]
+                    df_clean['market_id'] = df[market_id_col].values
+                    print(f"   Using '{market_id_col}' as market identifier")
+                else:
+                    # Use index as market_id
+                    df_clean['market_id'] = df.index.astype(str).values
+                    print(f"   Using dataframe index as market identifier")
             
             # Parse country and year
             df_clean[['country', 'year']] = df_clean['market_id'].str.rsplit('_', 1, expand=True)
