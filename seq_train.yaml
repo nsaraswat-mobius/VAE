@@ -1,0 +1,352 @@
+name: train_sequential_vae_model
+description: Trains Sequential VAE model on preprocessed World Bank data with configurable hyperparameters
+inputs:
+  - {name: preprocessed_path, type: String, description: "Path to preprocessed tensor (.pt file)"}
+  - {name: model_path, type: String, description: "Path to model checkpoint (.pt file)"}
+  - {name: config_path, type: String, description: "Path to model config (JSON file)"}
+  - {name: learning_rate, type: Float, description: "Learning rate", default: "1e-3"}
+  - {name: batch_size, type: Integer, description: "Batch size for training", default: "32"}
+  - {name: epochs, type: Integer, description: "Number of training epochs", default: "50"}
+  - {name: kl_weight, type: Float, description: "KL divergence weight in loss", default: "1.0"}
+  - {name: validation_split, type: Float, description: "Validation split ratio", default: "0.1"}
+outputs:
+  - {name: trained_model_path, type: String, description: "Path to trained model checkpoint"}
+  - {name: metrics_path, type: String, description: "Path to training metrics JSON"}
+
+implementation:
+  container:
+    image: kushagra4761/nesy-factory:latest
+    command:
+      - sh
+      - -c
+      - |
+        PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet torch numpy git+https://github.com/gaiangroup/nesy-factory-library.git || \
+        PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet torch numpy git+https://github.com/gaiangroup/nesy-factory-library.git --user
+        exec "$0" "$@"
+      - python3
+      - -u
+      - -c
+      - |
+        import argparse
+        import os
+        import json
+        import torch
+        import torch.nn as nn
+        import torch.optim as optim
+        from torch.utils.data import TensorDataset, DataLoader
+        from nesy_factory.VAE.sequential_vae import create_sequential_vae
+        
+        parser = argparse.ArgumentParser()
+        parser.add_argument('--preprocessed_path', type=str, required=True)
+        parser.add_argument('--model_path', type=str, required=True)
+        parser.add_argument('--config_path', type=str, required=True)
+        parser.add_argument('--learning_rate', type=float, default=1e-3)
+        parser.add_argument('--batch_size', type=int, default=32)
+        parser.add_argument('--epochs', type=int, default=50)
+        parser.add_argument('--kl_weight', type=float, default=1.0)
+        parser.add_argument('--validation_split', type=float, default=0.1)
+        parser.add_argument('--trained_model_path', type=str, required=True)
+        parser.add_argument('--metrics_path', type=str, required=True)
+        args = parser.parse_args()
+        
+        print("=" * 80)
+        print("TRAINING SEQUENTIAL VAE MODEL")
+        print("=" * 80)
+        
+        try:
+            # Detect device (GPU if available, else CPU)
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            print(f"\\nDevice: {device}")
+            if torch.cuda.is_available():
+                print(f"GPU: {torch.cuda.get_device_name(0)}")
+                print(f"CUDA Version: {torch.version.cuda}")
+            
+            # [1] Load configuration
+            print("\\n[1/5] Loading model configuration...")
+            with open(args.config_path, 'r') as f:
+                config = json.load(f)
+            print(f"   Model type: {config['model_type']}")
+            print(f"   Input dim: {config['input_dim']}")
+            print(f"   Latent dim: {config['latent_dim']}")
+            print(f"   Hidden dim: {config['hidden_dim']}")
+            
+            # [2] Load preprocessed data
+            print("\\n[2/5] Loading preprocessed data...")
+            try:
+                preprocessed_data = torch.load(args.preprocessed_path)
+            except:
+                # Handle Kubeflow artifact directory structure
+                if os.path.isdir(args.preprocessed_path):
+                    data_file = os.path.join(args.preprocessed_path, "data")
+                    if os.path.exists(data_file):
+                        with open(data_file, 'r') as f:
+                            actual_path = f.read().strip()
+                        preprocessed_data = torch.load(actual_path)
+                    else:
+                        raise FileNotFoundError(f"No data file found in {args.preprocessed_path}")
+                else:
+                    raise
+            
+            print(f"   Data shape: {preprocessed_data.shape}")
+            print(f"   Data type: {preprocessed_data.dtype}")
+            print(f"   Data device: {preprocessed_data.device}")
+            
+            # Expected: (num_samples, seq_length, num_features)
+            num_samples, seq_length, num_features = preprocessed_data.shape
+            
+            # [3] Create and load model
+            print("\\n[3/5] Creating model architecture...")
+            model = create_sequential_vae(
+                input_dim=config['input_dim'],
+                latent_dim=config['latent_dim'],
+                hidden_dim=config['hidden_dim'],
+                seq_length=config['seq_length'],
+                rnn_type=config.get('rnn_type', 'lstm'),
+                num_layers=config.get('num_layers', 2)
+            )
+            
+            # Load initial weights
+            print("   Loading model checkpoint...")
+            try:
+                checkpoint_path = args.model_path
+            except:
+                if os.path.isdir(args.model_path):
+                    data_file = os.path.join(args.model_path, "data")
+                    if os.path.exists(data_file):
+                        with open(data_file, 'r') as f:
+                            checkpoint_path = f.read().strip()
+                    else:
+                        raise FileNotFoundError(f"No data file found in {args.model_path}")
+                else:
+                    raise
+            
+            model.load_state_dict(torch.load(checkpoint_path, map_location=device))
+            model = model.to(device)
+            model.train()
+            
+            print(f"   Model parameters: {sum(p.numel() for p in model.parameters()):,}")
+            print(f"   Model device: {next(model.parameters()).device}")
+            
+            # [4] Prepare data loaders
+            print("\\n[4/5] Preparing data loaders...")
+            
+            # Split into train/val
+            val_size = int(num_samples * args.validation_split)
+            train_size = num_samples - val_size
+            
+            train_data = preprocessed_data[:train_size]
+            val_data = preprocessed_data[train_size:]
+            
+            train_dataset = TensorDataset(train_data)
+            val_dataset = TensorDataset(val_data)
+            
+            train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
+            val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
+            
+            print(f"   Train samples: {train_size} ({train_size/num_samples*100:.1f}%)")
+            print(f"   Val samples: {val_size} ({val_size/num_samples*100:.1f}%)")
+            print(f"   Batch size: {args.batch_size}")
+            print(f"   Train batches: {len(train_loader)}")
+            print(f"   Val batches: {len(val_loader)}")
+            
+            # [5] Training loop
+            print("\\n[5/5] Training model...")
+            print("-" * 80)
+            
+            optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
+            scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer, mode='min', factor=0.5, patience=5, verbose=True
+            )
+            
+            metrics = {
+                "epochs_trained": 0,
+                "train_losses": [],
+                "val_losses": [],
+                "train_recon_losses": [],
+                "val_recon_losses": [],
+                "train_kl_losses": [],
+                "val_kl_losses": [],
+                "best_val_loss": float('inf'),
+                "best_epoch": 0,
+                "learning_rate": args.learning_rate,
+                "batch_size": args.batch_size,
+                "kl_weight": args.kl_weight,
+                "final_train_loss": None,
+                "final_val_loss": None
+            }
+            
+            best_val_loss = float('inf')
+            best_model_state = None
+            
+            for epoch in range(args.epochs):
+                # Training phase
+                train_loss = 0.0
+                train_recon = 0.0
+                train_kl = 0.0
+                
+                for batch_idx, (batch_data,) in enumerate(train_loader):
+                    batch_data = batch_data.to(device)
+                    
+                    optimizer.zero_grad()
+                    
+                    # Forward pass
+                    outputs = model(batch_data)
+                    recon_x, mu, logvar = outputs['recon'], outputs['mu'], outputs['log_var']
+                    
+                    # Use library's vae_loss function (optimized from base class)
+                    # Temporarily override kl_weight for this batch
+                    original_kl_weight = model.kl_weight
+                    model.kl_weight = args.kl_weight
+                    losses = model.vae_loss(recon_x, batch_data, mu, logvar)
+                    model.kl_weight = original_kl_weight
+                    
+                    loss = losses['total_loss'] / (batch_data.shape[0] * batch_data.shape[1] * batch_data.shape[2])
+                    recon_loss = losses['recon_loss'] / (batch_data.shape[0] * batch_data.shape[1] * batch_data.shape[2])
+                    kl_loss = losses['kl_loss'] / (batch_data.shape[0] * batch_data.shape[1] * batch_data.shape[2])
+                    
+                    # Backward pass
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                    optimizer.step()
+                    
+                    train_loss += loss.item()
+                    train_recon += recon_loss.item()
+                    train_kl += kl_loss.item()
+                
+                train_loss /= len(train_loader)
+                train_recon /= len(train_loader)
+                train_kl /= len(train_loader)
+                
+                # Validation phase
+                model.eval()
+                val_loss = 0.0
+                val_recon = 0.0
+                val_kl = 0.0
+                
+                with torch.no_grad():
+                    for batch_idx, (batch_data,) in enumerate(val_loader):
+                        batch_data = batch_data.to(device)
+                        
+                        # Forward pass
+                        outputs = model(batch_data)
+                        recon_x, mu, logvar = outputs['recon'], outputs['mu'], outputs['log_var']
+                        
+                        # Use library's vae_loss function
+                        original_kl_weight = model.kl_weight
+                        model.kl_weight = args.kl_weight
+                        losses = model.vae_loss(recon_x, batch_data, mu, logvar)
+                        model.kl_weight = original_kl_weight
+                        
+                        loss = losses['total_loss'] / (batch_data.shape[0] * batch_data.shape[1] * batch_data.shape[2])
+                        recon_loss = losses['recon_loss'] / (batch_data.shape[0] * batch_data.shape[1] * batch_data.shape[2])
+                        kl_loss = losses['kl_loss'] / (batch_data.shape[0] * batch_data.shape[1] * batch_data.shape[2])
+                        
+                        val_loss += loss.item()
+                        val_recon += recon_loss.item()
+                        val_kl += kl_loss.item()
+                
+                val_loss /= len(val_loader)
+                val_recon /= len(val_loader)
+                val_kl /= len(val_loader)
+                
+                model.train()
+                
+                # Store metrics
+                metrics["train_losses"].append(train_loss)
+                metrics["val_losses"].append(val_loss)
+                metrics["train_recon_losses"].append(train_recon)
+                metrics["val_recon_losses"].append(val_recon)
+                metrics["train_kl_losses"].append(train_kl)
+                metrics["val_kl_losses"].append(val_kl)
+                
+                # Learning rate scheduling
+                scheduler.step(val_loss)
+                
+                # Save best model
+                if val_loss < best_val_loss:
+                    best_val_loss = val_loss
+                    best_model_state = model.state_dict().copy()
+                    metrics["best_val_loss"] = best_val_loss
+                    metrics["best_epoch"] = epoch + 1
+                
+                # Print progress
+                if (epoch + 1) % 5 == 0 or epoch == 0:
+                    print(f"Epoch [{epoch+1:3d}/{args.epochs}] "
+                          f"Train Loss: {train_loss:.6f} (Recon: {train_recon:.6f}, KL: {train_kl:.6f}) | "
+                          f"Val Loss: {val_loss:.6f} (Recon: {val_recon:.6f}, KL: {val_kl:.6f})")
+            
+            metrics["epochs_trained"] = args.epochs
+            metrics["final_train_loss"] = train_loss
+            metrics["final_val_loss"] = val_loss
+            
+            # Load best model
+            if best_model_state is not None:
+                model.load_state_dict(best_model_state)
+                print(f"\\nLoaded best model from epoch {metrics['best_epoch']} "
+                      f"(val_loss: {metrics['best_val_loss']:.6f})")
+            
+            print("-" * 80)
+            
+            # Save trained model
+            print("\\nSaving trained model...")
+            os.makedirs(args.trained_model_path, exist_ok=True)
+            trained_model_file = os.path.join(args.trained_model_path, "sequential_vae_trained.pt")
+            torch.save(model.state_dict(), trained_model_file)
+            print(f"   Trained model saved to: {trained_model_file}")
+            print(f"   File size: {os.path.getsize(trained_model_file) / 1e6:.2f} MB")
+            
+            # Write model path for Kubeflow
+            with open(os.path.join(args.trained_model_path, "data"), "w") as f:
+                f.write(trained_model_file)
+            
+            # Save metrics
+            print("Saving training metrics...")
+            os.makedirs(args.metrics_path, exist_ok=True)
+            metrics_file = os.path.join(args.metrics_path, "training_metrics.json")
+            with open(metrics_file, 'w') as f:
+                json.dump(metrics, f, indent=2)
+            print(f"   Metrics saved to: {metrics_file}")
+            
+            # Write metrics path for Kubeflow
+            with open(os.path.join(args.metrics_path, "data"), "w") as f:
+                f.write(metrics_file)
+            
+            print("\\n" + "=" * 80)
+            print("TRAINING COMPLETE!")
+            print("=" * 80)
+            print(f"\\nTraining Summary:")
+            print(f"  Epochs trained: {metrics['epochs_trained']}")
+            print(f"  Best epoch: {metrics['best_epoch']}")
+            print(f"  Best validation loss: {metrics['best_val_loss']:.6f}")
+            print(f"  Final train loss: {metrics['final_train_loss']:.6f}")
+            print(f"  Final val loss: {metrics['final_val_loss']:.6f}")
+            print(f"  Improvement: {(metrics['train_losses'][0] - metrics['final_train_loss']) / metrics['train_losses'][0] * 100:.1f}%")
+            print(f"\\n  Model ready for deployment!")
+            
+        except Exception as e:
+            print(f"Error during training: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            exit(1)
+    
+    args:
+      - --preprocessed_path
+      - {inputValue: preprocessed_path}
+      - --model_path
+      - {inputValue: model_path}
+      - --config_path
+      - {inputValue: config_path}
+      - --learning_rate
+      - {inputValue: learning_rate}
+      - --batch_size
+      - {inputValue: batch_size}
+      - --epochs
+      - {inputValue: epochs}
+      - --kl_weight
+      - {inputValue: kl_weight}
+      - --validation_split
+      - {inputValue: validation_split}
+      - --trained_model_path
+      - {outputPath: trained_model_path}
+      - --metrics_path
+      - {outputPath: metrics_path}
