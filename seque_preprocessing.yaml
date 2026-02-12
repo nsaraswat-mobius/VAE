@@ -29,7 +29,7 @@ implementation:
         import pandas as pd
         import numpy as np
         import torch
-        
+
         parser = argparse.ArgumentParser()
         parser.add_argument('--parquet_path', type=str, required=True)
         parser.add_argument('--num_features', type=int, default=16197)
@@ -37,15 +37,15 @@ implementation:
         parser.add_argument('--preprocessed_path', type=str, required=True)
         parser.add_argument('--metadata_path', type=str, required=True)
         args = parser.parse_args()
-        
+
         print("=" * 70)
         print("PREPROCESSING WORLD BANK TENSOR FOR SEQUENTIAL VAE")
         print("=" * 70)
-        
+
         try:
             # Step 1: Load parquet
             print("\\n[1/4] Loading parquet file...")
-            
+
             # Handle Kubeflow artifact directory structure
             parquet_path = args.parquet_path
             if os.path.isdir(parquet_path):
@@ -56,23 +56,23 @@ implementation:
                     print(f"   Found parquet file: {parquet_path}")
                 else:
                     raise FileNotFoundError(f"No .parquet files found in {parquet_path}")
-            
+
             print(f"   Reading from: {parquet_path}")
             pf = pq.ParquetFile(parquet_path)
             df = pf.read().to_pandas()
             print(f"   Loaded: {df.shape[0]} rows x {df.shape[1]} columns")
-            
+
             # Get feature columns
             feature_cols = [c for c in df.columns if c.startswith('I')][:args.num_features]
             print(f"   Using {len(feature_cols)} features")
-            
+
             # Step 2: Handle Inf values
             print("\\n[2/4] Handling Inf/NaN values...")
             data = df[feature_cols].values.astype(np.float32)
             inf_count = (~np.isfinite(data)).sum()
             data[~np.isfinite(data)] = 0.0
             print(f"   Replaced {inf_count} Inf/NaN values with 0")
-            
+
             # Step 3: Normalize (z-score)
             print("\\n[3/4] Normalizing features (z-score)...")
             mean_vals = np.mean(data, axis=0, keepdims=True)
@@ -81,45 +81,48 @@ implementation:
             data_normalized = (data - mean_vals) / std_vals
             print(f"   Mean: [{mean_vals.min():.4f}, {mean_vals.max():.4f}]")
             print(f"   Std:  [{std_vals.min():.4f}, {std_vals.max():.4f}]")
-            
+
             # Step 4: Build sequences (create temporal groups)
             print("\\n[4/4] Building sequences for temporal modeling...")
             total_rows = len(data_normalized)
             seq_length = args.seq_length
-            
+
             # Calculate number of sequences
             num_sequences = total_rows // seq_length
             usable_rows = num_sequences * seq_length
-            
+
             print(f"   Total rows: {total_rows}")
             print(f"   Sequence length: {seq_length}")
             print(f"   Number of sequences: {num_sequences}")
             print(f"   Using: {usable_rows} rows ({usable_rows/total_rows*100:.1f}%)")
-            
+
             # Reshape into sequences
             sequences = data_normalized[:usable_rows].reshape(num_sequences, seq_length, len(feature_cols))
             print(f"   Reshaped to: {sequences.shape} (samples, timesteps, features)")
-            
-            # Save as torch tensor
+
+            # ------------------------------------------------------------------
+            # SAVE OUTPUTS
+            # Kubeflow passes a *file path* for each outputPath argument.
+            # We must write a plain file to that exact path — never turn the
+            # path itself into a directory (that causes the "is a directory"
+            # copy_file_range error in Argo).
+            # ------------------------------------------------------------------
             print("\\n[SAVING] Saving preprocessed tensor...")
-            
-            # Ensure Kubeflow output directories exist
-            os.makedirs(args.preprocessed_path, exist_ok=True)
-            os.makedirs(args.metadata_path, exist_ok=True)
-            
+
             tensor = torch.FloatTensor(sequences)
-            # Save tensor to output path
-            output_file = os.path.join(args.preprocessed_path, "tensor_preprocessed.pt")
-            torch.save(tensor, output_file)
-            print(f"   Saved to: {output_file}")
+
+            # Ensure the parent directory of the output file exists
+            preprocessed_parent = os.path.dirname(args.preprocessed_path)
+            if preprocessed_parent:
+                os.makedirs(preprocessed_parent, exist_ok=True)
+
+            # Write tensor directly to the path Kubeflow provided
+            torch.save(tensor, args.preprocessed_path)
+            print(f"   Saved to: {args.preprocessed_path}")
             print(f"   Shape: {tensor.shape}")
-            print(f"   File size: {os.path.getsize(output_file) / 1e9:.2f} GB")
-            
-            # Write output path to file for Kubeflow
-            with open(os.path.join(args.preprocessed_path, "data"), "w") as f:
-                f.write(output_file)
-            
-            # Save metadata
+            print(f"   File size: {os.path.getsize(args.preprocessed_path) / 1e9:.2f} GB")
+
+            # Save metadata JSON directly to the path Kubeflow provided
             metadata = {
                 "shape": list(tensor.shape),
                 "num_samples": tensor.shape[0],
@@ -128,18 +131,17 @@ implementation:
                 "features_used": len(feature_cols),
                 "inf_values_replaced": int(inf_count),
                 "normalization": "z-score (mean=0, std=1)",
-                "output_file": output_file
+                "output_file": args.preprocessed_path
             }
-            
-            metadata_file = os.path.join(args.metadata_path, "metadata.json")
-            with open(metadata_file, 'w') as f:
+
+            metadata_parent = os.path.dirname(args.metadata_path)
+            if metadata_parent:
+                os.makedirs(metadata_parent, exist_ok=True)
+
+            with open(args.metadata_path, 'w') as f:
                 json.dump(metadata, f, indent=2)
-            print(f"   Metadata saved: {metadata_file}")
-            
-            # Write metadata path to file for Kubeflow
-            with open(os.path.join(args.metadata_path, "data"), "w") as f:
-                f.write(metadata_file)
-            
+            print(f"   Metadata saved: {args.metadata_path}")
+
             print("\\n" + "=" * 70)
             print("PREPROCESSING COMPLETE!")
             print("=" * 70)
@@ -149,7 +151,7 @@ implementation:
             print(f"  Timesteps: {tensor.shape[1]}")
             print(f"  Features: {tensor.shape[2]}")
             print(f"  Ready for Sequential VAE training")
-            
+
         except FileNotFoundError:
             print(f"Error: Parquet file not found at {args.parquet_path}")
             exit(1)
@@ -158,7 +160,7 @@ implementation:
             import traceback
             traceback.print_exc()
             exit(1)
-    
+
     args:
       - --parquet_path
       - {inputPath: parquet_path}
