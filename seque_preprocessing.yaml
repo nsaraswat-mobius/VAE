@@ -1,0 +1,161 @@
+name: preprocess_worldbank_tensor
+description: Preprocesses World Bank parquet data - handles Inf values, normalizes, builds temporal sequences (country groups), pads to 25 timesteps, outputs torch tensor
+inputs:
+  - {name: parquet_path, type: String, description: "Path to tensor_values.parquet"}
+  - {name: num_features, type: Integer, description: "Number of features (default 16197)", default: "16197"}
+  - {name: seq_length, type: Integer, description: "Sequence length (default 25 years)", default: "25"}
+outputs:
+  - {name: preprocessed_path, type: String, description: "Path to saved preprocessed tensor (.pt file)"}
+  - {name: metadata_path, type: String, description: "Path to metadata JSON (shape, features, etc)"}
+
+implementation:
+  container:
+    image: python:3.9
+    command:
+      - sh
+      - -c
+      - |
+        PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet pyarrow pandas numpy torch || \
+        PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet pyarrow pandas numpy torch --user
+        exec "$0" "$@"
+      - python3
+      - -u
+      - -c
+      - |
+        import argparse
+        import os
+        import json
+        import pyarrow.parquet as pq
+        import pandas as pd
+        import numpy as np
+        import torch
+        
+        parser = argparse.ArgumentParser()
+        parser.add_argument('--parquet_path', type=str, required=True)
+        parser.add_argument('--num_features', type=int, default=16197)
+        parser.add_argument('--seq_length', type=int, default=25)
+        parser.add_argument('--preprocessed_path', type=str, required=True)
+        parser.add_argument('--metadata_path', type=str, required=True)
+        args = parser.parse_args()
+        
+        print("=" * 70)
+        print("PREPROCESSING WORLD BANK TENSOR")
+        print("=" * 70)
+        
+        try:
+            # Step 1: Load parquet
+            print("\\n[1/5] Loading parquet file...")
+            pf = pq.ParquetFile(args.parquet_path)
+            df = pf.read().to_pandas()
+            print(f"   Loaded: {df.shape[0]} rows x {df.shape[1]} columns")
+            
+            # Get feature columns
+            feature_cols = [c for c in df.columns if c.startswith('I')][:args.num_features]
+            print(f"   Using {len(feature_cols)} features")
+            
+            # Step 2: Handle Inf values
+            print("\\n[2/5] Handling Inf/NaN values...")
+            data = df[feature_cols].values.astype(np.float32)
+            inf_count = (~np.isfinite(data)).sum()
+            data[~np.isfinite(data)] = 0.0
+            print(f"   Replaced {inf_count} Inf/NaN values with 0")
+            
+            # Step 3: Normalize (z-score)
+            print("\\n[3/5] Normalizing features (z-score)...")
+            mean_vals = np.mean(data, axis=0, keepdims=True)
+            std_vals = np.std(data, axis=0, keepdims=True)
+            std_vals[std_vals == 0] = 1.0  # Avoid division by zero
+            data_normalized = (data - mean_vals) / std_vals
+            print(f"   Mean: [{mean_vals.min():.4f}, {mean_vals.max():.4f}]")
+            print(f"   Std:  [{std_vals.min():.4f}, {std_vals.max():.4f}]")
+            
+            # Step 4: Build sequences (group by country, sort by year)
+            print("\\n[4/5] Building temporal sequences...")
+            df_clean = pd.DataFrame(data_normalized, columns=feature_cols)
+            df_clean['market_id'] = df['index'].values
+            
+            # Parse country and year
+            df_clean[['country', 'year']] = df_clean['market_id'].str.rsplit('_', 1, expand=True)
+            df_clean['year'] = pd.to_numeric(df_clean['year'], errors='coerce')
+            
+            sequences = []
+            countries = sorted(df_clean['country'].unique())
+            print(f"   Found {len(countries)} unique countries")
+            
+            for i, country in enumerate(countries):
+                country_data = df_clean[df_clean['country'] == country].sort_values('year')
+                seq = country_data[feature_cols].values.astype(np.float32)
+                
+                # Pad or truncate to seq_length
+                if len(seq) < args.seq_length:
+                    padded = np.zeros((args.seq_length, len(feature_cols)), dtype=np.float32)
+                    padded[:len(seq)] = seq
+                    seq = padded
+                else:
+                    seq = seq[:args.seq_length]
+                
+                sequences.append(seq)
+            
+            sequences = np.array(sequences, dtype=np.float32)
+            print(f"   Built {len(sequences)} sequences")
+            print(f"   Shape: {sequences.shape} (samples, timesteps, features)")
+            
+            # Step 5: Save as torch tensor
+            print("\\n[5/5] Saving preprocessed tensor...")
+            os.makedirs(args.preprocessed_path, exist_ok=True)
+            os.makedirs(args.metadata_path, exist_ok=True)
+            
+            tensor = torch.FloatTensor(sequences)
+            output_file = os.path.join(args.preprocessed_path, "tensor_preprocessed.pt")
+            torch.save(tensor, output_file)
+            print(f"   Saved to: {output_file}")
+            print(f"   File size: {os.path.getsize(output_file) / 1e9:.2f} GB")
+            
+            # Save metadata
+            metadata = {
+                "shape": list(tensor.shape),
+                "num_samples": tensor.shape[0],
+                "seq_length": tensor.shape[1],
+                "num_features": tensor.shape[2],
+                "countries": len(countries),
+                "features_used": len(feature_cols),
+                "inf_values_replaced": int(inf_count),
+                "normalization": "z-score (mean=0, std=1)",
+                "output_file": output_file
+            }
+            
+            metadata_file = os.path.join(args.metadata_path, "metadata.json")
+            with open(metadata_file, 'w') as f:
+                json.dump(metadata, f, indent=2)
+            print(f"   Metadata saved: {metadata_file}")
+            
+            print("\\n" + "=" * 70)
+            print("PREPROCESSING COMPLETE!")
+            print("=" * 70)
+            print(f"\\nOutput Summary:")
+            print(f"  Tensor shape: {tuple(tensor.shape)}")
+            print(f"  Samples: {tensor.shape[0]}")
+            print(f"  Timesteps: {tensor.shape[1]}")
+            print(f"  Features: {tensor.shape[2]}")
+            print(f"  Ready for Sequential VAE training")
+            
+        except FileNotFoundError:
+            print(f"Error: Parquet file not found at {args.parquet_path}")
+            exit(1)
+        except Exception as e:
+            print(f"Error during preprocessing: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            exit(1)
+    
+    args:
+      - --parquet_path
+      - {inputValue: parquet_path}
+      - --num_features
+      - {inputValue: num_features}
+      - --seq_length
+      - {inputValue: seq_length}
+      - --preprocessed_path
+      - {outputPath: preprocessed_path}
+      - --metadata_path
+      - {outputPath: metadata_path}
