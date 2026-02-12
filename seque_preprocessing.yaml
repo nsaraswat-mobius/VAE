@@ -1,9 +1,9 @@
-name: preprocess_worldbank_tensor 2
-description: Preprocesses World Bank parquet data - handles Inf values, normalizes, builds temporal sequences (country groups), pads to 25 timesteps, outputs torch tensor
+name: preprocess_worldbank_tensor 3
+description: Preprocesses World Bank parquet data - handles Inf values, normalizes, builds sequences, outputs torch tensor (3D for Sequential VAE)
 inputs:
   - {name: parquet_path, type: String, description: "Path to tensor_values.parquet"}
   - {name: num_features, type: Integer, description: "Number of features (default 16197)", default: "16197"}
-  - {name: seq_length, type: Integer, description: "Sequence length (default 25 years)", default: "25"}
+  - {name: seq_length, type: Integer, description: "Sequence length (default 25 timesteps)", default: "25"}
 outputs:
   - {name: preprocessed_path, type: String, description: "Path to saved preprocessed tensor (.pt file)"}
   - {name: metadata_path, type: String, description: "Path to metadata JSON (shape, features, etc)"}
@@ -39,12 +39,12 @@ implementation:
         args = parser.parse_args()
         
         print("=" * 70)
-        print("PREPROCESSING WORLD BANK TENSOR")
+        print("PREPROCESSING WORLD BANK TENSOR FOR SEQUENTIAL VAE")
         print("=" * 70)
         
         try:
             # Step 1: Load parquet
-            print("\\n[1/5] Loading parquet file...")
+            print("\\n[1/4] Loading parquet file...")
             
             # Handle Kubeflow artifact directory structure
             parquet_path = args.parquet_path
@@ -61,21 +61,20 @@ implementation:
             pf = pq.ParquetFile(parquet_path)
             df = pf.read().to_pandas()
             print(f"   Loaded: {df.shape[0]} rows x {df.shape[1]} columns")
-            print(f"   Columns: {df.columns.tolist()[:10]}... (showing first 10)")
             
             # Get feature columns
             feature_cols = [c for c in df.columns if c.startswith('I')][:args.num_features]
             print(f"   Using {len(feature_cols)} features")
             
             # Step 2: Handle Inf values
-            print("\\n[2/5] Handling Inf/NaN values...")
+            print("\\n[2/4] Handling Inf/NaN values...")
             data = df[feature_cols].values.astype(np.float32)
             inf_count = (~np.isfinite(data)).sum()
             data[~np.isfinite(data)] = 0.0
             print(f"   Replaced {inf_count} Inf/NaN values with 0")
             
             # Step 3: Normalize (z-score)
-            print("\\n[3/5] Normalizing features (z-score)...")
+            print("\\n[3/4] Normalizing features (z-score)...")
             mean_vals = np.mean(data, axis=0, keepdims=True)
             std_vals = np.std(data, axis=0, keepdims=True)
             std_vals[std_vals == 0] = 1.0  # Avoid division by zero
@@ -83,54 +82,26 @@ implementation:
             print(f"   Mean: [{mean_vals.min():.4f}, {mean_vals.max():.4f}]")
             print(f"   Std:  [{std_vals.min():.4f}, {std_vals.max():.4f}]")
             
-            # Step 4: Build sequences (group by country, sort by year)
-            print("\\n[4/5] Building temporal sequences...")
-            df_clean = pd.DataFrame(data_normalized, columns=feature_cols)
+            # Step 4: Build sequences (create temporal groups)
+            print("\\n[4/4] Building sequences for temporal modeling...")
+            total_rows = len(data_normalized)
+            seq_length = args.seq_length
             
-            # Check if 'index' column exists, otherwise use the dataframe index
-            if 'index' in df.columns:
-                df_clean['market_id'] = df['index'].values
-            else:
-                # Try other possible identifier columns
-                identifier_cols = [col for col in df.columns if col not in feature_cols]
-                if identifier_cols:
-                    print(f"   Available identifier columns: {identifier_cols}")
-                    market_id_col = identifier_cols[0]
-                    df_clean['market_id'] = df[market_id_col].values
-                    print(f"   Using '{market_id_col}' as market identifier")
-                else:
-                    # Use index as market_id
-                    df_clean['market_id'] = df.index.astype(str).values
-                    print(f"   Using dataframe index as market identifier")
+            # Calculate number of sequences
+            num_sequences = total_rows // seq_length
+            usable_rows = num_sequences * seq_length
             
-            # Parse country and year
-            df_clean[['country', 'year']] = df_clean['market_id'].str.rsplit('_', 1, expand=True)
-            df_clean['year'] = pd.to_numeric(df_clean['year'], errors='coerce')
+            print(f"   Total rows: {total_rows}")
+            print(f"   Sequence length: {seq_length}")
+            print(f"   Number of sequences: {num_sequences}")
+            print(f"   Using: {usable_rows} rows ({usable_rows/total_rows*100:.1f}%)")
             
-            sequences = []
-            countries = sorted(df_clean['country'].unique())
-            print(f"   Found {len(countries)} unique countries")
+            # Reshape into sequences
+            sequences = data_normalized[:usable_rows].reshape(num_sequences, seq_length, len(feature_cols))
+            print(f"   Reshaped to: {sequences.shape} (samples, timesteps, features)")
             
-            for i, country in enumerate(countries):
-                country_data = df_clean[df_clean['country'] == country].sort_values('year')
-                seq = country_data[feature_cols].values.astype(np.float32)
-                
-                # Pad or truncate to seq_length
-                if len(seq) < args.seq_length:
-                    padded = np.zeros((args.seq_length, len(feature_cols)), dtype=np.float32)
-                    padded[:len(seq)] = seq
-                    seq = padded
-                else:
-                    seq = seq[:args.seq_length]
-                
-                sequences.append(seq)
-            
-            sequences = np.array(sequences, dtype=np.float32)
-            print(f"   Built {len(sequences)} sequences")
-            print(f"   Shape: {sequences.shape} (samples, timesteps, features)")
-            
-            # Step 5: Save as torch tensor
-            print("\\n[5/5] Saving preprocessed tensor...")
+            # Save as torch tensor
+            print("\\n[SAVING] Saving preprocessed tensor...")
             
             # Ensure Kubeflow output directories exist
             os.makedirs(args.preprocessed_path, exist_ok=True)
@@ -141,6 +112,7 @@ implementation:
             output_file = os.path.join(args.preprocessed_path, "tensor_preprocessed.pt")
             torch.save(tensor, output_file)
             print(f"   Saved to: {output_file}")
+            print(f"   Shape: {tensor.shape}")
             print(f"   File size: {os.path.getsize(output_file) / 1e9:.2f} GB")
             
             # Write output path to file for Kubeflow
@@ -153,7 +125,6 @@ implementation:
                 "num_samples": tensor.shape[0],
                 "seq_length": tensor.shape[1],
                 "num_features": tensor.shape[2],
-                "countries": len(countries),
                 "features_used": len(feature_cols),
                 "inf_values_replaced": int(inf_count),
                 "normalization": "z-score (mean=0, std=1)",
