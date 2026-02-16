@@ -1,4 +1,4 @@
-name: train_ladder_vae_model v1
+name: train_ladder_vae_model
 description: Trains Ladder VAE model on preprocessed World Bank data with hierarchical loss
 inputs:
   - {name: preprocessed_path, type: String, description: "Path to preprocessed 2D tensor (.pt file)"}
@@ -25,10 +25,88 @@ implementation:
         import os
         import json
         import torch
+        import torch.nn as nn
         import torch.nn.functional as F
         import torch.optim as optim
         from torch.utils.data import TensorDataset, DataLoader
-        from nesy_factory.VAE.ladder_vae import create_ladder_vae
+        
+        # ===== EMBEDDED LADDER VAE MODULE =====
+        class LadderVAE(nn.Module):
+            
+            def __init__(self, input_dim, level1_latent=32, level2_latent=16, 
+                         level1_hidden=128, level2_hidden=64, beta=1.0):
+                super(LadderVAE, self).__init__()
+                self.level1_latent = level1_latent
+                self.level2_latent = level2_latent
+                self.level1_hidden = level1_hidden
+                self.level2_hidden = level2_hidden
+                self.beta = beta
+                
+                # Encoder Level 1
+                self.enc1_fc = nn.Linear(input_dim, level1_hidden)
+                self.enc1_mu = nn.Linear(level1_hidden, level1_latent)
+                self.enc1_logvar = nn.Linear(level1_hidden, level1_latent)
+                
+                # Encoder Level 2
+                self.enc2_fc = nn.Linear(level1_latent, level2_hidden)
+                self.enc2_mu = nn.Linear(level2_hidden, level2_latent)
+                self.enc2_logvar = nn.Linear(level2_hidden, level2_latent)
+                
+                # Decoder Level 2
+                self.dec2_fc = nn.Sequential(
+                    nn.Linear(level2_latent, level2_hidden),
+                    nn.ReLU(),
+                    nn.Linear(level2_hidden, level1_latent)
+                )
+                
+                # Decoder Level 1
+                self.dec1_fc = nn.Sequential(
+                    nn.Linear(level1_latent, level1_hidden),
+                    nn.ReLU(),
+                    nn.Linear(level1_hidden, input_dim)
+                )
+            
+            def encode(self, x):
+                h1 = F.relu(self.enc1_fc(x))
+                mu1 = self.enc1_mu(h1)
+                logvar1 = self.enc1_logvar(h1)
+                std1 = torch.exp(0.5 * logvar1)
+                z1 = mu1 + std1 * torch.randn_like(std1)
+                
+                h2 = F.relu(self.enc2_fc(z1))
+                mu2 = self.enc2_mu(h2)
+                logvar2 = self.enc2_logvar(h2)
+                std2 = torch.exp(0.5 * logvar2)
+                z2 = mu2 + std2 * torch.randn_like(std2)
+                
+                return [mu1, mu2], [logvar1, logvar2], [z1, z2]
+            
+            def decode(self, z_list):
+                z1, z2 = z_list
+                z1_recon = self.dec2_fc(z2)
+                x_recon = self.dec1_fc(z1_recon)
+                return x_recon
+            
+            def forward(self, x):
+                mus, logvars, z_list = self.encode(x)
+                recon = self.decode(z_list)
+                return recon, mus, logvars
+            
+            def vae_loss(self, x, recon_x, mus, logvars, reduction='mean'):
+                recon_loss = F.mse_loss(recon_x, x, reduction=reduction)
+                kl_loss = 0
+                for mu, logvar in zip(mus, logvars):
+                    level_kl = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1)
+                    if reduction == 'mean':
+                        level_kl = level_kl.mean()
+                    kl_loss += level_kl
+                return recon_loss + self.beta * kl_loss
+        
+        def create_ladder_vae(input_dim, level1_latent=32, level2_latent=16, 
+                              level1_hidden=128, level2_hidden=64, beta=1.0):
+            return LadderVAE(input_dim, level1_latent, level2_latent, 
+                           level1_hidden, level2_hidden, beta)
+        # ===== END EMBEDDED LADDER VAE =====
         
         parser = argparse.ArgumentParser()
         parser.add_argument('--preprocessed_path', type=str, required=True)
@@ -55,7 +133,7 @@ implementation:
             print("\\n[1/5] Loading config...")
             with open(args.config_path, 'r') as f:
                 config = json.load(f)
-            print(f"   Input: {config['input_dim']}, Latent: {config['level1_latent']}/{config['level2_latent']}")
+            print(f"    Input: {config['input_dim']}, Latent: {config['level1_latent']}/{config['level2_latent']}")
             
             # [2] Load preprocessed data
             print("\\n[2/5] Loading data...")
@@ -244,7 +322,7 @@ implementation:
                 f.write(metrics_file)
             
             print(f"    Model: {trained_model_file}")
-            print(f"   Metrics: {metrics_file}")
+            print(f"    Metrics: {metrics_file}")
             print(f"\\n{'='*70}\\n TRAINING COMPLETE | Best Epoch: {metrics['best_epoch']} | Best Loss: {metrics['best_val_loss']:.4f}\\n{'='*70}")
             
         except Exception as e:
