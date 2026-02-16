@@ -245,7 +245,7 @@ implementation:
             
             print(f"    Model: {trained_model_file}")
             print(f"   Metrics: {metrics_file}")
-            print(f"\\n{'='*70}\n TRAINING COMPLETE | Best Epoch: {metrics['best_epoch']} | Best Loss: {metrics['best_val_loss']:.4f}\n{'='*70}")
+            print(f"\\n{'='*70}\\n TRAINING COMPLETE | Best Epoch: {metrics['best_epoch']} | Best Loss: {metrics['best_val_loss']:.4f}\\n{'='*70}")
             
         except Exception as e:
             print(f"Error during training: {str(e)}")
