@@ -32,6 +32,7 @@ implementation:
         
         # ===== EMBEDDED LADDER VAE MODULE =====
         class LadderVAE(nn.Module):
+            """Ladder VAE with hierarchical latent structure."""
             
             def __init__(self, input_dim, level1_latent=32, level2_latent=16, 
                          level1_hidden=128, level2_hidden=64, beta=1.0):
@@ -145,7 +146,7 @@ implementation:
             if os.path.isdir(preprocessed_path):
                 # For input paths, look for the tensor file directly
                 preprocessed_path = os.path.join(preprocessed_path, "preprocessed_data.pt")
-            preprocessed_data = torch.load(preprocessed_path)
+            preprocessed_data = torch.load(preprocessed_path, weights_only=False)
             
             num_samples, num_features = preprocessed_data.shape
             print(f"    Shape: {preprocessed_data.shape} (samples × features)")
@@ -166,7 +167,7 @@ implementation:
                 # For input paths, look for the model file directly
                 checkpoint_path = os.path.join(checkpoint_path, "ladder_vae_init.pt")
             
-            model.load_state_dict(torch.load(checkpoint_path, map_location=device))
+            model.load_state_dict(torch.load(checkpoint_path, map_location=device, weights_only=False))
             model = model.to(device)
             model.train()
             print(f"    Model: {sum(p.numel() for p in model.parameters()):,} params")
@@ -185,7 +186,7 @@ implementation:
             train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
             val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
             
-            print(f"   Train: {train_size}, Val: {val_size}, Batch: {args.batch_size}")
+            print(f"    Train: {train_size}, Val: {val_size}, Batch: {args.batch_size}")
             
             # [5] Training loop
             print("\\n[5/5] Training model...")
@@ -311,7 +312,7 @@ implementation:
             
             print(f"    Model: {trained_model_file}")
             print(f"    Metrics: {metrics_file}")
-            print(f"\\n{'='*70}\\n TRAINING COMPLETE | Best Epoch: {metrics['best_epoch']} | Best Loss: {metrics['best_val_loss']:.4f}\\n{'='*70}")
+            print(f"\\n{'='*70}\n TRAINING COMPLETE | Best Epoch: {metrics['best_epoch']} | Best Loss: {metrics['best_val_loss']:.4f}\\n{'='*70}")
             
         except Exception as e:
             print(f"Error during training: {str(e)}")
