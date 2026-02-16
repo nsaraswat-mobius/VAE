@@ -1,0 +1,156 @@
+name: build_ladder_vae_model
+description: Initializes Ladder VAE model with hierarchical latent structure and saves architecture
+inputs:
+  - {name: num_features, type: Integer, description: "Number of input features", default: "16197"}
+  - {name: level1_latent, type: Integer, description: "First latent level dimension", default: "32"}
+  - {name: level2_latent, type: Integer, description: "Second latent level (bottleneck) dimension", default: "16"}
+  - {name: level1_hidden, type: Integer, description: "First hidden layer dimension", default: "128"}
+  - {name: level2_hidden, type: Integer, description: "Second hidden layer dimension", default: "64"}
+  - {name: beta, type: Float, description: "KL divergence weight", default: "1.0"}
+outputs:
+  - {name: model_path, type: String, description: "Path to saved model checkpoint"}
+  - {name: config_path, type: String, description: "Path to model config JSON"}
+
+implementation:
+  container:
+    image: gurpreetgandhi/nesy-factory:v2
+    command:
+      - sh
+      - -c
+      - |
+        PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet torch numpy git+https://github.com/gaiangroup/nesy-factory-library.git || \
+        PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet torch numpy git+https://github.com/gaiangroup/nesy-factory-library.git --user
+        exec "$0" "$@"
+      - python3
+      - -u
+      - -c
+      - |
+        import argparse
+        import os
+        import json
+        import torch
+        from nesy_factory.VAE.ladder_vae import create_ladder_vae
+        
+        parser = argparse.ArgumentParser()
+        parser.add_argument('--num_features', type=int, default=16197)
+        parser.add_argument('--level1_latent', type=int, default=32)
+        parser.add_argument('--level2_latent', type=int, default=16)
+        parser.add_argument('--level1_hidden', type=int, default=128)
+        parser.add_argument('--level2_hidden', type=int, default=64)
+        parser.add_argument('--beta', type=float, default=1.0)
+        parser.add_argument('--model_path', type=str, required=True)
+        parser.add_argument('--config_path', type=str, required=True)
+        args = parser.parse_args()
+        
+        print("=" * 70)
+        print("BUILDING LADDER VAE MODEL (from nesy-factory)")
+        print("=" * 70)
+        
+        try:
+            print("\\n[1/3] Creating model from nesy-factory library...")
+            print(f"   Input features: {args.num_features}")
+            print(f"   Level 1 latent dim: {args.level1_latent}")
+            print(f"   Level 2 latent dim (bottleneck): {args.level2_latent}")
+            print(f"   Level 1 hidden dim: {args.level1_hidden}")
+            print(f"   Level 2 hidden dim: {args.level2_hidden}")
+            print(f"   KL weight (beta): {args.beta}")
+            
+            # Use factory function from nesy-factory
+            model = create_ladder_vae(
+                input_dim=args.num_features,
+                level1_latent=args.level1_latent,
+                level2_latent=args.level2_latent,
+                level1_hidden=args.level1_hidden,
+                level2_hidden=args.level2_hidden,
+                beta=args.beta
+            )
+            
+            # Count parameters
+            total_params = sum(p.numel() for p in model.parameters())
+            trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+            print(f"   Total parameters: {total_params:,}")
+            print(f"   Trainable parameters: {trainable_params:,}")
+            
+            # Save model
+            print("\\n[2/3] Saving model checkpoint...")
+            os.makedirs(args.model_path, exist_ok=True)
+            os.makedirs(args.config_path, exist_ok=True)
+            
+            model_file = os.path.join(args.model_path, "ladder_vae_init.pt")
+            torch.save(model.state_dict(), model_file)
+            print(f"   Model saved to: {model_file}")
+            print(f"   File size: {os.path.getsize(model_file) / 1e6:.2f} MB")
+            
+            # Write model path to file for Kubeflow
+            with open(os.path.join(args.model_path, "data"), "w") as f:
+                f.write(model_file)
+            
+            # Save configuration
+            print("\\n[3/3] Saving model configuration...")
+            config = {
+                "model_type": "LadderVAE",
+                "library": "nesy-factory",
+                "input_dim": args.num_features,
+                "level1_latent": args.level1_latent,
+                "level2_latent": args.level2_latent,
+                "level1_hidden": args.level1_hidden,
+                "level2_hidden": args.level2_hidden,
+                "beta": args.beta,
+                "architecture": {
+                    "encoder": "input → Level1(latent=32) → Level2(latent=16, bottleneck)",
+                    "decoder": "Bottleneck → Level2(hidden=64) → Level1(hidden=128) → output",
+                    "loss": "MSE + per-level KL divergence"
+                },
+                "total_parameters": total_params,
+                "trainable_parameters": trainable_params,
+                "model_file": model_file
+            }
+            
+            config_file = os.path.join(args.config_path, "model_config.json")
+            with open(config_file, 'w') as f:
+                json.dump(config, f, indent=2)
+            print(f"   Config saved to: {config_file}")
+            
+            # Write config path to file for Kubeflow
+            with open(os.path.join(args.config_path, "data"), "w") as f:
+                f.write(config_file)
+            
+            print("\\n" + "=" * 70)
+            print("MODEL INITIALIZATION COMPLETE!")
+            print("=" * 70)
+            print(f"\\nModel Architecture:")
+            print(f"  Encoder:")
+            print(f"    input({args.num_features}) → hidden({args.level1_hidden}) → latent({args.level1_latent})")
+            print(f"    latent({args.level1_latent}) → hidden({args.level2_hidden}) → bottleneck({args.level2_latent})")
+            print(f"  Decoder:")
+            print(f"    bottleneck({args.level2_latent}) → hidden({args.level2_hidden}) → latent({args.level1_latent})")
+            print(f"    latent({args.level1_latent}) → hidden({args.level1_hidden}) → output({args.num_features})")
+            print(f"\\nHierarchical Latent Structure:")
+            print(f"  Level 1: {args.level1_latent}-dimensional latent space")
+            print(f"  Level 2: {args.level2_latent}-dimensional bottleneck (compression)")
+            print(f"  Per-level KL divergence contribution to loss")
+            print(f"\\nReady for training with preprocessed 2D tensors!")
+            
+        except Exception as e:
+            print(f"Error building model: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            exit(1)
+    
+    args:
+      - --num_features
+      - {inputValue: num_features}
+      - --level1_latent
+      - {inputValue: level1_latent}
+      - --level2_latent
+      - {inputValue: level2_latent}
+      - --level1_hidden
+      - {inputValue: level1_hidden}
+      - --level2_hidden
+      - {inputValue: level2_hidden}
+      - --beta
+      - {inputValue: beta}
+      - --model_path
+      - {outputPath: model_path}
+      - --config_path
+      - {outputPath: config_path}
