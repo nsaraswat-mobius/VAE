@@ -1,0 +1,276 @@
+name: train_ladder_vae_model
+description: Trains Ladder VAE model on preprocessed World Bank data with hierarchical loss
+inputs:
+  - {name: preprocessed_path, type: String, description: "Path to preprocessed 2D tensor (.pt file)"}
+  - {name: model_path, type: String, description: "Path to model checkpoint (.pt file)"}
+  - {name: config_path, type: String, description: "Path to model config (JSON file)"}
+  - {name: learning_rate, type: Float, description: "Learning rate", default: "1e-3"}
+  - {name: batch_size, type: Integer, description: "Batch size for training", default: "32"}
+  - {name: epochs, type: Integer, description: "Number of training epochs", default: "50"}
+  - {name: kl_weight, type: Float, description: "KL divergence weight in loss", default: "1.0"}
+  - {name: validation_split, type: Float, description: "Validation split ratio", default: "0.1"}
+outputs:
+  - {name: trained_model_path, type: String, description: "Path to trained model checkpoint"}
+  - {name: metrics_path, type: String, description: "Path to training metrics JSON"}
+
+implementation:
+  container:
+    image: gurpreetgandhi/nesy-factory:v2
+    command:
+      - python3
+      - -u
+      - -c
+      - |
+        import argparse
+        import os
+        import json
+        import torch
+        import torch.nn.functional as F
+        import torch.optim as optim
+        from torch.utils.data import TensorDataset, DataLoader
+        from nesy_factory.VAE.ladder_vae import create_ladder_vae
+        
+        parser = argparse.ArgumentParser()
+        parser.add_argument('--preprocessed_path', type=str, required=True)
+        parser.add_argument('--model_path', type=str, required=True)
+        parser.add_argument('--config_path', type=str, required=True)
+        parser.add_argument('--learning_rate', type=float, default=1e-3)
+        parser.add_argument('--batch_size', type=int, default=32)
+        parser.add_argument('--epochs', type=int, default=50)
+        parser.add_argument('--kl_weight', type=float, default=1.0)
+        parser.add_argument('--validation_split', type=float, default=0.1)
+        parser.add_argument('--trained_model_path', type=str, required=True)
+        parser.add_argument('--metrics_path', type=str, required=True)
+        args = parser.parse_args()
+        
+        print("=" * 70)
+        print("TRAINING LADDER VAE")
+        print("=" * 70)
+        
+        try:
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            print(f"\\nDevice: {device}")
+            
+            # [1] Load configuration
+            print("\\n[1/5] Loading config...")
+            with open(args.config_path, 'r') as f:
+                config = json.load(f)
+            print(f"   Input: {config['input_dim']}, Latent: {config['level1_latent']}/{config['level2_latent']}")
+            
+            # [2] Load preprocessed data
+            print("\\n[2/5] Loading data...")
+            try:
+                preprocessed_data = torch.load(args.preprocessed_path)
+            except:
+                if os.path.isdir(args.preprocessed_path):
+                    data_file = os.path.join(args.preprocessed_path, "data")
+                    if os.path.exists(data_file):
+                        with open(data_file, 'r') as f:
+                            actual_path = f.read().strip()
+                        preprocessed_data = torch.load(actual_path)
+                    else:
+                        raise FileNotFoundError(f"No data file found in {args.preprocessed_path}")
+                else:
+                    raise
+            
+            num_samples, num_features = preprocessed_data.shape
+            print(f"    Shape: {preprocessed_data.shape} (samples × features)")
+            
+            # [3] Create and load model
+            print("\\n[3/5] Loading model...")
+            model = create_ladder_vae(
+                input_dim=config['input_dim'],
+                level1_latent=config['level1_latent'],
+                level2_latent=config['level2_latent'],
+                level1_hidden=config['level1_hidden'],
+                level2_hidden=config['level2_hidden'],
+                beta=config['beta']
+            )
+            
+            try:
+                checkpoint_path = args.model_path
+            except:
+                if os.path.isdir(args.model_path):
+                    data_file = os.path.join(args.model_path, "data")
+                    if os.path.exists(data_file):
+                        with open(data_file, 'r') as f:
+                            checkpoint_path = f.read().strip()
+                    else:
+                        raise FileNotFoundError(f"No data file found in {args.model_path}")
+                else:
+                    raise
+            
+            model.load_state_dict(torch.load(checkpoint_path, map_location=device))
+            model = model.to(device)
+            model.train()
+            print(f"    Model: {sum(p.numel() for p in model.parameters()):,} params")
+            
+            # [4] Prepare data loaders
+            print("\\n[4/5] Preparing loaders...")
+            val_size = int(num_samples * args.validation_split)
+            train_size = num_samples - val_size
+            
+            train_data = preprocessed_data[:train_size].to(device)
+            val_data = preprocessed_data[train_size:].to(device)
+            
+            train_dataset = TensorDataset(train_data)
+            val_dataset = TensorDataset(val_data)
+            
+            train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
+            val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
+            
+            print(f"    Train: {train_size}, Val: {val_size}, Batch: {args.batch_size}")
+            
+            # [5] Training loop
+            print("\\n[5/5] Training model...")
+            optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
+            scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, verbose=True)
+            
+            metrics = {
+                "train_loss": [],
+                "train_recon": [],
+                "train_kl": [],
+                "val_loss": [],
+                "val_recon": [],
+                "val_kl": [],
+                "best_val_loss": float('inf'),
+                "best_epoch": 0
+            }
+            
+            best_val_loss = float('inf')
+            best_model_state = None
+            
+            for epoch in range(args.epochs):
+                # Training phase
+                train_loss_total = 0.0
+                train_recon_total = 0.0
+                train_kl_total = 0.0
+                
+                for batch_idx, (batch_x,) in enumerate(train_loader):
+                    batch_x = batch_x.to(device)
+                    
+                    optimizer.zero_grad()
+                    
+                    # Forward pass
+                    x_recon, mus, logvars = model(batch_x)
+                    
+                    # Compute loss using model's vae_loss method with per-level KL
+                    loss = model.vae_loss(batch_x, x_recon, mus, logvars, reduction='mean')
+                    
+                    # Reconstruction loss
+                    recon_loss = F.mse_loss(x_recon, batch_x, reduction='mean')
+                    
+                    # Per-level KL divergence
+                    kl_loss = 0
+                    for mu, logvar in zip(mus, logvars):
+                        kl_loss += -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
+                    
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                    optimizer.step()
+                    
+                    train_loss_total += loss.item()
+                    train_recon_total += recon_loss.item()
+                    train_kl_total += kl_loss.item()
+                
+                avg_train_loss = train_loss_total / len(train_loader)
+                avg_train_recon = train_recon_total / len(train_loader)
+                avg_train_kl = train_kl_total / len(train_loader)
+                
+                # Validation phase
+                model.eval()
+                val_loss_total = 0.0
+                val_recon_total = 0.0
+                val_kl_total = 0.0
+                
+                with torch.no_grad():
+                    for batch_idx, (batch_x,) in enumerate(val_loader):
+                        batch_x = batch_x.to(device)
+                        
+                        x_recon, mus, logvars = model(batch_x)
+                        
+                        loss = model.vae_loss(batch_x, x_recon, mus, logvars, reduction='mean')
+                        recon_loss = F.mse_loss(x_recon, batch_x, reduction='mean')
+                        
+                        kl_loss = 0
+                        for mu, logvar in zip(mus, logvars):
+                            kl_loss += -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
+                        
+                        val_loss_total += loss.item()
+                        val_recon_total += recon_loss.item()
+                        val_kl_total += kl_loss.item()
+                
+                avg_val_loss = val_loss_total / len(val_loader)
+                avg_val_recon = val_recon_total / len(val_loader)
+                avg_val_kl = val_kl_total / len(val_loader)
+                
+                # Save best model
+                if avg_val_loss < best_val_loss:
+                    best_val_loss = avg_val_loss
+                    best_model_state = model.state_dict()
+                    metrics["best_epoch"] = epoch + 1
+                    metrics["best_val_loss"] = best_val_loss
+                
+                # Learning rate scheduling
+                scheduler.step(avg_val_loss)
+                
+                # Record metrics
+                metrics["train_loss"].append(avg_train_loss)
+                metrics["train_recon"].append(avg_train_recon)
+                metrics["train_kl"].append(avg_train_kl)
+                metrics["val_loss"].append(avg_val_loss)
+                metrics["val_recon"].append(avg_val_recon)
+                metrics["val_kl"].append(avg_val_kl)
+                
+                model.train()
+                
+                if (epoch + 1) % 5 == 0 or epoch == 0:
+                    print(f"   E{epoch+1:3d} | Train: {avg_train_loss:.4f} | Val: {avg_val_loss:.4f}")
+            
+            # [5] Save trained model and metrics
+            print("\\n[5/5] Saving model and metrics...")
+            os.makedirs(args.trained_model_path, exist_ok=True)
+            os.makedirs(args.metrics_path, exist_ok=True)
+            
+            trained_model_file = os.path.join(args.trained_model_path, "ladder_vae_trained.pt")
+            torch.save(best_model_state, trained_model_file)
+            with open(os.path.join(args.trained_model_path, "data"), "w") as f:
+                f.write(trained_model_file)
+            
+            metrics_file = os.path.join(args.metrics_path, "training_metrics.json")
+            with open(metrics_file, 'w') as f:
+                json.dump(metrics, f, indent=2)
+            with open(os.path.join(args.metrics_path, "data"), "w") as f:
+                f.write(metrics_file)
+            
+            print(f"    Model: {trained_model_file}")
+            print(f"   Metrics: {metrics_file}")
+            print(f"\\n{'='*70}\n TRAINING COMPLETE | Best Epoch: {metrics['best_epoch']} | Best Loss: {metrics['best_val_loss']:.4f}\n{'='*70}")
+            
+        except Exception as e:
+            print(f"Error during training: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            exit(1)
+    
+    args:
+      - --preprocessed_path
+      - {inputPath: preprocessed_path}
+      - --model_path
+      - {inputPath: model_path}
+      - --config_path
+      - {inputPath: config_path}
+      - --learning_rate
+      - {inputValue: learning_rate}
+      - --batch_size
+      - {inputValue: batch_size}
+      - --epochs
+      - {inputValue: epochs}
+      - --kl_weight
+      - {inputValue: kl_weight}
+      - --validation_split
+      - {inputValue: validation_split}
+      - --trained_model_path
+      - {outputPath: trained_model_path}
+      - --metrics_path
+      - {outputPath: metrics_path}
