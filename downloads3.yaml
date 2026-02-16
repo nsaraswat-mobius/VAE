@@ -1,4 +1,4 @@
-name: Download Tensor Values from S3
+name: Download Tensor Values from S3 v1
 inputs:
   - {name: endpoint, type: String, optional: true, default: "s3.us-east-005.oriobjects.cloud"}
   - {name: access_key, type: String, optional: false}
