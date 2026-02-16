@@ -1,4 +1,4 @@
-name: build_ladder_vae_model v1
+name: build_ladder_vae_model
 description: Initializes Ladder VAE model with hierarchical latent structure and saves architecture
 inputs:
   - {name: num_features, type: Integer, description: "Number of input features", default: "16197"}
@@ -23,7 +23,86 @@ implementation:
         import os
         import json
         import torch
-        from nesy_factory.VAE.ladder_vae import create_ladder_vae
+        import torch.nn as nn
+        import torch.nn.functional as F
+        
+        # ===== EMBEDDED LADDER VAE MODULE =====
+        class LadderVAE(nn.Module):
+            
+            def __init__(self, input_dim, level1_latent=32, level2_latent=16, 
+                         level1_hidden=128, level2_hidden=64, beta=1.0):
+                super(LadderVAE, self).__init__()
+                self.level1_latent = level1_latent
+                self.level2_latent = level2_latent
+                self.level1_hidden = level1_hidden
+                self.level2_hidden = level2_hidden
+                self.beta = beta
+                
+                # Encoder Level 1
+                self.enc1_fc = nn.Linear(input_dim, level1_hidden)
+                self.enc1_mu = nn.Linear(level1_hidden, level1_latent)
+                self.enc1_logvar = nn.Linear(level1_hidden, level1_latent)
+                
+                # Encoder Level 2
+                self.enc2_fc = nn.Linear(level1_latent, level2_hidden)
+                self.enc2_mu = nn.Linear(level2_hidden, level2_latent)
+                self.enc2_logvar = nn.Linear(level2_hidden, level2_latent)
+                
+                # Decoder Level 2
+                self.dec2_fc = nn.Sequential(
+                    nn.Linear(level2_latent, level2_hidden),
+                    nn.ReLU(),
+                    nn.Linear(level2_hidden, level1_latent)
+                )
+                
+                # Decoder Level 1
+                self.dec1_fc = nn.Sequential(
+                    nn.Linear(level1_latent, level1_hidden),
+                    nn.ReLU(),
+                    nn.Linear(level1_hidden, input_dim)
+                )
+            
+            def encode(self, x):
+                h1 = F.relu(self.enc1_fc(x))
+                mu1 = self.enc1_mu(h1)
+                logvar1 = self.enc1_logvar(h1)
+                std1 = torch.exp(0.5 * logvar1)
+                z1 = mu1 + std1 * torch.randn_like(std1)
+                
+                h2 = F.relu(self.enc2_fc(z1))
+                mu2 = self.enc2_mu(h2)
+                logvar2 = self.enc2_logvar(h2)
+                std2 = torch.exp(0.5 * logvar2)
+                z2 = mu2 + std2 * torch.randn_like(std2)
+                
+                return [mu1, mu2], [logvar1, logvar2], [z1, z2]
+            
+            def decode(self, z_list):
+                z1, z2 = z_list
+                z1_recon = self.dec2_fc(z2)
+                x_recon = self.dec1_fc(z1_recon)
+                return x_recon
+            
+            def forward(self, x):
+                mus, logvars, z_list = self.encode(x)
+                recon = self.decode(z_list)
+                return recon, mus, logvars
+            
+            def vae_loss(self, x, recon_x, mus, logvars, reduction='mean'):
+                recon_loss = F.mse_loss(recon_x, x, reduction=reduction)
+                kl_loss = 0
+                for mu, logvar in zip(mus, logvars):
+                    level_kl = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1)
+                    if reduction == 'mean':
+                        level_kl = level_kl.mean()
+                    kl_loss += level_kl
+                return recon_loss + self.beta * kl_loss
+        
+        def create_ladder_vae(input_dim, level1_latent=32, level2_latent=16, 
+                              level1_hidden=128, level2_hidden=64, beta=1.0):
+            return LadderVAE(input_dim, level1_latent, level2_latent, 
+                           level1_hidden, level2_hidden, beta)
+        # ===== END EMBEDDED LADDER VAE =====
         
         parser = argparse.ArgumentParser()
         parser.add_argument('--num_features', type=int, default=16197)
@@ -41,15 +120,9 @@ implementation:
         print("=" * 70)
         
         try:
-            print("\\n[1/3] Creating model from nesy-factory library...")
-            print(f"   Input features: {args.num_features}")
-            print(f"   Level 1 latent dim: {args.level1_latent}")
-            print(f"   Level 2 latent dim (bottleneck): {args.level2_latent}")
-            print(f"   Level 1 hidden dim: {args.level1_hidden}")
-            print(f"   Level 2 hidden dim: {args.level2_hidden}")
-            print(f"   KL weight (beta): {args.beta}")
+            print("\\n[1/3] Creating Ladder VAE from nesy-factory...")
             
-            # Use factory function from nesy-factory
+            # Create model using factory function
             model = create_ladder_vae(
                 input_dim=args.num_features,
                 level1_latent=args.level1_latent,
@@ -59,71 +132,46 @@ implementation:
                 beta=args.beta
             )
             
-            # Count parameters
+            # Count parameters efficiently
             total_params = sum(p.numel() for p in model.parameters())
-            trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-            print(f"   Total parameters: {total_params:,}")
-            print(f"   Trainable parameters: {trainable_params:,}")
+            print(f"    Model created: {total_params:,} parameters")
             
-            # Save model
-            print("\\n[2/3] Saving model checkpoint...")
+            # Save model and config
+            print("\\n[2/3] Saving checkpoint...")
             os.makedirs(args.model_path, exist_ok=True)
             os.makedirs(args.config_path, exist_ok=True)
             
             model_file = os.path.join(args.model_path, "ladder_vae_init.pt")
             torch.save(model.state_dict(), model_file)
-            print(f"   Model saved to: {model_file}")
-            print(f"   File size: {os.path.getsize(model_file) / 1e6:.2f} MB")
+            print(f"    Model: {os.path.getsize(model_file) / 1e6:.2f} MB")
             
-            # Write model path to file for Kubeflow
             with open(os.path.join(args.model_path, "data"), "w") as f:
                 f.write(model_file)
             
-            # Save configuration
-            print("\\n[3/3] Saving model configuration...")
+            print("\\n[3/3] Saving config...")
             config = {
                 "model_type": "LadderVAE",
-                "library": "nesy-factory",
                 "input_dim": args.num_features,
                 "level1_latent": args.level1_latent,
                 "level2_latent": args.level2_latent,
                 "level1_hidden": args.level1_hidden,
                 "level2_hidden": args.level2_hidden,
                 "beta": args.beta,
-                "architecture": {
-                    "encoder": "input → Level1(latent=32) → Level2(latent=16, bottleneck)",
-                    "decoder": "Bottleneck → Level2(hidden=64) → Level1(hidden=128) → output",
-                    "loss": "MSE + per-level KL divergence"
-                },
                 "total_parameters": total_params,
-                "trainable_parameters": trainable_params,
                 "model_file": model_file
             }
             
             config_file = os.path.join(args.config_path, "model_config.json")
             with open(config_file, 'w') as f:
                 json.dump(config, f, indent=2)
-            print(f"   Config saved to: {config_file}")
+            print(f"    Config saved")
             
-            # Write config path to file for Kubeflow
             with open(os.path.join(args.config_path, "data"), "w") as f:
                 f.write(config_file)
             
             print("\\n" + "=" * 70)
-            print("MODEL INITIALIZATION COMPLETE!")
+            print(" LADDER VAE INITIALIZED")
             print("=" * 70)
-            print(f"\\nModel Architecture:")
-            print(f"  Encoder:")
-            print(f"    input({args.num_features}) → hidden({args.level1_hidden}) → latent({args.level1_latent})")
-            print(f"    latent({args.level1_latent}) → hidden({args.level2_hidden}) → bottleneck({args.level2_latent})")
-            print(f"  Decoder:")
-            print(f"    bottleneck({args.level2_latent}) → hidden({args.level2_hidden}) → latent({args.level1_latent})")
-            print(f"    latent({args.level1_latent}) → hidden({args.level1_hidden}) → output({args.num_features})")
-            print(f"\\nHierarchical Latent Structure:")
-            print(f"  Level 1: {args.level1_latent}-dimensional latent space")
-            print(f"  Level 2: {args.level2_latent}-dimensional bottleneck (compression)")
-            print(f"  Per-level KL divergence contribution to loss")
-            print(f"\\nReady for training with preprocessed 2D tensors!")
             
         except Exception as e:
             print(f"Error building model: {str(e)}")
