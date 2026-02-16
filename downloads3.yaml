@@ -1,0 +1,108 @@
+name: Download Tensor Values from S3
+inputs:
+  - {name: endpoint, type: String, optional: true, default: "s3.us-east-005.oriobjects.cloud"}
+  - {name: access_key, type: String, optional: false}
+  - {name: secret_key, type: String, optional: false}
+  - {name: bucket, type: String, optional: true, default: "holacracydata"}
+  - {name: s3_folder, type: String, optional: true, default: "marketplace_embeddings"}
+
+outputs:
+  - {name: tensor_values, type: Data}
+
+implementation:
+  container:
+    image: gurpreetgandhi/nesy-factory:v1
+    command:
+      - python3
+      - -u
+      - -c
+      - |
+        import argparse, os, sys, logging
+
+        parser = argparse.ArgumentParser()
+        parser.add_argument('--endpoint', default='s3.us-east-005.oriobjects.cloud')
+        parser.add_argument('--access_key', required=True)
+        parser.add_argument('--secret_key', required=True)
+        parser.add_argument('--bucket', default='holacracydata')
+        parser.add_argument('--s3_folder', default='marketplace_embeddings')
+        parser.add_argument('--tensor_values', required=True)
+        args = parser.parse_args()
+
+        logging.basicConfig(stream=sys.stdout, level=logging.INFO)
+        logger = logging.getLogger("s3_downloader")
+
+        try:
+            import boto3
+            from botocore.exceptions import ClientError
+        except ImportError:
+            logger.info("boto3 not found, installing...")
+            os.system("pip install boto3 --quiet")
+            import boto3
+            from botocore.exceptions import ClientError
+
+        try:
+            s3_client = boto3.client(
+                's3',
+                aws_access_key_id=args.access_key,
+                aws_secret_access_key=args.secret_key,
+                region_name='us-east-1',
+                endpoint_url=f'https://{args.endpoint}'
+            )
+            logger.info("Connected to S3 at %s", args.endpoint)
+
+            # List all objects in the folder
+            response = s3_client.list_objects_v2(
+                Bucket=args.bucket,
+                Prefix=f"{args.s3_folder}/"
+            )
+
+            if 'Contents' not in response:
+                logger.error("No files found in s3://%s/%s/", args.bucket, args.s3_folder)
+                sys.exit(1)
+
+            # Create output directory
+            output_path = args.tensor_values
+            if os.path.isdir(output_path):
+                save_dir = output_path
+            else:
+                save_dir = os.path.dirname(output_path)
+                os.makedirs(save_dir, exist_ok=True)
+
+            # Download each file in the folder
+            downloaded = 0
+            for obj in response['Contents']:
+                object_name = obj['Key']
+                filename = os.path.basename(object_name)
+                if not filename:
+                    continue
+
+                local_path = os.path.join(save_dir, filename)
+                logger.info("Downloading s3://%s/%s -> %s", args.bucket, object_name, local_path)
+
+                try:
+                    s3_client.download_file(args.bucket, object_name, local_path)
+                    logger.info("Downloaded: %s", filename)
+                    downloaded += 1
+                except ClientError as e:
+                    logger.error("Failed to download %s: %s", object_name, str(e))
+                    sys.exit(1)
+
+            logger.info("Done! Downloaded %d file(s) from s3://%s/%s/", downloaded, args.bucket, args.s3_folder)
+
+        except Exception as e:
+            logger.exception("Download failed: %s", str(e))
+            sys.exit(1)
+
+    args:
+      - --endpoint
+      - {inputValue: endpoint}
+      - --access_key
+      - {inputValue: access_key}
+      - --secret_key
+      - {inputValue: secret_key}
+      - --bucket
+      - {inputValue: bucket}
+      - --s3_folder
+      - {inputValue: s3_folder}
+      - --tensor_values
+      - {outputPath: tensor_values}
