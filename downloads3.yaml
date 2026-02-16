@@ -7,7 +7,7 @@ inputs:
   - {name: s3_folder, type: String, optional: true, default: "marketplace_embeddings"}
 
 outputs:
-  - {name: tensor_values, type: Data}
+  - {name: tensor_values, type: String}
 
 implementation:
   container:
