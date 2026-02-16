@@ -1,4 +1,4 @@
-name: build_ladder_vae_model
+name: build_ladder_vae_model v1
 description: Initializes Ladder VAE model with hierarchical latent structure and saves architecture
 inputs:
   - {name: num_features, type: Integer, description: "Number of input features", default: "16197"}
@@ -15,12 +15,6 @@ implementation:
   container:
     image: gurpreetgandhi/nesy-factory:v2
     command:
-      - sh
-      - -c
-      - |
-        PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet torch numpy git+https://github.com/gaiangroup/nesy-factory-library.git || \
-        PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet torch numpy git+https://github.com/gaiangroup/nesy-factory-library.git --user
-        exec "$0" "$@"
       - python3
       - -u
       - -c
