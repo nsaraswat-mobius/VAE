@@ -1,4 +1,4 @@
-name: train_ladder_vae_model v1
+name: train_ladder_vae_model v3
 description: Trains Ladder VAE model on preprocessed World Bank data with hierarchical loss
 inputs:
   - {name: preprocessed_path, type: String, description: "Path to preprocessed 2D tensor (.pt file)"}
@@ -133,9 +133,17 @@ implementation:
             print("\\n[1/5] Loading config...")
             config_path = args.config_path
             if os.path.isdir(config_path):
-                config_path = os.path.join(config_path, "data")
+                data_file = os.path.join(config_path, "data")
+                print(f"   Debug: Reading from {data_file}")
+                with open(data_file, 'r') as f:
+                    config_path = f.read().strip()
+                print(f"   Debug: Actual config path: {config_path}")
+            
+            print(f"   Debug: Opening {config_path}")
             with open(config_path, 'r') as f:
-                config = json.load(f)
+                content = f.read()
+                print(f"   Debug: File content length: {len(content)} bytes")
+                config = json.loads(content)
             print(f"    Input: {config['input_dim']}, Latent: {config['level1_latent']}/{config['level2_latent']}")
             
             # [2] Load preprocessed data
@@ -170,7 +178,7 @@ implementation:
             model.load_state_dict(torch.load(checkpoint_path, map_location=device))
             model = model.to(device)
             model.train()
-            print(f"    Model: {sum(p.numel() for p in model.parameters()):,} params")
+            print(f"   Model: {sum(p.numel() for p in model.parameters()):,} params")
             
             # [4] Prepare data loaders
             print("\\n[4/5] Preparing loaders...")
