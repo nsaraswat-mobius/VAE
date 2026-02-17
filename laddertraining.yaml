@@ -1,4 +1,4 @@
-name: train_ladder_vae_model v4
+name: train_ladder_vae_model
 description: Trains Ladder VAE model on preprocessed World Bank data with hierarchical loss
 inputs:
   - {name: preprocessed_path, type: String, description: "Path to preprocessed 2D tensor (.pt file)"}
@@ -32,6 +32,7 @@ implementation:
         
         # ===== EMBEDDED LADDER VAE MODULE =====
         class LadderVAE(nn.Module):
+
             
             def __init__(self, input_dim, level1_latent=32, level2_latent=16, 
                          level1_hidden=128, level2_hidden=64, beta=1.0):
@@ -133,8 +134,10 @@ implementation:
             print("\\n[1/5] Loading config...")
             config_path = args.config_path
             if os.path.isdir(config_path):
-                # For input paths from previous steps, look for the file directly
-                config_path = os.path.join(config_path, "model_config.json")
+                # Read the /data file to get the actual config path
+                data_file = os.path.join(config_path, "data")
+                with open(data_file, 'r') as f:
+                    config_path = f.read().strip()
             with open(config_path, 'r') as f:
                 config = json.load(f)
             print(f"    Input: {config['input_dim']}, Latent: {config['level1_latent']}/{config['level2_latent']}")
@@ -143,8 +146,10 @@ implementation:
             print("\\n[2/5] Loading data...")
             preprocessed_path = args.preprocessed_path
             if os.path.isdir(preprocessed_path):
-                # For input paths, look for the tensor file directly
-                preprocessed_path = os.path.join(preprocessed_path, "preprocessed_data.pt")
+                # Read the /data file to get the actual tensor path
+                data_file = os.path.join(preprocessed_path, "data")
+                with open(data_file, 'r') as f:
+                    preprocessed_path = f.read().strip()
             preprocessed_data = torch.load(preprocessed_path, weights_only=False)
             
             num_samples, num_features = preprocessed_data.shape
@@ -163,8 +168,10 @@ implementation:
             
             checkpoint_path = args.model_path
             if os.path.isdir(checkpoint_path):
-                # For input paths, look for the model file directly
-                checkpoint_path = os.path.join(checkpoint_path, "ladder_vae_init.pt")
+                # Read the /data file to get the actual checkpoint path
+                data_file = os.path.join(checkpoint_path, "data")
+                with open(data_file, 'r') as f:
+                    checkpoint_path = f.read().strip()
             
             model.load_state_dict(torch.load(checkpoint_path, map_location=device, weights_only=False))
             model = model.to(device)
