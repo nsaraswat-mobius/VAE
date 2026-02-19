@@ -1,4 +1,4 @@
-name: train_ladder_vae_model 1
+name: train_ladder_vae_model
 description: Trains Ladder VAE model on preprocessed World Bank data with hierarchical loss
 inputs:
   - {name: preprocessed_path, type: String, description: "Path to preprocessed 2D tensor (.pt file)"}
@@ -128,40 +128,61 @@ implementation:
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             print(f"\\nDevice: {device}")
             
-            # [1] Load configuration - FIXED
-            print("\\n[1/5] Loading config...")
-            
-            def resolve_kubeflow_path(input_path):
+            # Helper function to resolve Kubeflow artifact paths
+            def resolve_path(input_path):
+                print(f"    Resolving path: {input_path}")
+                
+                # If it's a file, use it directly
                 if os.path.isfile(input_path):
+                    print(f"     Direct file: {input_path}")
                     return input_path
-                elif os.path.isdir(input_path):
-                    # Check for data file first (Kubeflow style)
+                
+                # If it's a directory
+                if os.path.isdir(input_path):
+                    # First check for 'data' file (Kubeflow style)
                     data_file = os.path.join(input_path, "data")
                     if os.path.exists(data_file):
                         with open(data_file, 'r') as f:
-                            resolved_path = f.read().strip()
-                        return resolved_path
-                    # Look for JSON or PT files directly
-                    json_files = [f for f in os.listdir(input_path) if f.endswith('.json')]
-                    pt_files = [f for f in os.listdir(input_path) if f.endswith('.pt')]
+                            actual_path = f.read().strip()
+                        print(f"     From data file: {actual_path}")
+                        return actual_path
                     
-                    if json_files:
-                        return os.path.join(input_path, json_files[0])
-                    elif pt_files:
-                        return os.path.join(input_path, pt_files[0])
+                    # If no data file, look for the actual file in the directory
+                    # For config, look for .json files
+                    if 'config' in input_path or 'json' in input_path:
+                        json_files = [f for f in os.listdir(input_path) if f.endswith('.json')]
+                        if json_files:
+                            actual_path = os.path.join(input_path, json_files[0])
+                            print(f"     Found JSON: {actual_path}")
+                            return actual_path
+                    
+                    # For model, look for .pt files
+                    if 'model' in input_path or 'pt' in input_path:
+                        pt_files = [f for f in os.listdir(input_path) if f.endswith('.pt')]
+                        if pt_files:
+                            actual_path = os.path.join(input_path, pt_files[0])
+                            print(f"     Found PT: {actual_path}")
+                            return actual_path
+                    
+                    # List directory contents for debugging
+                    print(f"    Directory contents: {os.listdir(input_path)}")
+                
+                # If we get here, return the original path and hope for the best
+                print(f"     Using original: {input_path}")
                 return input_path
             
-            # Resolve config path
-            config_file = resolve_kubeflow_path(args.config_path)
+            # [1] Load configuration
+            print("\\n[1/5] Loading config...")
+            config_file = resolve_path(args.config_path)
             print(f"    Loading config from: {config_file}")
             
             with open(config_file, 'r') as f:
                 config = json.load(f)
             print(f"    Input: {config['input_dim']}, Latent: {config['level1_latent']}/{config['level2_latent']}")
             
-            # [2] Load preprocessed data - FIXED
+            # [2] Load preprocessed data
             print("\\n[2/5] Loading data...")
-            data_file = resolve_kubeflow_path(args.preprocessed_path)
+            data_file = resolve_path(args.preprocessed_path)
             print(f"    Loading data from: {data_file}")
             
             preprocessed_data = torch.load(data_file, weights_only=False)
@@ -169,7 +190,7 @@ implementation:
             num_samples, num_features = preprocessed_data.shape
             print(f"    Shape: {preprocessed_data.shape} (samples × features)")
             
-            # [3] Create and load model - FIXED
+            # [3] Create and load model
             print("\\n[3/5] Loading model...")
             model = create_ladder_vae(
                 input_dim=config['input_dim'],
@@ -177,11 +198,11 @@ implementation:
                 level2_latent=config['level2_latent'],
                 level1_hidden=config['level1_hidden'],
                 level2_hidden=config['level2_hidden'],
-                beta=config.get('beta', args.kl_weight)  # Use config beta or fallback to kl_weight
+                beta=config.get('beta', args.kl_weight)
             )
             
             # Resolve checkpoint path
-            checkpoint_file = resolve_kubeflow_path(args.model_path)
+            checkpoint_file = resolve_path(args.model_path)
             print(f"    Loading checkpoint from: {checkpoint_file}")
             
             model.load_state_dict(torch.load(checkpoint_file, map_location=device, weights_only=False))
@@ -291,7 +312,7 @@ implementation:
                 # Save best model
                 if avg_val_loss < best_val_loss:
                     best_val_loss = avg_val_loss
-                    best_model_state = model.state_dict().copy()  # Make a copy
+                    best_model_state = model.state_dict().copy()
                     metrics["best_epoch"] = epoch + 1
                     metrics["best_val_loss"] = best_val_loss
                 
