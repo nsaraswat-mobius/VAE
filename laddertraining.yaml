@@ -1,4 +1,4 @@
-name: train_ladder_vae_model
+name: train_ladder_vae_model 1
 description: Trains Ladder VAE model on preprocessed World Bank data with hierarchical loss
 inputs:
   - {name: preprocessed_path, type: String, description: "Path to preprocessed 2D tensor (.pt file)"}
