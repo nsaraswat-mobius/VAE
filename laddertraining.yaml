@@ -32,8 +32,6 @@ implementation:
         
         # ===== EMBEDDED LADDER VAE MODULE =====
         class LadderVAE(nn.Module):
-
-            
             def __init__(self, input_dim, level1_latent=32, level2_latent=16, 
                          level1_hidden=128, level2_hidden=64, beta=1.0):
                 super(LadderVAE, self).__init__()
@@ -130,32 +128,48 @@ implementation:
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             print(f"\\nDevice: {device}")
             
-            # [1] Load configuration
+            # [1] Load configuration - FIXED
             print("\\n[1/5] Loading config...")
-            config_path = args.config_path
-            if os.path.isdir(config_path):
-                # Read the /data file to get the actual config path
-                data_file = os.path.join(config_path, "data")
-                with open(data_file, 'r') as f:
-                    config_path = f.read().strip()
-            with open(config_path, 'r') as f:
+            
+            def resolve_kubeflow_path(input_path):
+                if os.path.isfile(input_path):
+                    return input_path
+                elif os.path.isdir(input_path):
+                    # Check for data file first (Kubeflow style)
+                    data_file = os.path.join(input_path, "data")
+                    if os.path.exists(data_file):
+                        with open(data_file, 'r') as f:
+                            resolved_path = f.read().strip()
+                        return resolved_path
+                    # Look for JSON or PT files directly
+                    json_files = [f for f in os.listdir(input_path) if f.endswith('.json')]
+                    pt_files = [f for f in os.listdir(input_path) if f.endswith('.pt')]
+                    
+                    if json_files:
+                        return os.path.join(input_path, json_files[0])
+                    elif pt_files:
+                        return os.path.join(input_path, pt_files[0])
+                return input_path
+            
+            # Resolve config path
+            config_file = resolve_kubeflow_path(args.config_path)
+            print(f"    Loading config from: {config_file}")
+            
+            with open(config_file, 'r') as f:
                 config = json.load(f)
             print(f"    Input: {config['input_dim']}, Latent: {config['level1_latent']}/{config['level2_latent']}")
             
-            # [2] Load preprocessed data
+            # [2] Load preprocessed data - FIXED
             print("\\n[2/5] Loading data...")
-            preprocessed_path = args.preprocessed_path
-            if os.path.isdir(preprocessed_path):
-                # Read the /data file to get the actual tensor path
-                data_file = os.path.join(preprocessed_path, "data")
-                with open(data_file, 'r') as f:
-                    preprocessed_path = f.read().strip()
-            preprocessed_data = torch.load(preprocessed_path, weights_only=False)
+            data_file = resolve_kubeflow_path(args.preprocessed_path)
+            print(f"    Loading data from: {data_file}")
+            
+            preprocessed_data = torch.load(data_file, weights_only=False)
             
             num_samples, num_features = preprocessed_data.shape
             print(f"    Shape: {preprocessed_data.shape} (samples × features)")
             
-            # [3] Create and load model
+            # [3] Create and load model - FIXED
             print("\\n[3/5] Loading model...")
             model = create_ladder_vae(
                 input_dim=config['input_dim'],
@@ -163,17 +177,14 @@ implementation:
                 level2_latent=config['level2_latent'],
                 level1_hidden=config['level1_hidden'],
                 level2_hidden=config['level2_hidden'],
-                beta=config['beta']
+                beta=config.get('beta', args.kl_weight)  # Use config beta or fallback to kl_weight
             )
             
-            checkpoint_path = args.model_path
-            if os.path.isdir(checkpoint_path):
-                # Read the /data file to get the actual checkpoint path
-                data_file = os.path.join(checkpoint_path, "data")
-                with open(data_file, 'r') as f:
-                    checkpoint_path = f.read().strip()
+            # Resolve checkpoint path
+            checkpoint_file = resolve_kubeflow_path(args.model_path)
+            print(f"    Loading checkpoint from: {checkpoint_file}")
             
-            model.load_state_dict(torch.load(checkpoint_path, map_location=device, weights_only=False))
+            model.load_state_dict(torch.load(checkpoint_file, map_location=device, weights_only=False))
             model = model.to(device)
             model.train()
             print(f"    Model: {sum(p.numel() for p in model.parameters()):,} params")
@@ -280,7 +291,7 @@ implementation:
                 # Save best model
                 if avg_val_loss < best_val_loss:
                     best_val_loss = avg_val_loss
-                    best_model_state = model.state_dict()
+                    best_model_state = model.state_dict().copy()  # Make a copy
                     metrics["best_epoch"] = epoch + 1
                     metrics["best_val_loss"] = best_val_loss
                 
@@ -300,8 +311,8 @@ implementation:
                 if (epoch + 1) % 5 == 0 or epoch == 0:
                     print(f"   E{epoch+1:3d} | Train: {avg_train_loss:.4f} | Val: {avg_val_loss:.4f}")
             
-            # [5] Save trained model and metrics
-            print("\\n[5/5] Saving model and metrics...")
+            # [6] Save trained model and metrics
+            print("\\n[6/5] Saving model and metrics...")
             os.makedirs(args.trained_model_path, exist_ok=True)
             os.makedirs(args.metrics_path, exist_ok=True)
             
