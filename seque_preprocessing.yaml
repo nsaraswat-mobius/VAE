@@ -1,4 +1,4 @@
-name: preprocess_worldbank_tensor 3
+name: preprocess_worldbank_tensor 4
 description: Preprocesses World Bank parquet data - handles Inf values, normalizes, builds sequences, outputs torch tensor (3D for Sequential VAE)
 inputs:
   - {name: parquet_path, type: String, description: "Path to tensor_values.parquet"}
@@ -118,9 +118,16 @@ implementation:
 
             # Write tensor directly to the path Kubeflow provided
             torch.save(tensor, args.preprocessed_path)
-            print(f"   Saved to: {args.preprocessed_path}")
+            print(f"   Saved Kubeflow artifact to: {args.preprocessed_path}")
+            
+            # === MINIMAL CHANGE: Also save direct .pt file for easy S3 access ===
+            pt_file = args.preprocessed_path + '.pt'
+            torch.save(tensor, pt_file)
+            print(f"   Direct .pt file saved at: {pt_file}")
+            
             print(f"   Shape: {tensor.shape}")
-            print(f"   File size: {os.path.getsize(args.preprocessed_path) / 1e9:.2f} GB")
+            print(f"   File size (Kubeflow): {os.path.getsize(args.preprocessed_path) / 1e9:.2f} GB")
+            print(f"   File size (Direct .pt): {os.path.getsize(pt_file) / 1e9:.2f} GB")
 
             # Save metadata JSON directly to the path Kubeflow provided
             metadata = {
@@ -131,7 +138,8 @@ implementation:
                 "features_used": len(feature_cols),
                 "inf_values_replaced": int(inf_count),
                 "normalization": "z-score (mean=0, std=1)",
-                "output_file": args.preprocessed_path
+                "output_file": args.preprocessed_path,
+                "direct_pt_file": pt_file  # === MINIMAL CHANGE: Add direct file to metadata ===
             }
 
             metadata_parent = os.path.dirname(args.metadata_path)
@@ -150,6 +158,7 @@ implementation:
             print(f"  Samples: {tensor.shape[0]}")
             print(f"  Timesteps: {tensor.shape[1]}")
             print(f"  Features: {tensor.shape[2]}")
+            print(f"  Direct .pt file available at: {pt_file}")
             print(f"  Ready for Sequential VAE training")
 
         except FileNotFoundError:
