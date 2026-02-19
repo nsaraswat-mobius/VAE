@@ -1,7 +1,7 @@
 name: train_sequential_vae_model
 description: Trains Sequential VAE model on preprocessed World Bank data with configurable hyperparameters
 inputs:
-  - {name: preprocessed_path, type: String, description: "Path to preprocessed tensor (.pt file)"}
+  - {name: preprocessed_path, type: Dataset, description: "Path to preprocessed tensor (.pt file)"}
   - {name: model_path, type: String, description: "Path to model checkpoint (.pt file)"}
   - {name: config_path, type: String, description: "Path to model config (JSON file)"}
   - {name: learning_rate, type: Float, description: "Learning rate", default: "1e-3"}
